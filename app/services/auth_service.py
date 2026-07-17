@@ -17,10 +17,13 @@ def authenticate_user(db, email, password):
 
 
 def generate_tokens(db, user):
+    permissions = sorted({p.name for r in user.roles for p in r.permissions})
+
     payload = {
         "sub": str(user.id),
         "email": user.email,
-        "roles": [r.name for r in user.roles]
+        "roles": [r.name for r in user.roles],
+        "permissions": permissions
     }
 
     access = create_access_token(payload)
