@@ -10,6 +10,9 @@ def authenticate_user(db, email, password):
     if not user or user.status != "active":
         return None
 
+    if not user.hashed_password:
+        return None  # OAuth-only account — no password set
+
     if not verify_password(password, user.hashed_password):
         return None
 

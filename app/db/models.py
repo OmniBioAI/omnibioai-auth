@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, ForeignKey, Table, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 from datetime import datetime
@@ -63,3 +63,19 @@ class RevokedToken(Base):
     id = Column(Integer, primary_key=True)
     token_jti = Column(String(255), unique=True, index=True)
     revoked_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OAuthAccount(Base):
+    __tablename__ = "oauth_accounts"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_oauth_provider_account"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    provider = Column(String(20), nullable=False)  # "google" | "github" | "microsoft"
+    provider_user_id = Column(String(255), nullable=False)
+    email = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")

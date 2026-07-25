@@ -30,6 +30,22 @@ class Settings:
         if origin.strip()
     ]
 
+    # OAuth2 SSO — optional. Empty defaults mean the stack starts fine with
+    # SSO unconfigured; /auth/{provider}/login returns 503 until a client
+    # id/secret pair is set for that provider.
+    GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+    GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    GITHUB_OAUTH_CLIENT_ID = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
+    GITHUB_OAUTH_CLIENT_SECRET = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
+    MICROSOFT_OAUTH_CLIENT_ID = os.getenv("MICROSOFT_OAUTH_CLIENT_ID", "")
+    MICROSOFT_OAUTH_CLIENT_SECRET = os.getenv("MICROSOFT_OAUTH_CLIENT_SECRET", "")
+
+    # Must exactly match the redirect URIs registered with each provider.
+    OAUTH_REDIRECT_BASE_URL = os.getenv("OAUTH_REDIRECT_BASE_URL", "https://app.omnibioai.org")
+    # Where the browser is sent after GET /auth/{provider}/callback completes
+    # (carries the token, or a link-confirmation prompt, as query params).
+    FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://app.omnibioai.org")
+
     @property
     def DATABASE_URL(self):
         return (
