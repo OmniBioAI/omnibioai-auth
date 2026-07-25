@@ -5,6 +5,12 @@ from unittest.mock import patch
 # Must be set before any app module is imported so config.settings has a key.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-omnibioai-32-chars-x!")
 
+# create_admin() (called at app import time, below) no longer bakes in a
+# hardcoded default password -- give it a fixed, known-to-tests-only value
+# via the same env-var override a real deployment would use, rather than
+# letting it fall back to a per-run random password tests can't predict.
+os.environ.setdefault("ADMIN_BOOTSTRAP_PASSWORD", "test-admin-password-not-for-prod")
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 

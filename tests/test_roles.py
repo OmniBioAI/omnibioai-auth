@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import pytest
@@ -14,7 +15,10 @@ def _user_id(client, tokens):
 
 @pytest.fixture(scope="session")
 def admin_token(client):
-    resp = client.post("/auth/login", json={"email": "admin@omnibioai", "password": "admin"})
+    resp = client.post(
+        "/auth/login",
+        json={"email": "admin@omnibioai", "password": os.environ["ADMIN_BOOTSTRAP_PASSWORD"]},
+    )
     assert resp.status_code == 200
     return resp.json()["access_token"]
 
