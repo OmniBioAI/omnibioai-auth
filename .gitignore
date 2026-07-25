@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 app/schemas/__pycache__/
 .env
+__pycache__/
+*.pyc
