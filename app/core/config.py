@@ -25,7 +25,7 @@ class Settings:
         for origin in os.getenv(
             "CORS_ALLOWED_ORIGINS",
             "http://localhost:5174,http://127.0.0.1:5174,"
-            "https://app.omnibioai.org,https://lims.omnibioai.org,https://omnibioai.org",
+            "https://webstudio.omnibioai.org,https://app.omnibioai.org,https://lims.omnibioai.org,https://omnibioai.org",
         ).split(",")
         if origin.strip()
     ]
@@ -41,10 +41,10 @@ class Settings:
     MICROSOFT_OAUTH_CLIENT_SECRET = os.getenv("MICROSOFT_OAUTH_CLIENT_SECRET", "")
 
     # Must exactly match the redirect URIs registered with each provider.
-    OAUTH_REDIRECT_BASE_URL = os.getenv("OAUTH_REDIRECT_BASE_URL", "https://app.omnibioai.org")
+    OAUTH_REDIRECT_BASE_URL = os.getenv("OAUTH_REDIRECT_BASE_URL", "https://webstudio.omnibioai.org")
     # Where the browser is sent after GET /auth/{provider}/callback completes
     # (carries the token, or a link-confirmation prompt, as query params).
-    FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://app.omnibioai.org")
+    FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://webstudio.omnibioai.org")
 
     @property
     def DATABASE_URL(self):
