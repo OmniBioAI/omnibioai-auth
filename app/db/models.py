@@ -79,3 +79,23 @@ class OAuthAccount(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
+
+
+class LicenseKey(Base):
+    __tablename__ = "license_keys"
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String(29), unique=True, index=True)  # OMNI-XXXX-XXXX-XXXX-XXXX
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # bound on first successful validate
+    email = Column(String(255), index=True)
+    plan = Column(String(50), default="beta")  # beta | pro | enterprise
+    platform = Column(String(20), default="both")  # web | desktop | both
+    max_uses = Column(Integer, default=1)
+    usage_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_reason = Column(String(255), nullable=True)
+
+    user = relationship("User")

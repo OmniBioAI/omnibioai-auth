@@ -1,0 +1,101 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.rbac import get_current_user, require_permission
+from app.schemas.license import (
+    LicenseGenerateRequest,
+    LicenseGenerateResponse,
+    LicenseRevokeRequest,
+    LicenseRevokeResponse,
+    LicenseStatusResponse,
+    LicenseValidateRequest,
+    LicenseValidateResponse,
+)
+from app.services import license_service
+from app.services.auth_service import generate_tokens
+
+router = APIRouter(prefix="/license", tags=["license"])
+
+MANAGE_LICENSES = "manage_licenses"
+
+
+# ---------------- VALIDATE ----------------
+@router.post("/validate", response_model=LicenseValidateResponse)
+def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db)):
+    license_key, reason = license_service.validate_and_consume(
+        db, req.key, req.email, req.platform
+    )
+    if not license_key:
+        return LicenseValidateResponse(valid=False, reason=reason)
+
+    user = license_service.get_or_create_user_for_email(db, req.email)
+    license_service.mark_used(db, license_key, user)
+
+    access, refresh = generate_tokens(db, user)
+    return LicenseValidateResponse(
+        valid=True,
+        access_token=access,
+        refresh_token=refresh,
+        user_info={
+            "id": user.id,
+            "email": user.email,
+            "plan": license_key.plan,
+        },
+    )
+
+
+# ---------------- GENERATE (admin) ----------------
+@router.post("/generate", response_model=LicenseGenerateResponse)
+def generate_license(
+    req: LicenseGenerateRequest,
+    db: Session = Depends(get_db),
+    user=Depends(require_permission(MANAGE_LICENSES)),
+):
+    license_key = license_service.create_license(
+        db,
+        email=req.email,
+        plan=req.plan,
+        platform=req.platform,
+        expires_days=req.expires_days,
+        max_uses=req.max_uses,
+    )
+    return LicenseGenerateResponse(
+        key=license_key.key,
+        email=license_key.email,
+        plan=license_key.plan,
+        platform=license_key.platform,
+        expires_at=license_key.expires_at,
+        max_uses=license_key.max_uses,
+    )
+
+
+# ---------------- STATUS ----------------
+@router.get("/status", response_model=LicenseStatusResponse)
+def license_status(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    license_key = license_service.get_status_for_user(db, int(user["sub"]))
+    if not license_key:
+        raise HTTPException(404, "No license found for this account")
+    return LicenseStatusResponse(
+        key=license_key.key,
+        plan=license_key.plan,
+        platform=license_key.platform,
+        expires_at=license_key.expires_at,
+        usage_count=license_key.usage_count,
+        max_uses=license_key.max_uses,
+        last_used_at=license_key.last_used_at,
+        revoked=license_key.revoked_at is not None,
+    )
+
+
+# ---------------- REVOKE (admin) ----------------
+@router.post("/revoke", response_model=LicenseRevokeResponse)
+def revoke_license(
+    req: LicenseRevokeRequest,
+    db: Session = Depends(get_db),
+    user=Depends(require_permission(MANAGE_LICENSES)),
+):
+    success = license_service.revoke(db, req.key, req.reason)
+    if not success:
+        raise HTTPException(404, "License key not found")
+    return LicenseRevokeResponse(success=success)

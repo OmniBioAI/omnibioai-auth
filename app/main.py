@@ -6,6 +6,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from app.api.routes_auth import router as auth_router
 from app.api.routes_roles import router as roles_router
 from app.api.routes_oauth import router as oauth_router
+from app.api.routes_license import router as license_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
@@ -36,6 +37,7 @@ db.close()
 app.include_router(auth_router)
 app.include_router(roles_router)
 app.include_router(oauth_router)
+app.include_router(license_router)
 
 
 @app.get("/metrics")
