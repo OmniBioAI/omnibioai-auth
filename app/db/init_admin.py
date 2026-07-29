@@ -12,13 +12,22 @@ def create_admin(db):
         db.add(manage_roles_perm)
         db.flush()
 
+    manage_licenses_perm = db.query(Permission).filter(Permission.name == "manage_licenses").first()
+    if not manage_licenses_perm:
+        manage_licenses_perm = Permission(name="manage_licenses")
+        db.add(manage_licenses_perm)
+        db.flush()
+
     admin_role = db.query(Role).filter(Role.name == "admin").first()
     if not admin_role:
-        admin_role = Role(name="admin", permissions=[manage_roles_perm])
+        admin_role = Role(name="admin", permissions=[manage_roles_perm, manage_licenses_perm])
         db.add(admin_role)
         db.flush()
-    elif manage_roles_perm not in admin_role.permissions:
-        admin_role.permissions.append(manage_roles_perm)
+    else:
+        if manage_roles_perm not in admin_role.permissions:
+            admin_role.permissions.append(manage_roles_perm)
+        if manage_licenses_perm not in admin_role.permissions:
+            admin_role.permissions.append(manage_licenses_perm)
 
     admin = db.query(User).filter(User.email == "admin@omnibioai").first()
     if not admin:
