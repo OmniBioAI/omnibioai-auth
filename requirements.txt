@@ -3,6 +3,7 @@ uvicorn
 sqlalchemy
 pymysql
 python-jose[cryptography]
+cryptography  # explicit dep for Fernet (app/core/crypto.py) -- was only an implicit python-jose extra before
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-dotenv

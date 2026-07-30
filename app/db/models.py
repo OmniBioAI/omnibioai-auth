@@ -81,6 +81,32 @@ class OAuthAccount(Base):
     user = relationship("User")
 
 
+class GlobalConfig(Base):
+    """Singleton row (id=1 by convention -- see config_service.get_config)
+    for webstudio's shared, admin-managed platform config. Distinct from
+    the Electron desktop app's own per-machine Settings/LLM/Cloud pages,
+    which stay local (IPC-backed config file, no server involved)."""
+    __tablename__ = "global_config"
+
+    id = Column(Integer, primary_key=True)
+
+    llm_provider = Column(String(50), nullable=True)  # "claude" | "codex"
+    llm_api_key_encrypted = Column(String(1000), nullable=True)
+
+    cloud_provider = Column(String(50), nullable=True)  # "k8s" | "gcp" | "aws" | "azure"
+    # JSON-serialized, then Fernet-encrypted as one blob -- credential shape
+    # differs per provider (AWS keys vs. Azure service principal vs. GCP
+    # service-account JSON vs. K8s kubeconfig), a single opaque encrypted
+    # blob avoids a rigid column-per-field schema across four providers.
+    cloud_credentials_encrypted = Column(String(4000), nullable=True)
+
+    work_directory = Column(String(500), nullable=True)
+    data_directory = Column(String(500), nullable=True)
+
+    updated_at = Column(DateTime, nullable=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
 class LicenseKey(Base):
     __tablename__ = "license_keys"
 

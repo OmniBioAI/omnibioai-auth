@@ -23,9 +23,22 @@ def create_admin(db):
         db.add(manage_licenses_perm)
         db.flush()
 
+    # Distinct from manage_roles/manage_licenses -- gates webstudio's global
+    # LLM/cloud/directory config (config_service.py), a separate concern
+    # from role or license management. Kept its own permission so a future
+    # role could manage config without also managing roles/licenses.
+    manage_config_perm = db.query(Permission).filter(Permission.name == "manage_config").first()
+    if not manage_config_perm:
+        manage_config_perm = Permission(name="manage_config")
+        db.add(manage_config_perm)
+        db.flush()
+
     admin_role = db.query(Role).filter(Role.name == "admin").first()
     if not admin_role:
-        admin_role = Role(name="admin", permissions=[manage_roles_perm, manage_licenses_perm])
+        admin_role = Role(
+            name="admin",
+            permissions=[manage_roles_perm, manage_licenses_perm, manage_config_perm],
+        )
         db.add(admin_role)
         db.flush()
     else:
@@ -33,6 +46,8 @@ def create_admin(db):
             admin_role.permissions.append(manage_roles_perm)
         if manage_licenses_perm not in admin_role.permissions:
             admin_role.permissions.append(manage_licenses_perm)
+        if manage_config_perm not in admin_role.permissions:
+            admin_role.permissions.append(manage_config_perm)
 
     admin = db.query(User).filter(User.email == "admin@omnibioai").first()
     if not admin:
