@@ -24,6 +24,7 @@ from app.services.auth_service import (
     revoke_token,
     validate_refresh_token,
 )
+from app.services.role_service import assign_default_role
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -78,6 +79,8 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
         status="active",
     )
     db.add(user)
+    db.flush()
+    assign_default_role(db, user)
     db.commit()
     return {"message": "User created"}
 

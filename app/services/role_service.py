@@ -23,6 +23,27 @@ def role_in_use(db: Session, role_id: int) -> bool:
     return db.query(user_roles).filter(user_roles.c.role_id == role_id).first() is not None
 
 
+def get_or_create_role(db: Session, name: str, permission_names: list[str] | None = None) -> Role:
+    """Idempotent role lookup/creation. Does not commit -- callers own the
+    transaction (mirrors init_admin.py's bootstrap pattern, generalized so
+    both startup bootstrap and per-request signup paths can share it)."""
+    role = get_role_by_name(db, name)
+    if not role:
+        role = Role(name=name, permissions=_get_or_create_permissions(db, permission_names or []))
+        db.add(role)
+        db.flush()
+    return role
+
+
+def assign_default_role(db: Session, user: User) -> None:
+    """Grants the baseline "user" role to a newly created account. Does not
+    commit -- callers own the transaction, call this before their own
+    db.commit()."""
+    role = get_or_create_role(db, "user")
+    if role not in user.roles:
+        user.roles.append(role)
+
+
 def create_role(db: Session, name: str, permission_names: list[str]) -> Role:
     role = Role(name=name, permissions=_get_or_create_permissions(db, permission_names))
     db.add(role)

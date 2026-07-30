@@ -5,6 +5,7 @@ import httpx
 from app.core.jwt import create_oauth_state_token, create_link_token
 from app.core.oauth_providers import PROVIDERS, redirect_uri_for, parse_userinfo
 from app.db.models import OAuthAccount, User
+from app.services.role_service import assign_default_role
 
 
 class OAuthError(Exception):
@@ -85,6 +86,7 @@ def create_user_with_oauth(db, provider: str, provider_user_id: str, email: str)
     user = User(email=email, hashed_password=None, status="active")
     db.add(user)
     db.flush()
+    assign_default_role(db, user)
     db.add(OAuthAccount(user_id=user.id, provider=provider, provider_user_id=provider_user_id, email=email))
     db.commit()
     db.refresh(user)

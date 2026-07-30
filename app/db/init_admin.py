@@ -3,9 +3,14 @@ import secrets
 
 from app.db.models import Permission, Role, User
 from app.core.security import hash_password
+from app.services.role_service import get_or_create_role
 
 
 def create_admin(db):
+    # Baseline role for regular signups (register/license/oauth) -- see
+    # role_service.assign_default_role, called from each of those sites.
+    get_or_create_role(db, "user")
+
     manage_roles_perm = db.query(Permission).filter(Permission.name == "manage_roles").first()
     if not manage_roles_perm:
         manage_roles_perm = Permission(name="manage_roles")

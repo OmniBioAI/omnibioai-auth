@@ -131,7 +131,9 @@ def test_get_user_roles(client, admin_headers, registered_user):
 
     resp = client.get(f"/users/{user_id}/roles", headers=admin_headers)
     assert resp.status_code == 200
-    assert resp.json() == {"user_id": user_id, "roles": []}
+    # New signups get the baseline "user" role by default (M1) -- no
+    # longer zero roles.
+    assert resp.json() == {"user_id": user_id, "roles": ["user"]}
 
 
 def test_assign_role_to_user(client, admin_headers, registered_user):

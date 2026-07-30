@@ -3,6 +3,7 @@ import string
 from datetime import datetime, timedelta
 
 from app.db.models import LicenseKey, User
+from app.services.role_service import assign_default_role
 
 # Excludes visually ambiguous characters (0/O, 1/I/L) since keys are
 # read off a screen and typed by hand on first launch.
@@ -60,6 +61,7 @@ def get_or_create_user_for_email(db, email: str) -> User:
     user = User(email=email, hashed_password=None, status="active")
     db.add(user)
     db.flush()
+    assign_default_role(db, user)
     return user
 
 
