@@ -11,10 +11,13 @@ from app.api.routes_config import router as config_router
 from app.api.routes_orgs import router as orgs_router
 from app.api.routes_teams import router as teams_router
 from app.api.routes_apikeys import router as apikeys_router
+from app.api.routes_oauth_clients import router as oauth_clients_router
+from app.api.routes_oauth_token import router as oauth_token_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
 from app.db.init_admin import create_admin, ensure_default_organization
+from app.services.org_service import ensure_org_admin_permissions
 from app.core.config import settings
 
 import app.db.models
@@ -37,6 +40,7 @@ Base.metadata.create_all(bind=engine)
 db = SessionLocal()
 create_admin(db)
 ensure_default_organization(db)
+ensure_org_admin_permissions(db)
 db.close()
 
 app.include_router(auth_router)
@@ -47,6 +51,8 @@ app.include_router(config_router)
 app.include_router(orgs_router)
 app.include_router(teams_router)
 app.include_router(apikeys_router)
+app.include_router(oauth_clients_router)
+app.include_router(oauth_token_router)
 
 
 @app.get("/metrics")

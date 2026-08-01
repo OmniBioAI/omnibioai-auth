@@ -12,7 +12,7 @@ from app.services import role_service
 # (org creation / invite), not at app startup -- an environment that never
 # creates an org never gets these rows either.
 ORG_ADMIN_ROLE = "org_admin"
-ORG_ADMIN_PERMISSIONS = ["manage_org", "manage_teams", "manage_api_keys"]
+ORG_ADMIN_PERMISSIONS = ["manage_org", "manage_teams", "manage_api_keys", "manage_oauth_clients"]
 ORG_MEMBER_ROLE = "org_member"
 
 
@@ -58,6 +58,26 @@ def list_organizations_for_user(db: Session, user_id: int) -> list[Organization]
         )
         .all()
     )
+
+
+def ensure_org_admin_permissions(db: Session) -> None:
+    """Idempotent startup top-up, mirrors init_admin.py's create_admin()
+    pattern for the global "admin" role. get_or_create_role only sets a
+    role's permissions at the moment it's first created -- an org_admin
+    Role row created by an earlier deploy does not retroactively gain a
+    permission later added to ORG_ADMIN_PERMISSIONS (Phase 2 PR1 added
+    "manage_oauth_clients") unless something tops it up on every startup.
+    Only ever adds, never removes, so an operator who deliberately edited
+    org_admin's permissions via the role CRUD endpoints keeps anything else
+    they added or removed beyond this list.
+    """
+    role = role_service.get_role_by_name(db, ORG_ADMIN_ROLE)
+    if not role:
+        return  # no org has been created yet -- nothing to top up
+    existing = {p.name for p in role.permissions}
+    if set(ORG_ADMIN_PERMISSIONS) <= existing:
+        return
+    role_service.update_role_permissions(db, role, sorted(existing | set(ORG_ADMIN_PERMISSIONS)))
 
 
 def update_organization(db: Session, org: Organization, name: str | None) -> Organization:

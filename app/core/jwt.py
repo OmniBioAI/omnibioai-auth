@@ -46,6 +46,25 @@ def create_oauth_state_token(provider: str):
     )
 
 
+def create_service_access_token(data: dict, expires_minutes: int):
+    """Phase 2 PR1: issues a client_credentials-grant access token (RFC 6749
+    SS4.4) -- a service identity, not a user. Deliberately does not go
+    through create_access_token: that function always signs whatever
+    `sub`/`email`-shaped payload a caller hands it, but a service token
+    must never carry `sub`/`email` at all (there is no user), so this is a
+    separate, smaller code path rather than a flag on the existing one --
+    it can't accidentally be called with a user payload and produce
+    something `get_current_user` would treat as a real account.
+    """
+    to_encode = data.copy()
+    to_encode.update({
+        "exp": datetime.utcnow() + timedelta(minutes=expires_minutes),
+        "type": "access",
+        "jti": str(uuid.uuid4()),
+    })
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
 def create_link_token(user_id: int, provider: str, provider_user_id: str, email: str):
     """Short-lived token proving an OAuth exchange resolved to `user_id`'s
     existing email, pending password confirmation via POST /auth/link/confirm."""

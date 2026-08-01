@@ -230,3 +230,29 @@ class OrganizationConfig(Base):
     data_directory = Column(String(500), nullable=True)
     updated_at = Column(DateTime, nullable=True)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class OAuthClient(Base):
+    """Phase 2 PR1: registered OAuth 2.1 client_credentials clients (RFC
+    6749 SS4.4) -- a service identity, not a user. Deliberately a separate
+    table from ApiKey rather than reusing it: ApiKey is a shipped,
+    human-facing feature (a bearer secret a person pastes into a script),
+    while an OAuth client is a client_id/client_secret pair meant for a
+    standards-shaped token endpoint. Keeping them apart means this PR
+    touches none of ApiKey's existing code paths.
+    """
+    __tablename__ = "oauth_clients"
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    client_id = Column(String(64), unique=True, nullable=False)
+    client_secret_hash = Column(String(64), nullable=False)  # sha256 hex, plaintext never stored
+    name = Column(String(255), nullable=True)
+    scopes = Column(JSON, nullable=True)
+    status = Column(String(20), default="active")  # active | revoked
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_reason = Column(String(255), nullable=True)

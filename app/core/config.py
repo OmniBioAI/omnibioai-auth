@@ -16,6 +16,15 @@ class Settings:
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 
+    # Phase 2 PR1: client_credentials-grant tokens are a service identity,
+    # not a user session -- kept shorter-lived than a normal access token
+    # since there's no refresh_token to fall back on (RFC 6749 SS4.4.3); a
+    # compromised one self-expires quickly rather than lingering for the
+    # full 15 minutes a user access token gets.
+    CLIENT_CREDENTIALS_TOKEN_EXPIRE_MINUTES = int(
+        os.getenv("CLIENT_CREDENTIALS_TOKEN_EXPIRE_MINUTES", 10)
+    )
+
     # Comma-separated allowlist of browser origins permitted to call this API
     # directly (e.g. omnibioai-studio's web build). Production domains match
     # the CORS_ALLOWED_ORIGINS already set for the lims service in
