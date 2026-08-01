@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 sqlalchemy
+alembic>=1.13,<2  # pinned conservatively -- migration tooling, a major bump changing CLI/behavior is riskier here than for most deps
 pymysql
 python-jose[cryptography]
 cryptography  # explicit dep for Fernet (app/core/crypto.py) -- was only an implicit python-jose extra before
