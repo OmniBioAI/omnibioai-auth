@@ -69,7 +69,7 @@ def client(setup_db):
         return 1 if key in _blacklisted else 0
 
     with patch("app.api.routes_auth._pub") as mock_pub, \
-         patch("app.api.routes_auth._blacklist") as mock_bl:
+         patch("app.core.token_revocation._blacklist") as mock_bl:
         mock_pub.publish.return_value = None
         mock_bl.setex.side_effect = _setex
         mock_bl.exists.side_effect = _exists

@@ -3,7 +3,12 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Organization, OrganizationMembership, User
 from app.db.session import get_db
-from app.rbac import get_current_user, get_org_membership, require_org_permission
+from app.rbac import (
+    MANAGE_ALL_ORGS,
+    get_current_user,
+    get_org_membership_or_platform_admin,
+    require_org_permission_or_platform_admin,
+)
 from app.schemas.orgs import (
     InviteRequest,
     MemberOut,
@@ -21,7 +26,16 @@ MANAGE_ORG = "manage_org"
 
 
 def _org_out(org: Organization) -> OrganizationOut:
-    return OrganizationOut(id=org.id, slug=org.slug, name=org.name, plan=org.plan, status=org.status)
+    return OrganizationOut(
+        id=org.id,
+        slug=org.slug,
+        name=org.name,
+        plan=org.plan,
+        status=org.status,
+        status_changed_at=org.status_changed_at,
+        status_changed_reason=org.status_changed_reason,
+        status_changed_by_user_id=org.status_changed_by_user_id,
+    )
 
 
 def _member_out(membership: OrganizationMembership, email: str) -> MemberOut:
@@ -53,7 +67,10 @@ def list_my_orgs(db: Session = Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.get("/{org_id}", response_model=OrganizationOut)
-def get_org(org_id: int, membership: OrganizationMembership = Depends(get_org_membership)):
+def get_org(
+    org_id: int,
+    membership: OrganizationMembership = Depends(get_org_membership_or_platform_admin),
+):
     return _org_out(membership.organization)
 
 
@@ -62,9 +79,30 @@ def update_org(
     org_id: int,
     body: OrganizationUpdate,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_ORG)),
+    user=Depends(get_current_user),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_ORG)),
 ):
-    org = org_service.update_organization(db, membership.organization, body.name)
+    # Phase 3 PR2: status changes (suspend/reactivate) are platform-admin
+    # only, checked independently of the membership/MANAGE_ORG gate above
+    # -- a real org_admin holds manage_org over their own org, but that
+    # must keep meaning "can rename/manage this org," not "can suspend
+    # it." membership shape alone can't distinguish a real org_admin from
+    # PR0.4's synthetic platform-admin membership (that's by design), so
+    # this checks the caller's own global permissions claim directly.
+    if body.status is not None and MANAGE_ALL_ORGS not in (user.get("permissions") or []):
+        raise HTTPException(403, "Only platform admins can change organization status")
+
+    try:
+        org = org_service.update_organization(
+            db,
+            membership.organization,
+            body.name,
+            status=body.status,
+            status_reason=body.status_reason,
+            actor_user_id=int(user["sub"]),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return _org_out(org)
 
 
@@ -72,7 +110,7 @@ def update_org(
 def list_members(
     org_id: int,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_ORG)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_ORG)),
 ):
     members = org_service.list_members(db, org_id)
     return [_member_out(m, m.user.email) for m in members]
@@ -84,7 +122,7 @@ def invite_member(
     body: InviteRequest,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_ORG)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_ORG)),
 ):
     inviter = db.query(User).filter(User.id == int(user["sub"])).first()
     invited = org_service.invite_member(db, membership.organization, body.email, inviter)
@@ -100,7 +138,7 @@ def update_member_roles(
     body: MemberRolesUpdate,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
-    caller_membership: OrganizationMembership = Depends(require_org_permission(MANAGE_ORG)),
+    caller_membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_ORG)),
 ):
     target = org_service.get_membership(db, org_id, user_id)
     if not target:

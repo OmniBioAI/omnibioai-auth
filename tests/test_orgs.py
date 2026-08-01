@@ -97,6 +97,111 @@ def test_update_org(client, org_owner_headers):
     resp = client.patch(f"/orgs/{org_id}", json={"name": "Renamed"}, headers=org_owner_headers)
     assert resp.status_code == 200
     assert resp.json()["name"] == "Renamed"
+    # A name-only update must never touch status-tracking fields (Phase 3
+    # PR2) -- no status change happened, so nothing about it is recorded.
+    assert resp.json()["status_changed_at"] is None
+    assert resp.json()["status_changed_reason"] is None
+    assert resp.json()["status_changed_by_user_id"] is None
+
+
+# ── Phase 3 PR2: platform-admin-only status changes ─────────────────────────
+
+
+def _grant_platform_admin(email: str) -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db.models import Role, User
+
+    engine = create_engine("sqlite:///./test.db")
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        role = db.query(Role).filter(Role.name == "platform_admin").first()
+        assert role is not None, "ensure_platform_admin_role should have created this at startup"
+        user.roles.append(role)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _platform_admin_headers(client):
+    admin = _register_and_login(client)
+    _grant_platform_admin(admin["email"])
+    relogged = client.post(
+        "/auth/login", json={"email": admin["email"], "password": admin["password"]}
+    ).json()
+    return _auth_header(relogged["access_token"])
+
+
+def test_platform_admin_can_suspend_and_reactivate_org(client, org_owner_headers):
+    admin_headers = _platform_admin_headers(client)
+    slug = _unique_slug()
+    create = client.post("/orgs", json={"name": "Suspend Me", "slug": slug}, headers=org_owner_headers)
+    org_id = create.json()["id"]
+
+    suspend = client.patch(
+        f"/orgs/{org_id}",
+        json={"status": "suspended", "status_reason": "ToS violation"},
+        headers=admin_headers,
+    )
+    assert suspend.status_code == 200
+    body = suspend.json()
+    assert body["status"] == "suspended"
+    assert body["status_changed_reason"] == "ToS violation"
+    assert body["status_changed_at"] is not None
+    assert body["status_changed_by_user_id"] is not None
+
+    # Reversible: reactivating fully undoes it.
+    reactivate = client.patch(
+        f"/orgs/{org_id}", json={"status": "active", "status_reason": "Resolved"}, headers=admin_headers
+    )
+    assert reactivate.status_code == 200
+    assert reactivate.json()["status"] == "active"
+    assert reactivate.json()["status_changed_reason"] == "Resolved"
+
+
+def test_org_admin_cannot_change_own_org_status(client, org_owner_headers):
+    """A real org_admin holds manage_org over their own org -- that must
+    keep meaning "can rename," not "can suspend." Only manage_all_orgs
+    (platform_admin) may change status."""
+    slug = _unique_slug()
+    create = client.post("/orgs", json={"name": "Self Suspend Attempt", "slug": slug}, headers=org_owner_headers)
+    org_id = create.json()["id"]
+
+    resp = client.patch(f"/orgs/{org_id}", json={"status": "suspended"}, headers=org_owner_headers)
+    assert resp.status_code == 403
+
+    unchanged = client.get(f"/orgs/{org_id}", headers=org_owner_headers)
+    assert unchanged.json()["status"] == "active"
+
+
+def test_invalid_status_value_rejected(client, org_owner_headers):
+    admin_headers = _platform_admin_headers(client)
+    slug = _unique_slug()
+    create = client.post("/orgs", json={"name": "Bad Status", "slug": slug}, headers=org_owner_headers)
+    org_id = create.json()["id"]
+
+    resp = client.patch(f"/orgs/{org_id}", json={"status": "deleted"}, headers=admin_headers)
+    assert resp.status_code == 400
+
+    unchanged = client.get(f"/orgs/{org_id}", headers=org_owner_headers)
+    assert unchanged.json()["status"] == "active"
+
+
+def test_platform_admin_can_still_rename_while_changing_status(client, org_owner_headers):
+    admin_headers = _platform_admin_headers(client)
+    slug = _unique_slug()
+    create = client.post("/orgs", json={"name": "Combined Update", "slug": slug}, headers=org_owner_headers)
+    org_id = create.json()["id"]
+
+    resp = client.patch(
+        f"/orgs/{org_id}", json={"name": "Renamed By Admin", "status": "suspended"}, headers=admin_headers
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Renamed By Admin"
+    assert resp.json()["status"] == "suspended"
 
 
 def test_invite_unknown_email_returns_404(client, org_owner_headers):

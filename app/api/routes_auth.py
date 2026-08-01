@@ -14,15 +14,17 @@ JWT_AUTH_TOTAL = Counter(
 )
 
 from app.db.session import get_db
-from app.db.models import User, RefreshToken, RevokedToken
+from app.db.models import User
 from app.schemas.auth import LoginRequest, RefreshRequest, LogoutRequest
 from app.core.security import hash_password
-from app.core.jwt import decode_token, create_access_token
+from app.core.jwt import decode_token
+from app.core import token_revocation
+from app.core.token_revocation import assert_token_usable
 from app.services.auth_service import (
     authenticate_user,
     generate_tokens,
     revoke_token,
-    validate_refresh_token,
+    rotate_refresh_token,
 )
 from app.services.role_service import assign_default_role
 from app.services import org_service, sso_discovery_service
@@ -34,16 +36,17 @@ _pub = _redis_sync.from_url(
     decode_responses=True,
 )
 
-_blacklist = _redis_sync.from_url(
-    os.getenv("REDIS_URL", "redis://redis:6379"),
-    decode_responses=True,
-)
-
 ACCESS_TOKEN_TTL = 15 * 60  # seconds — matches jwt.py
 
 
 def _blacklist_access_token(access_token: str) -> None:
-    """Store access token jti in Redis blacklist with remaining-lifetime TTL."""
+    """Store access token jti in Redis blacklist with remaining-lifetime TTL.
+
+    Writes through `token_revocation._blacklist` (qualified attribute
+    access, not a local `_blacklist` name) -- PR0.1 made that module the
+    canonical owner of this Redis client, since `assert_token_usable` reads
+    from the exact same object to enforce revocation in `get_current_user`.
+    """
     try:
         payload = decode_token(access_token)
         jti = payload.get("jti")
@@ -51,7 +54,7 @@ def _blacklist_access_token(access_token: str) -> None:
             exp = payload.get("exp", 0)
             now = int(datetime.utcnow().timestamp())
             ttl = max(exp - now, 1)
-            _blacklist.setex(f"blacklist:jti:{jti}", ttl, "1")
+            token_revocation._blacklist.setex(f"blacklist:jti:{jti}", ttl, "1")
     except Exception:
         pass  # fail open — never block logout
 
@@ -124,15 +127,19 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 # ---------------- REFRESH ----------------
 @router.post("/refresh")
 def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
-    db_token = validate_refresh_token(db, req.refresh_token)
-    if not db_token:
+    # PR0.2: rotate_refresh_token rebuilds claims from the current database
+    # state (not the presented token's own stale payload) and returns a
+    # NEW refresh token -- the presented one is single-use from here on.
+    # Presenting it again is treated as token-family compromise; see
+    # auth_service.rotate_refresh_token / _revoke_family.
+    result = rotate_refresh_token(db, req.refresh_token)
+    if not result:
         raise HTTPException(401, "Invalid refresh token")
 
-    payload = decode_token(req.refresh_token)
-    new_access = create_access_token(payload)
+    new_access, new_refresh = result
     return {
         "access_token": new_access,
-        "refresh_token": req.refresh_token,
+        "refresh_token": new_refresh,
     }
 
 
@@ -163,22 +170,16 @@ def validate_token(req: dict, db: Session = Depends(get_db)):
 
     try:
         payload = decode_token(token)
-        jti = payload.get("jti")
 
-        # Check Redis blacklist first (fast path — access token revocation)
-        if jti and _blacklist.exists(f"blacklist:jti:{jti}"):
-            return {"valid": False}
-
-        # Check DB revoked tokens (refresh token revocation)
-        revoked = db.query(RevokedToken).filter(
-            RevokedToken.token_jti == jti
-        ).first()
-        if revoked:
-            return {"valid": False}
+        # PR0.1: blacklist/revoked_tokens/status checks now live in
+        # assert_token_usable (app/core/token_revocation.py), shared with
+        # get_current_user, instead of being duplicated here. HTTPException
+        # is caught by this function's own broad `except Exception` below
+        # and translated into this endpoint's existing {"valid": False}
+        # contract -- unlike get_current_user, this route never raises.
+        assert_token_usable(payload, db)
 
         user = db.query(User).filter(User.id == payload["sub"]).first()
-        if not user or user.status != "active":
-            return {"valid": False}
 
         return {
             "valid": True,

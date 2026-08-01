@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import OrganizationMembership, OrganizationSSOConfig
 from app.db.session import get_db
-from app.rbac import require_org_permission, require_permission
+from app.rbac import require_org_permission_or_platform_admin, require_permission
 from app.schemas.org_sso import (
     OrgSSOConfigCreate,
     OrgSSOConfigOut,
@@ -48,7 +48,7 @@ async def create_sso_config(
     org_id: int,
     body: OrgSSOConfigCreate,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_SSO)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_SSO)),
 ):
     try:
         config = await org_sso_service.configure_sso(
@@ -72,7 +72,7 @@ async def create_sso_config(
 def get_sso_config(
     org_id: int,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_SSO)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_SSO)),
 ):
     return _to_out(_get_or_404(db, org_id))
 
@@ -82,7 +82,7 @@ async def update_sso_config(
     org_id: int,
     body: OrgSSOConfigUpdate,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_SSO)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_SSO)),
 ):
     config = _get_or_404(db, org_id)
     try:
@@ -114,7 +114,7 @@ async def update_sso_config(
 def delete_sso_config(
     org_id: int,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_SSO)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_SSO)),
 ):
     config = _get_or_404(db, org_id)
     org_sso_service.delete_sso_config(db, config)

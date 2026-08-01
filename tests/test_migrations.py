@@ -56,10 +56,12 @@ def sqlite_db_url(tmp_path):
 
 def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     """From an empty database, `alembic upgrade head` must run every
-    revision (0001-0006) for real and produce every expected table, plus
+    revision (0001-0009) for real and produce every expected table, plus
     license_keys' 3 Phase-1 columns, oauth_accounts' organization_sso_config_id
-    column, and organization_sso_configs' operational (0005) and
-    break-glass override (0006) columns."""
+    column, organization_sso_configs' operational (0005) and break-glass
+    override (0006) columns, refresh_tokens' rotation (0007) columns, and
+    organizations' status-tracking (0008) columns, and users' directory
+    fields (0009)."""
     cfg = _alembic_config(sqlite_db_url)
     command.upgrade(cfg, "head")
 
@@ -82,6 +84,15 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     org_sso_columns = {c["name"] for c in inspector.get_columns("organization_sso_configs")}
     assert {"last_verified_at", "verification_error"} <= org_sso_columns
     assert {"sso_override_at", "sso_override_reason", "sso_override_by_user_id"} <= org_sso_columns
+
+    refresh_token_columns = {c["name"] for c in inspector.get_columns("refresh_tokens")}
+    assert {"family_id", "rotated_at"} <= refresh_token_columns
+
+    organizations_columns = {c["name"] for c in inspector.get_columns("organizations")}
+    assert {"status_changed_at", "status_changed_reason", "status_changed_by_user_id"} <= organizations_columns
+
+    users_columns = {c["name"] for c in inspector.get_columns("users")}
+    assert {"created_at", "status_changed_at", "status_changed_reason", "status_changed_by_user_id"} <= users_columns
 
 
 def test_sqlite_downgrade_base_reverses_cleanly(sqlite_db_url):
@@ -163,7 +174,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
     created by the old create_all() path, before Alembic or PR2's ORM
     classes existed), with no alembic_version bookkeeping at all. Then
     0001_baseline is stamped (no DDL executed), and `alembic upgrade head`
-    applies 0002 through 0006 for real. This is the exact procedure
+    applies 0002 through 0009 for real. This is the exact procedure
     docs/DEPLOYMENT_CHECKLIST.md prescribes -- if this test passes,
     `alembic upgrade 0001_baseline` would NOT have (it would hit a
     duplicate-table error), which is the whole reason stamp is required.
@@ -194,7 +205,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0006_sso_enforcement_override"
+    assert recorded == "0009_user_directory_fields"
 
 
 # ---------------------------------------------------------------------------

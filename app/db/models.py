@@ -14,6 +14,16 @@ class RefreshToken(Base):
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime)
+    # PR0.2: rotation + reuse detection. Every token minted from the same
+    # login shares one family_id; rotating sets rotated_at on the
+    # just-used row and creates a new row in the same family. A second
+    # presentation of a token that already has rotated_at set is a replay
+    # of an already-exchanged token -- the reuse signal -- and revokes
+    # every row sharing that family_id (see auth_service.rotate_refresh_token).
+    # Both nullable: existing rows predate this column and are treated as
+    # a single-member family the first time they're used post-migration.
+    family_id = Column(String(36), nullable=True, index=True)
+    rotated_at = Column(DateTime, nullable=True)
 
 user_roles = Table(
     "user_roles",
@@ -37,6 +47,19 @@ class User(Base):
     email = Column(String(255), unique=True, index=True)
     hashed_password = Column(String(255))
     status = Column(String(50), default="active")
+
+    # Phase 3 PR3A: user-directory fields. created_at is nullable because
+    # existing rows predate this column (added via migration, not
+    # backfillable) -- new rows still get a real timestamp via the
+    # ORM-level default. status_changed_* mirrors Organization's own
+    # status-tracking columns (Phase 3 PR2) exactly, which itself mirrors
+    # OrganizationSSOConfig's break-glass override columns (Phase 2 PR5)
+    # -- the same "who/why/when for a privileged toggle" pattern, applied
+    # here to user suspension instead of org suspension or SSO override.
+    created_at = Column(DateTime, nullable=True, default=datetime.utcnow)
+    status_changed_at = Column(DateTime, nullable=True)
+    status_changed_reason = Column(String(500), nullable=True)
+    status_changed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     roles = relationship("Role", secondary=user_roles, back_populates="users")
 
@@ -188,6 +211,17 @@ class Organization(Base):
     status = Column(String(50), default="active")
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Phase 3 PR2: status-change tracking for the platform-admin suspend/
+    # reactivate action (routes_orgs.py's PATCH /orgs/{org_id}) -- mirrors
+    # OrganizationSSOConfig's sso_override_at/reason/by_user_id (Phase 2
+    # PR5) exactly, the same "who/why/when for a privileged toggle"
+    # pattern. An explicit extension point for Phase 3 PR4's audit
+    # pipeline, not a replacement for it: these three columns record the
+    # *current* status change only, not a full history.
+    status_changed_at = Column(DateTime, nullable=True)
+    status_changed_reason = Column(String(500), nullable=True)
+    status_changed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
 class Team(Base):

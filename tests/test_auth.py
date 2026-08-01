@@ -97,8 +97,11 @@ def test_refresh_valid_token(client, auth_tokens):
     assert resp.status_code == 200
     data = resp.json()
     assert "access_token" in data
-    # Implementation echoes back the same refresh token
-    assert data["refresh_token"] == auth_tokens["refresh_token"]
+    # PR0.2: rotation -- the old "echoes back the same refresh token"
+    # behavior is deliberately removed. A successful refresh must return a
+    # *different* refresh token; the old one becomes single-use (see
+    # tests/test_refresh_rotation.py for reuse-detection coverage).
+    assert data["refresh_token"] != auth_tokens["refresh_token"]
 
 
 def test_refresh_invalid_token(client):

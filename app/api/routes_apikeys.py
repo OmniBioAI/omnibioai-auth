@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import ApiKey, OrganizationMembership
 from app.db.session import get_db
-from app.rbac import require_org_permission
+from app.rbac import require_org_permission_or_platform_admin
 from app.schemas.apikeys import ApiKeyCreate, ApiKeyCreated, ApiKeyOut
 from app.services import apikey_service, org_service
 
@@ -30,7 +30,7 @@ def create_api_key(
     org_id: int,
     body: ApiKeyCreate,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_API_KEYS)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_API_KEYS)),
 ):
     caller_permissions = org_service.permissions_for_membership(membership)
     try:
@@ -52,7 +52,7 @@ def create_api_key(
 def list_api_keys(
     org_id: int,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_API_KEYS)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_API_KEYS)),
 ):
     return [_key_out(k) for k in apikey_service.list_api_keys(db, org_id)]
 
@@ -62,7 +62,7 @@ def revoke_api_key(
     org_id: int,
     key_id: int,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_API_KEYS)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_API_KEYS)),
 ):
     key = apikey_service.get_api_key(db, org_id, key_id)
     if not key:

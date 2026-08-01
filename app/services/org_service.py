@@ -82,9 +82,48 @@ def ensure_org_admin_permissions(db: Session) -> None:
     role_service.update_role_permissions(db, role, sorted(existing | set(ORG_ADMIN_PERMISSIONS)))
 
 
-def update_organization(db: Session, org: Organization, name: str | None) -> Organization:
+ALLOWED_ORG_STATUSES = {"active", "suspended"}
+
+
+def update_organization(
+    db: Session,
+    org: Organization,
+    name: str | None,
+    status: str | None = None,
+    status_reason: str | None = None,
+    actor_user_id: int | None = None,
+) -> Organization:
+    """`status`/`status_reason`/`actor_user_id` are Phase 3 PR2 additions
+    -- the caller (routes_orgs.py) is responsible for confirming the
+    actor actually holds `manage_all_orgs` before ever passing a non-None
+    `status` here; this function only validates the *value*, not who's
+    allowed to set it, matching this codebase's existing separation
+    (authorization in the route/dependency layer, validation in the
+    service layer).
+
+    Raises ValueError for an unrecognized status -- mapped to 400 by the
+    route, the same pattern org_sso_service.set_enforced's lockout guard
+    already uses for its own ValueError.
+
+    The status_changed_* columns are only touched when `status` actually
+    changes value (a no-op PATCH -- e.g. re-sending the current status,
+    or a name-only update -- must not churn the timestamp/actor/reason
+    for a change that didn't happen). PR4's audit pipeline should hook in
+    here once it exists -- this is the one call site a "status changed"
+    event would be emitted from; deliberately not building any audit
+    mechanism now (see ~/phase3_remediation_plan.md's PR4 scope).
+    """
     if name is not None:
         org.name = name
+
+    if status is not None and status != org.status:
+        if status not in ALLOWED_ORG_STATUSES:
+            raise ValueError(f"Unknown status: {status!r} (expected one of {sorted(ALLOWED_ORG_STATUSES)})")
+        org.status = status
+        org.status_changed_at = datetime.utcnow()
+        org.status_changed_reason = status_reason
+        org.status_changed_by_user_id = actor_user_id
+
     db.commit()
     db.refresh(org)
     return org

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import OAuthClient, OrganizationMembership
 from app.db.session import get_db
-from app.rbac import require_org_permission
+from app.rbac import require_org_permission_or_platform_admin
 from app.schemas.oauth_client import OAuthClientCreate, OAuthClientCreated, OAuthClientOut
 from app.services import oauth_client_service, org_service
 
@@ -30,7 +30,7 @@ def create_oauth_client(
     org_id: int,
     body: OAuthClientCreate,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_OAUTH_CLIENTS)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_OAUTH_CLIENTS)),
 ):
     caller_permissions = org_service.permissions_for_membership(membership)
     try:
@@ -52,7 +52,7 @@ def create_oauth_client(
 def list_oauth_clients(
     org_id: int,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_OAUTH_CLIENTS)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_OAUTH_CLIENTS)),
 ):
     return [_client_out(c) for c in oauth_client_service.list_oauth_clients(db, org_id)]
 
@@ -62,7 +62,7 @@ def revoke_oauth_client(
     org_id: int,
     client_id: int,
     db: Session = Depends(get_db),
-    membership: OrganizationMembership = Depends(require_org_permission(MANAGE_OAUTH_CLIENTS)),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_OAUTH_CLIENTS)),
 ):
     client = oauth_client_service.get_oauth_client(db, org_id, client_id)
     if not client:

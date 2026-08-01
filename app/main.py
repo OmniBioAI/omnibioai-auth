@@ -15,10 +15,12 @@ from app.api.routes_oauth_clients import router as oauth_clients_router
 from app.api.routes_oauth_token import router as oauth_token_router
 from app.api.routes_org_sso import router as org_sso_router
 from app.api.routes_sso import router as sso_router
+from app.api.routes_platform_admin import router as platform_admin_router
+from app.api.routes_platform_users import router as platform_users_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
-from app.db.init_admin import create_admin, ensure_default_organization
+from app.db.init_admin import create_admin, ensure_default_organization, ensure_platform_admin_role
 from app.services.org_service import ensure_org_admin_permissions
 from app.core.config import settings
 
@@ -41,6 +43,7 @@ Base.metadata.create_all(bind=engine)
 # bootstrap admin
 db = SessionLocal()
 create_admin(db)
+ensure_platform_admin_role(db)
 ensure_default_organization(db)
 ensure_org_admin_permissions(db)
 db.close()
@@ -57,6 +60,8 @@ app.include_router(oauth_clients_router)
 app.include_router(oauth_token_router)
 app.include_router(org_sso_router)
 app.include_router(sso_router)
+app.include_router(platform_admin_router)
+app.include_router(platform_users_router)
 
 
 @app.get("/metrics")

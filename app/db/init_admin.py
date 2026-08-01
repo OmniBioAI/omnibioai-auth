@@ -105,6 +105,41 @@ def create_admin(db):
     db.commit()
 
 
+def ensure_platform_admin_role(db):
+    """Phase 3 PR0.4: `manage_all_orgs` is a distinct, narrowly-scoped
+    global permission -- not folded into the existing "admin" role's
+    manage_roles/manage_licenses/manage_config/override_sso_enforcement
+    set. It lives on its own new "platform_admin" role so an operator can
+    grant cross-tenant organization access independently of every other
+    admin capability, and so app/rbac.py's
+    require_org_permission_or_platform_admin checks this permission
+    string, never the literal role name "platform_admin" -- the role is
+    simply "whatever holds this permission today," not something
+    authorization code hardcodes (same reasoning Phase 2 PR5 applied to
+    override_sso_enforcement).
+
+    Idempotent and purely additive, mirroring create_admin's own pattern
+    above: never modifies the existing "admin" or "org_admin" roles, and
+    does not assign this role to any user -- not even the bootstrap
+    admin@omnibioai account. Cross-tenant access is deliberately opt-in
+    per operator, not a side effect of already holding "admin".
+    """
+    manage_all_orgs_perm = db.query(Permission).filter(Permission.name == "manage_all_orgs").first()
+    if not manage_all_orgs_perm:
+        manage_all_orgs_perm = Permission(name="manage_all_orgs")
+        db.add(manage_all_orgs_perm)
+        db.flush()
+
+    platform_admin_role = db.query(Role).filter(Role.name == "platform_admin").first()
+    if not platform_admin_role:
+        platform_admin_role = Role(name="platform_admin", permissions=[manage_all_orgs_perm])
+        db.add(platform_admin_role)
+    elif manage_all_orgs_perm not in platform_admin_role.permissions:
+        platform_admin_role.permissions.append(manage_all_orgs_perm)
+
+    db.commit()
+
+
 def ensure_default_organization(db):
     """Idempotent, mirrors the `if not admin:` guard above. Creates an
     inert org shell only -- no existing user (not even admin@omnibioai) is
