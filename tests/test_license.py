@@ -184,6 +184,117 @@ def test_validate_platform_mismatch(client, admin_headers):
     assert resp.json()["reason"] == "platform_mismatch"
 
 
+# ── Validate: Electron key-only path (Phase 1 PR4) ─────────────────────────────
+
+
+def test_validate_without_email_uses_license_email(client, admin_headers):
+    """The Electron client (LicenseGate.jsx) never collects an email --
+    omitting it entirely must still succeed, using the license's own
+    stored email for the resulting user, not reject as a mismatch."""
+    email = _unique_email()
+    gen = client.post(
+        "/license/generate",
+        json={"email": email, "plan": "pro", "platform": "desktop"},
+        headers=admin_headers,
+    )
+    key = gen.json()["key"]
+
+    resp = client.post(
+        "/license/validate", json={"key": key, "platform": "desktop"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["user_info"]["email"] == email
+
+
+def test_validate_binds_machine_id_on_first_use(client, admin_headers):
+    email = _unique_email()
+    gen = client.post(
+        "/license/generate",
+        json={"email": email, "platform": "desktop", "max_uses": 5},
+        headers=admin_headers,
+    )
+    key = gen.json()["key"]
+
+    first = client.post(
+        "/license/validate",
+        json={"key": key, "platform": "desktop", "machine_id": "machine-a"},
+    )
+    assert first.json()["valid"] is True
+
+    # A second call from a *different* machine still succeeds -- binding is
+    # informational (first-use pinning), not an enforced device limit.
+    second = client.post(
+        "/license/validate",
+        json={"key": key, "platform": "desktop", "machine_id": "machine-b"},
+    )
+    assert second.json()["valid"] is True
+
+
+# ── Pull-token (Phase 1 PR4) ─────────────────────────────────────────────────
+
+
+def test_pull_token_returns_ghcr_credential(client, admin_headers, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "GHCR_PULL_TOKEN", "test-ghcr-token")
+
+    email = _unique_email()
+    gen = client.post(
+        "/license/generate",
+        json={"email": email, "platform": "desktop"},
+        headers=admin_headers,
+    )
+    key = gen.json()["key"]
+
+    resp = client.post(
+        "/license/pull-token", json={"key": key, "machine_id": "machine-a"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ghcr_token"] == "test-ghcr-token"
+
+
+def test_pull_token_does_not_consume_a_use(client, admin_headers):
+    email = _unique_email()
+    gen = client.post(
+        "/license/generate",
+        json={"email": email, "platform": "desktop", "max_uses": 1},
+        headers=admin_headers,
+    )
+    key = gen.json()["key"]
+
+    for _ in range(3):
+        resp = client.post("/license/pull-token", json={"key": key})
+        assert resp.status_code == 200
+
+    # max_uses=1 is still untouched -- pull-token is a read-only validity
+    # check, not a consumption action (that's /validate's job).
+    validate = client.post(
+        "/license/validate", json={"key": key, "platform": "desktop"}
+    )
+    assert validate.json()["valid"] is True
+
+
+def test_pull_token_unknown_key_returns_404(client):
+    resp = client.post(
+        "/license/pull-token", json={"key": "OMNI-0000-0000-0000-0000"}
+    )
+    assert resp.status_code == 404
+
+
+def test_pull_token_revoked_key_returns_403(client, admin_headers):
+    email = _unique_email()
+    gen = client.post(
+        "/license/generate", json={"email": email, "platform": "desktop"}, headers=admin_headers
+    )
+    key = gen.json()["key"]
+    client.post("/license/revoke", json={"key": key}, headers=admin_headers)
+
+    resp = client.post("/license/pull-token", json={"key": key})
+    assert resp.status_code == 403
+
+
 # ── Status ────────────────────────────────────────────────────────────────────
 
 def test_status_after_validate(client, admin_headers):

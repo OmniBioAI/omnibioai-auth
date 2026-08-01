@@ -5,8 +5,18 @@ from pydantic import BaseModel
 
 class LicenseValidateRequest(BaseModel):
     key: str
-    email: str
+    # Optional as of Phase 1 PR4: the Electron client (LicenseGate.jsx) only
+    # ever collects a license key, never an email -- the desktop activation
+    # flow the now-decommissioned license_server.py served. When omitted,
+    # the license's own stored email is used for user lookup/creation and
+    # the email-match check is skipped entirely; the web redemption flow
+    # (email present) is unchanged.
+    email: str | None = None
     platform: str = "web"  # web | desktop | both
+    # Bound to the license on first use, same as license_server.py did --
+    # informational device pinning, not an enforced device-count limit
+    # (see LicenseKey.max_devices, still unused/reserved).
+    machine_id: str | None = None
 
 
 class LicenseValidateResponse(BaseModel):
@@ -65,3 +75,12 @@ class LicenseRevokeRequest(BaseModel):
 
 class LicenseRevokeResponse(BaseModel):
     success: bool
+
+
+class LicensePullTokenRequest(BaseModel):
+    key: str
+    machine_id: str | None = None
+
+
+class LicensePullTokenResponse(BaseModel):
+    ghcr_token: str

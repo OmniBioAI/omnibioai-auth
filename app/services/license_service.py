@@ -66,10 +66,14 @@ def get_or_create_user_for_email(db, email: str) -> User:
 
 
 def validate_and_consume(
-    db, key: str, email: str, platform: str
+    db, key: str, email: str | None, platform: str
 ) -> tuple[LicenseKey | None, str | None]:
     """Returns (license, None) on success or (None, reason) on failure.
     Does not commit the caller's User creation -- callers own the transaction.
+
+    email=None skips the email-match check entirely -- the Electron
+    key-only activation path (Phase 1 PR4). The web redemption flow always
+    passes its collected email and keeps the exact-match check.
     """
     license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
     if not license_key:
@@ -87,10 +91,22 @@ def validate_and_consume(
     if license_key.platform != "both" and license_key.platform != platform:
         return None, "platform_mismatch"
 
-    if license_key.email != email:
+    if email is not None and license_key.email != email:
         return None, "email_mismatch"
 
     return license_key, None
+
+
+def bind_machine_id(db, license_key: LicenseKey, machine_id: str) -> None:
+    """Pins machine_id to the license on first use only -- parity with
+    license_server.py's behavior, not an enforced device-count limit
+    (LicenseKey.max_devices stays unused/reserved). Never overwrites an
+    already-bound machine_id.
+    """
+    if license_key.machine_id is None:
+        license_key.machine_id = machine_id
+        db.add(license_key)
+        db.commit()
 
 
 def mark_used(db, license_key: LicenseKey, user: User) -> None:

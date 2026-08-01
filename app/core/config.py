@@ -46,6 +46,11 @@ class Settings:
     # (carries the token, or a link-confirmation prompt, as query params).
     FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://webstudio.omnibioai.org")
 
+    # GHCR credential returned by /license/pull-token to a licensed Electron
+    # client right before it `docker pull`s a private image -- same secret
+    # the now-decommissioned license_server.py exposed (Phase 1 PR4 cutover).
+    GHCR_PULL_TOKEN = os.getenv("GHCR_PULL_TOKEN", "")
+
     @property
     def DATABASE_URL(self):
         return (

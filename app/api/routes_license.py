@@ -3,11 +3,14 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.rbac import get_current_user, require_permission
 from app.schemas.license import (
     LicenseGenerateRequest,
     LicenseGenerateResponse,
+    LicensePullTokenRequest,
+    LicensePullTokenResponse,
     LicenseRevokeRequest,
     LicenseRevokeResponse,
     LicenseStatusResponse,
@@ -31,8 +34,10 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
     if not license_key:
         return LicenseValidateResponse(valid=False, reason=reason)
 
-    user = license_service.get_or_create_user_for_email(db, req.email)
+    user = license_service.get_or_create_user_for_email(db, req.email or license_key.email)
     license_service.mark_used(db, license_key, user)
+    if req.machine_id:
+        license_service.bind_machine_id(db, license_key, req.machine_id)
 
     access, refresh = generate_tokens(db, user, auth_method="license")
 
@@ -58,6 +63,26 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
         days_remaining=days_remaining,
         org_id=membership.organization_id if membership else None,
     )
+
+
+# ---------------- PULL-TOKEN ----------------
+@router.post("/pull-token", response_model=LicensePullTokenResponse)
+def pull_token(req: LicensePullTokenRequest, db: Session = Depends(get_db)):
+    """Separate from /validate so the GHCR credential is only ever handed to
+    a client that is specifically about to pull private images (Docker
+    startup), not returned on every routine license check -- same split
+    license_server.py used, now folded into this service (Phase 1 PR4).
+    Key-only lookup (no email), same as Electron's /validate calls; does
+    not consume a use or issue tokens, purely a validity + credential
+    check.
+    """
+    license_key, reason = license_service.validate_and_consume(db, req.key, None, "desktop")
+    if not license_key:
+        status_code = 404 if reason == "invalid_key" else 403
+        raise HTTPException(status_code, reason)
+    if req.machine_id:
+        license_service.bind_machine_id(db, license_key, req.machine_id)
+    return LicensePullTokenResponse(ghcr_token=settings.GHCR_PULL_TOKEN)
 
 
 # ---------------- GENERATE (admin) ----------------
