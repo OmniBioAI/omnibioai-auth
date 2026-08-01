@@ -10,7 +10,7 @@ from app.core.oauth_providers import PROVIDERS, is_configured
 from app.core.security import verify_password
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody, OAuthLinkConfirmRequest
-from app.services import oauth_service, org_service
+from app.services import oauth_service, org_service, sso_discovery_service
 from app.services.auth_service import generate_tokens
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
@@ -47,6 +47,24 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
     except oauth_service.OAuthError as e:
         raise HTTPException(400, str(e))
 
+    # Phase 2 PR5: checked post-userinfo-fetch (we need the email this
+    # provider vouches for), pre-token-issuance -- before find_linked_user,
+    # so an enforcing org's member can't bypass enforcement by using
+    # Google/GitHub/Microsoft instead of password login, even if they
+    # already have a linked identity via one of those providers from
+    # before enforcement was turned on.
+    enforced_config = sso_discovery_service.find_enforced_org_for_email(db, email)
+    if enforced_config:
+        org = org_service.get_organization(db, enforced_config.organization_id)
+        raise HTTPException(
+            403,
+            detail={
+                "reason": "sso_required",
+                "org_slug": org.slug,
+                "sso_login_url": f"/auth/sso/{org.slug}/login",
+            },
+        )
+
     linked_user = oauth_service.find_linked_user(db, provider, provider_user_id)
     if linked_user:
         access, refresh = generate_tokens(db, linked_user, auth_method="oauth")
@@ -79,7 +97,17 @@ async def oauth_callback_redirect(provider: str, code: str, state: str, db: Sess
         code_verifier = _verify_state(provider, state)
         result = await _complete_oauth_flow(db, provider, code, code_verifier=code_verifier)
     except HTTPException as e:
-        result = {"status": "error", "error": e.detail}
+        # Phase 2 PR5's enforcement check raises with a dict detail
+        # (reason/org_slug/sso_login_url) so the redirect can carry all
+        # three as flat, urlencode-safe query params instead of an
+        # unreadable encoded dict repr. Every pre-existing HTTPException
+        # in this route (unknown provider, invalid state, OAuthError, ...)
+        # still raises a plain string detail, so this branch is new,
+        # additive behavior for them: unchanged, still `error=<message>`.
+        if isinstance(e.detail, dict):
+            result = {"status": "error", **e.detail}
+        else:
+            result = {"status": "error", "error": e.detail}
     return RedirectResponse(f"{settings.FRONTEND_BASE_URL}/oauth-complete?{urlencode(result)}")
 
 

@@ -3,13 +3,23 @@ from sqlalchemy.orm import Session
 
 from app.db.models import OrganizationMembership, OrganizationSSOConfig
 from app.db.session import get_db
-from app.rbac import require_org_permission
-from app.schemas.org_sso import OrgSSOConfigCreate, OrgSSOConfigOut, OrgSSOConfigUpdate
+from app.rbac import require_org_permission, require_permission
+from app.schemas.org_sso import (
+    OrgSSOConfigCreate,
+    OrgSSOConfigOut,
+    OrgSSOConfigUpdate,
+    SSOOverrideRequest,
+)
 from app.services import org_sso_service
 
 router = APIRouter(prefix="/orgs/{org_id}/sso", tags=["org-sso"])
 
 MANAGE_SSO = "manage_sso"
+# Phase 2 PR5. Deliberately require_permission (global, JWT-claim-based),
+# not require_org_permission -- this is a platform-operator break-glass
+# tool, not an org-admin capability, so it must work even if the org's
+# own admin is the one locked out.
+OVERRIDE_SSO_ENFORCEMENT = "override_sso_enforcement"
 
 
 def _to_out(config: OrganizationSSOConfig) -> OrgSSOConfigOut:
@@ -21,6 +31,8 @@ def _to_out(config: OrganizationSSOConfig) -> OrgSSOConfigOut:
         status=config.status,
         created_at=config.created_at,
         updated_at=config.updated_at,
+        enforced=bool(config.enforced),
+        sso_override_active=config.sso_override_at is not None,
     )
 
 
@@ -81,7 +93,17 @@ async def update_sso_config(
             client_secret=body.client_secret,
             allowed_domains=body.allowed_domains,
         )
+        # Applied after the issuer/client fields, on the freshest config
+        # row, so it observes any status="active" reset an issuer change
+        # above just performed -- not that a lockout-guard-passing org
+        # would ever have a stale issuer, but ordering shouldn't matter
+        # by accident.
+        if body.enforced is not None and body.enforced != config.enforced:
+            config = org_sso_service.set_enforced(db, config, body.enforced, membership.user_id)
     except org_sso_service.SSODiscoveryError as e:
+        raise HTTPException(400, str(e))
+    except ValueError as e:
+        # set_enforced's lockout guard.
         raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
@@ -96,3 +118,29 @@ def delete_sso_config(
 ):
     config = _get_or_404(db, org_id)
     org_sso_service.delete_sso_config(db, config)
+
+
+# ---------------- BREAK-GLASS OVERRIDE (global-admin only) ----------------
+
+
+@router.post("/override", response_model=OrgSSOConfigOut)
+def override_sso_enforcement(
+    org_id: int,
+    body: SSOOverrideRequest,
+    db: Session = Depends(get_db),
+    user=Depends(require_permission(OVERRIDE_SSO_ENFORCEMENT)),
+):
+    config = _get_or_404(db, org_id)
+    config = org_sso_service.set_sso_override(db, config, body.reason, int(user["sub"]))
+    return _to_out(config)
+
+
+@router.delete("/override", response_model=OrgSSOConfigOut)
+def clear_sso_override(
+    org_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(require_permission(OVERRIDE_SSO_ENFORCEMENT)),
+):
+    config = _get_or_404(db, org_id)
+    config = org_sso_service.clear_sso_override(db, config)
+    return _to_out(config)

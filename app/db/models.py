@@ -317,3 +317,15 @@ class OrganizationSSOConfig(Base):
     # need its own migration later.
     last_verified_at = Column(DateTime, nullable=True)
     verification_error = Column(Text, nullable=True)
+
+    # Phase 2 PR5: break-glass bypass for `enforced` -- kept on this table
+    # (not on Organization, despite the original design doc sketching it
+    # there) so every piece of SSO enforcement state lives in one place,
+    # next to `enforced` itself. Non-null sso_override_at means
+    # enforcement is currently suspended for this org regardless of the
+    # `enforced` value, without having to touch (and therefore lose) the
+    # org's own stated enforced=true intent -- clearing the override
+    # resumes enforcement exactly as it was configured.
+    sso_override_at = Column(DateTime, nullable=True)
+    sso_override_reason = Column(String(500), nullable=True)
+    sso_override_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)

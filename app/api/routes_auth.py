@@ -25,6 +25,7 @@ from app.services.auth_service import (
     validate_refresh_token,
 )
 from app.services.role_service import assign_default_role
+from app.services import org_service, sso_discovery_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -88,6 +89,24 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # ---------------- LOGIN ----------------
 @router.post("/login")
 def login(req: LoginRequest, db: Session = Depends(get_db)):
+    # Phase 2 PR5: checked before any credential verification at all --
+    # authenticate_user (the only caller of verify_password) is never
+    # reached for an org that enforces SSO, not just short-circuited
+    # after a failed check. domain-based matching (same as GET
+    # /auth/sso/discover) is the only signal available here: there is no
+    # authenticated identity yet to look up a real membership against.
+    enforced_config = sso_discovery_service.find_enforced_org_for_email(db, req.email)
+    if enforced_config:
+        org = org_service.get_organization(db, enforced_config.organization_id)
+        raise HTTPException(
+            403,
+            detail={
+                "reason": "sso_required",
+                "org_slug": org.slug,
+                "sso_login_url": f"/auth/sso/{org.slug}/login",
+            },
+        )
+
     user = authenticate_user(db, req.email, req.password)
     if not user:
         JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="failure").inc()

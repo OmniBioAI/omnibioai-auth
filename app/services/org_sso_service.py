@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core import crypto
 from app.core.config import settings
-from app.db.models import OrganizationSSOConfig
+from app.db.models import OAuthAccount, OrganizationSSOConfig
 
 _DISCOVERY_TIMEOUT_SECONDS = 5.0
 _REQUIRED_DISCOVERY_FIELDS = ("authorization_endpoint", "token_endpoint", "jwks_uri")
@@ -193,3 +193,68 @@ async def update_sso_config(
 def delete_sso_config(db: Session, config: OrganizationSSOConfig) -> None:
     db.delete(config)
     db.commit()
+
+
+def has_completed_sso_login(db: Session, config_id: int) -> bool:
+    """True once at least one real user has actually authenticated through
+    this config -- an OAuthAccount row with this organization_sso_config_id
+    only ever gets created by a *successful* login/link completion
+    (create_user_with_oauth / link_oauth_to_existing_user, Phase 2 PR4),
+    never by configuring or discovering the IdP alone. This is the lockout
+    guard's signal: an org can't enforce SSO until it's been proven to
+    actually work for at least one of its members.
+    """
+    return (
+        db.query(OAuthAccount)
+        .filter(OAuthAccount.organization_sso_config_id == config_id)
+        .first()
+        is not None
+    )
+
+
+def set_enforced(
+    db: Session, config: OrganizationSSOConfig, enforced: bool, actor_user_id: int
+) -> OrganizationSSOConfig:
+    """Raises ValueError (-> 400 at the route layer) if turning enforcement
+    *on* without the lockout guard being satisfied. Turning it back off is
+    always allowed unconditionally -- there's no lockout risk in relaxing
+    a restriction, only in adding one.
+    """
+    if enforced and not config.enforced and not has_completed_sso_login(db, config.id):
+        raise ValueError(
+            "cannot enforce SSO for this organization until at least one member has "
+            "completed a successful SSO login"
+        )
+
+    config.enforced = enforced
+    config.updated_at = datetime.utcnow()
+    config.updated_by_user_id = actor_user_id
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def set_sso_override(
+    db: Session, config: OrganizationSSOConfig, reason: str, actor_user_id: int
+) -> OrganizationSSOConfig:
+    """Global-admin break-glass bypass: suspends the *effect* of
+    `enforced` for this org without changing `enforced` itself, so the
+    org's own configuration is preserved and resumes automatically once
+    the override is cleared. Deliberately overwrites any prior override
+    (re-triggering it just updates who/why/when, not an error) --
+    idempotent from the caller's perspective."""
+    config.sso_override_at = datetime.utcnow()
+    config.sso_override_reason = reason
+    config.sso_override_by_user_id = actor_user_id
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def clear_sso_override(db: Session, config: OrganizationSSOConfig) -> OrganizationSSOConfig:
+    config.sso_override_at = None
+    config.sso_override_reason = None
+    config.sso_override_by_user_id = None
+    db.commit()
+    db.refresh(config)
+    return config
