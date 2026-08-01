@@ -27,7 +27,8 @@ MULTI_TENANT_TABLES = {
     "organizations", "teams", "team_memberships", "organization_memberships",
     "membership_roles", "api_keys", "organization_config",
 }
-ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES
+OAUTH_CLIENTS_TABLES = {"oauth_clients"}
+ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -116,10 +117,10 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
     created by the old create_all() path, before Alembic or PR2's ORM
     classes existed), with no alembic_version bookkeeping at all. Then
     0001_baseline is stamped (no DDL executed), and `alembic upgrade head`
-    applies only 0002. This is the exact procedure docs/DEPLOYMENT_CHECKLIST.md
-    prescribes -- if this test passes, `alembic upgrade 0001_baseline`
-    would NOT have (it would hit a duplicate-table error), which is the
-    whole reason stamp is required.
+    applies 0002 and 0003 for real. This is the exact procedure
+    docs/DEPLOYMENT_CHECKLIST.md prescribes -- if this test passes,
+    `alembic upgrade 0001_baseline` would NOT have (it would hit a
+    duplicate-table error), which is the whole reason stamp is required.
 
     Deliberately builds the starting state from 0001_baseline.py's own
     upgrade() directly, not from today's live ORM classes -- the ORM's
@@ -147,7 +148,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0002_multi_tenant_schema"
+    assert recorded == "0003_oauth_clients"
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import create_engine, inspect, text
 
 # Cumulative table set introduced by each revision. "head" here means
-# 0002_multi_tenant_schema, the newest revision as of this script's writing --
+# 0003_oauth_clients, the newest revision as of this script's writing --
 # update this manifest when new revisions are added.
 BASELINE_TABLES = {
     "users", "roles", "permissions", "user_roles", "role_permissions",
@@ -41,11 +41,13 @@ MULTI_TENANT_TABLES = {
     "organizations", "teams", "team_memberships", "organization_memberships",
     "membership_roles", "api_keys", "organization_config",
 }
+OAUTH_CLIENTS_TABLES = {"oauth_clients"}
 
 REVISION_TABLES = {
     "0001_baseline": BASELINE_TABLES,
     "0002_multi_tenant_schema": BASELINE_TABLES | MULTI_TENANT_TABLES,
-    "head": BASELINE_TABLES | MULTI_TENANT_TABLES,
+    "0003_oauth_clients": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES,
+    "head": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES,
 }
 
 # Columns added to license_keys by 0002 -- checked separately since the

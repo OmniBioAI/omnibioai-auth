@@ -12,3 +12,4 @@ pydantic
 redis[asyncio]
 prometheus_client
 httpx
+python-multipart  # required by FastAPI's Form() -- routes_oauth_token.py's RFC 6749 SS4.4 grant (application/x-www-form-urlencoded, not JSON)
