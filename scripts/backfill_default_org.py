@@ -27,6 +27,16 @@ Usage:
 
 import argparse
 import sys
+from pathlib import Path
+
+# See scripts/verify_schema.py for why this is needed: run as a plain
+# script (not via pytest), only this file's own directory lands on
+# sys.path -- on a machine with sibling omnibioai-* repos pip-installed
+# editable (several also use the generic top-level package name "app"),
+# `import app...` can silently resolve to a different repo entirely
+# without this. Explicit insert at position 0 guarantees this repo's own
+# app/ wins.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.models import Organization, OrganizationMembership, User
 from app.db.session import SessionLocal

@@ -16,6 +16,16 @@ Exit code 0 on success, 1 on any mismatch -- safe to use as a CI/deploy gate.
 
 import argparse
 import sys
+from pathlib import Path
+
+# Running this as a plain script (not via pytest, which sets pythonpath
+# correctly) puts only this file's own directory on sys.path, not the repo
+# root -- `import app...` then falls through to whatever else is on
+# sys.path, which on a dev machine with several sibling omnibioai-* repos
+# pip-installed editable (each also using the generic top-level package
+# name "app") can silently resolve to a DIFFERENT repo's app.core.config.
+# Explicit insert at position 0 guarantees this repo's own app/ wins.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import create_engine, inspect, text
 
