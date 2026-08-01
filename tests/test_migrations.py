@@ -4,6 +4,7 @@ SQLite `test.db`, or any real MySQL instance). See docs/MIGRATIONS.md for
 the stamp-vs-upgrade distinction these tests are asserting.
 """
 
+import importlib.util
 import os
 import uuid
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.operations import Operations
+from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, text
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -83,23 +86,56 @@ def test_sqlite_downgrade_base_reverses_cleanly(sqlite_db_url):
     assert not remaining, f"Tables survived downgrade to base: {remaining}"
 
 
+def _load_revision_module(filename: str):
+    """Loads an Alembic revision file directly by path (its filename starts
+    with a digit, so it can't be a normal dotted import) so its upgrade()
+    can be invoked in isolation, without going through `alembic upgrade`
+    (which would also stamp alembic_version -- see below for why that
+    matters here)."""
+    path = REPO_ROOT / "alembic" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_upgrade_only(engine, module) -> None:
+    """Runs a single revision's upgrade() against a connection without
+    touching alembic_version at all -- used to build a "pre-Alembic"
+    starting state for a test, as opposed to `command.upgrade`, which
+    always records the revision it applied."""
+    with engine.connect() as connection:
+        ctx = MigrationContext.configure(connection)
+        with ctx.begin_transaction():
+            with Operations.context(ctx):
+                module.upgrade()
+
+
 def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_url):
     """Simulates every existing environment: tables already exist (as if
-    created by the old create_all() path), 0001_baseline is stamped (no DDL
-    executed), then `alembic upgrade head` applies only 0002. This is the
-    exact procedure docs/DEPLOYMENT_CHECKLIST.md prescribes -- if this test
-    passes, `alembic upgrade 0001_baseline` would NOT have (it would hit a
-    duplicate-table error), which is the whole reason stamp is required.
-    """
-    from app.db.base import Base
-    import app.db.models  # noqa: F401 -- registers baseline tables on Base.metadata
+    created by the old create_all() path, before Alembic or PR2's ORM
+    classes existed), with no alembic_version bookkeeping at all. Then
+    0001_baseline is stamped (no DDL executed), and `alembic upgrade head`
+    applies only 0002. This is the exact procedure docs/DEPLOYMENT_CHECKLIST.md
+    prescribes -- if this test passes, `alembic upgrade 0001_baseline`
+    would NOT have (it would hit a duplicate-table error), which is the
+    whole reason stamp is required.
 
+    Deliberately builds the starting state from 0001_baseline.py's own
+    upgrade() directly, not from today's live ORM classes -- the ORM's
+    LicenseKey class already carries PR2's organization_id/machine_id/
+    max_devices columns (correctly, since that's the current schema), so
+    using it here would simulate a database that's already partway through
+    0002, which is not what a real pre-existing environment looks like.
+    """
+    baseline_module = _load_revision_module("0001_baseline.py")
     engine = create_engine(sqlite_db_url)
-    Base.metadata.create_all(bind=engine)  # pre-existing tables, no Alembic involved yet
+    _run_upgrade_only(engine, baseline_module)
 
     inspector = inspect(engine)
     assert BASELINE_TABLES <= set(inspector.get_table_names())
     assert not (MULTI_TENANT_TABLES & set(inspector.get_table_names()))
+    assert "alembic_version" not in inspector.get_table_names()
 
     cfg = _alembic_config(sqlite_db_url)
     command.stamp(cfg, "0001_baseline")

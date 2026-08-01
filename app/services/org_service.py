@@ -1,0 +1,131 @@
+from datetime import datetime
+
+from sqlalchemy.orm import Session
+
+from app.db.models import Organization, OrganizationMembership, User
+from app.services import role_service
+
+# Reused across every organization -- Role/Permission remain a single
+# global catalog (see app/db/models.py's multi-tenant block); only the
+# *assignment* of these roles to a member is org-scoped, via
+# OrganizationMembership -> membership_roles. Created lazily on first use
+# (org creation / invite), not at app startup -- an environment that never
+# creates an org never gets these rows either.
+ORG_ADMIN_ROLE = "org_admin"
+ORG_ADMIN_PERMISSIONS = ["manage_org", "manage_teams", "manage_api_keys"]
+ORG_MEMBER_ROLE = "org_member"
+
+
+def create_organization(db: Session, name: str, slug: str, creator: User) -> Organization:
+    org = Organization(
+        slug=slug,
+        name=name,
+        created_by_user_id=creator.id,
+        created_at=datetime.utcnow(),
+    )
+    db.add(org)
+    db.flush()
+
+    admin_role = role_service.get_or_create_role(db, ORG_ADMIN_ROLE, ORG_ADMIN_PERMISSIONS)
+    membership = OrganizationMembership(
+        organization_id=org.id,
+        user_id=creator.id,
+        status="active",
+        joined_at=datetime.utcnow(),
+        roles=[admin_role],
+    )
+    db.add(membership)
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+def get_organization(db: Session, org_id: int) -> Organization | None:
+    return db.query(Organization).filter(Organization.id == org_id).first()
+
+
+def get_organization_by_slug(db: Session, slug: str) -> Organization | None:
+    return db.query(Organization).filter(Organization.slug == slug).first()
+
+
+def list_organizations_for_user(db: Session, user_id: int) -> list[Organization]:
+    return (
+        db.query(Organization)
+        .join(OrganizationMembership, OrganizationMembership.organization_id == Organization.id)
+        .filter(
+            OrganizationMembership.user_id == user_id,
+            OrganizationMembership.status == "active",
+        )
+        .all()
+    )
+
+
+def update_organization(db: Session, org: Organization, name: str | None) -> Organization:
+    if name is not None:
+        org.name = name
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+def list_members(db: Session, org_id: int) -> list[OrganizationMembership]:
+    return (
+        db.query(OrganizationMembership)
+        .filter(OrganizationMembership.organization_id == org_id)
+        .all()
+    )
+
+
+def get_membership(db: Session, org_id: int, user_id: int) -> OrganizationMembership | None:
+    return (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.organization_id == org_id,
+            OrganizationMembership.user_id == user_id,
+        )
+        .first()
+    )
+
+
+def invite_member(
+    db: Session, org: Organization, email: str, invited_by: User
+) -> OrganizationMembership | None:
+    """Returns None if no account exists for that email yet -- inviting an
+    unregistered address isn't supported in this change (caller translates
+    to a 404); the person has to register/log in at least once first."""
+    invitee = db.query(User).filter(User.email == email).first()
+    if not invitee:
+        return None
+
+    existing = get_membership(db, org.id, invitee.id)
+    if existing:
+        return existing
+
+    member_role = role_service.get_or_create_role(db, ORG_MEMBER_ROLE, [])
+    membership = OrganizationMembership(
+        organization_id=org.id,
+        user_id=invitee.id,
+        status="invited",
+        invited_by_user_id=invited_by.id,
+        joined_at=datetime.utcnow(),
+        roles=[member_role],
+    )
+    db.add(membership)
+    db.commit()
+    db.refresh(membership)
+    return membership
+
+
+def set_member_roles(db: Session, membership: OrganizationMembership, roles: list) -> OrganizationMembership:
+    """`roles` must already be resolved Role objects (see
+    role_service.resolve_roles) -- mirrors role_service.set_user_roles'
+    contract for the same reason: validation happens once, at the call site,
+    before this is invoked."""
+    membership.roles = roles
+    db.commit()
+    db.refresh(membership)
+    return membership
+
+
+def permissions_for_membership(membership: OrganizationMembership) -> set[str]:
+    return role_service.permissions_for_roles(membership.roles)
