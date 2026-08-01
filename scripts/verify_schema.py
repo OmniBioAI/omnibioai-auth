@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import create_engine, inspect, text
 
 # Cumulative table set introduced by each revision. "head" here means
-# 0003_oauth_clients, the newest revision as of this script's writing --
+# 0004_org_sso_schema, the newest revision as of this script's writing --
 # update this manifest when new revisions are added.
 BASELINE_TABLES = {
     "users", "roles", "permissions", "user_roles", "role_permissions",
@@ -42,17 +42,22 @@ MULTI_TENANT_TABLES = {
     "membership_roles", "api_keys", "organization_config",
 }
 OAUTH_CLIENTS_TABLES = {"oauth_clients"}
+ORG_SSO_TABLES = {"organization_sso_configs"}
 
 REVISION_TABLES = {
     "0001_baseline": BASELINE_TABLES,
     "0002_multi_tenant_schema": BASELINE_TABLES | MULTI_TENANT_TABLES,
     "0003_oauth_clients": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES,
-    "head": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES,
+    "0004_org_sso_schema": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
+    "head": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
 }
 
 # Columns added to license_keys by 0002 -- checked separately since the
 # table itself already exists as of 0001.
 LICENSE_KEYS_0002_COLUMNS = {"organization_id", "machine_id", "max_devices"}
+
+# Column added to oauth_accounts by 0004 -- same reasoning as above.
+OAUTH_ACCOUNTS_0004_COLUMNS = {"organization_sso_config_id"}
 
 
 def _database_url(cli_url: str | None) -> str:
@@ -121,6 +126,12 @@ def check_tables(engine, expect_revision: str) -> list[str]:
         missing_cols = LICENSE_KEYS_0002_COLUMNS - actual_columns
         if missing_cols:
             errors.append(f"license_keys missing expected columns: {sorted(missing_cols)}")
+
+    if expect_revision in ("0004_org_sso_schema", "head") and "oauth_accounts" in actual_tables:
+        actual_columns = {c["name"] for c in inspector.get_columns("oauth_accounts")}
+        missing_cols = OAUTH_ACCOUNTS_0004_COLUMNS - actual_columns
+        if missing_cols:
+            errors.append(f"oauth_accounts missing expected columns: {sorted(missing_cols)}")
 
     return errors
 

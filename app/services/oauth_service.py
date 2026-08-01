@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import secrets
 from urllib.parse import urlencode
 
 import httpx
@@ -12,34 +15,68 @@ class OAuthError(Exception):
     pass
 
 
+def _generate_code_verifier() -> str:
+    # RFC 7636 SS4.1: 43-128 chars from [A-Za-z0-9-._~]. token_urlsafe's
+    # alphabet (A-Za-z0-9-_) is already a subset of that, so no extra
+    # filtering is needed -- 64 random bytes base64url-encodes to ~86 chars,
+    # comfortably inside the allowed range.
+    return secrets.token_urlsafe(64)
+
+
+def _code_challenge_s256(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
 def build_authorize_url(provider: str) -> str:
+    """Phase 2 PR2: PKCE (RFC 7636), added to the existing 3-provider flow
+    as hardening, not a load-bearing security boundary -- this service
+    already holds client_secret and performs the code exchange itself as a
+    confidential client (Google/GitHub/Microsoft never see the browser
+    directly). code_verifier travels inside the state token (see
+    create_oauth_state_token); nothing new is stored server-side.
+    """
     cfg = PROVIDERS[provider]
-    state = create_oauth_state_token(provider)
+    code_verifier = _generate_code_verifier()
+    code_challenge = _code_challenge_s256(code_verifier)
+    state = create_oauth_state_token(provider, code_verifier=code_verifier)
     params = {
         "client_id": cfg["client_id"],
         "redirect_uri": redirect_uri_for(provider),
         "response_type": "code",
         "scope": cfg["scope"],
         "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     }
     return f"{cfg['authorize_url']}?{urlencode(params)}"
 
 
-async def exchange_code_for_userinfo(provider: str, code: str):
+async def exchange_code_for_userinfo(provider: str, code: str, code_verifier: str | None = None):
     """Exchange an authorization code for the provider's access token, then
-    fetch and normalize userinfo. Raises OAuthError on any failure."""
+    fetch and normalize userinfo. Raises OAuthError on any failure.
+
+    code_verifier is optional: absent only for a state token minted in the
+    narrow window just before this PR's deploy (pre-PKCE), in which case no
+    code_challenge was sent at authorize time either, so omitting it here
+    keeps that in-flight login working instead of failing it.
+    """
     cfg = PROVIDERS[provider]
+
+    token_request_data = {
+        "client_id": cfg["client_id"],
+        "client_secret": cfg["client_secret"],
+        "code": code,
+        "redirect_uri": redirect_uri_for(provider),
+        "grant_type": "authorization_code",
+    }
+    if code_verifier:
+        token_request_data["code_verifier"] = code_verifier
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         token_resp = await client.post(
             cfg["token_url"],
-            data={
-                "client_id": cfg["client_id"],
-                "client_secret": cfg["client_secret"],
-                "code": code,
-                "redirect_uri": redirect_uri_for(provider),
-                "grant_type": "authorization_code",
-            },
+            data=token_request_data,
             headers={"Accept": "application/json"},
         )
         if token_resp.status_code != 200:

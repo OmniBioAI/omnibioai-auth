@@ -23,20 +23,27 @@ def _require_provider(provider: str) -> None:
         raise HTTPException(503, f"{provider} SSO is not configured")
 
 
-def _verify_state(provider: str, state: str) -> None:
+def _verify_state(provider: str, state: str) -> str | None:
+    """Returns the PKCE code_verifier embedded in the state token (Phase 2
+    PR2), or None for a state token that predates PKCE -- see
+    create_oauth_state_token/exchange_code_for_userinfo for why that's
+    handled as "don't send one," not an error."""
     try:
         payload = decode_token(state)
     except Exception:
         raise HTTPException(400, "Invalid or expired OAuth state")
     if payload.get("type") != "oauth_state" or payload.get("provider") != provider:
         raise HTTPException(400, "Invalid OAuth state")
+    return payload.get("code_verifier")
 
 
-async def _complete_oauth_flow(db: Session, provider: str, code: str) -> dict:
+async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verifier: str | None = None) -> dict:
     """Shared exchange logic for both the GET (browser-redirect) and POST
     (SPA-mediated) callback variants below."""
     try:
-        provider_user_id, email = await oauth_service.exchange_code_for_userinfo(provider, code)
+        provider_user_id, email = await oauth_service.exchange_code_for_userinfo(
+            provider, code, code_verifier=code_verifier
+        )
     except oauth_service.OAuthError as e:
         raise HTTPException(400, str(e))
 
@@ -69,8 +76,8 @@ async def oauth_callback_redirect(provider: str, code: str, state: str, db: Sess
     # must land the user back in the app with a message, never a raw JSON error page.
     try:
         _require_provider(provider)
-        _verify_state(provider, state)
-        result = await _complete_oauth_flow(db, provider, code)
+        code_verifier = _verify_state(provider, state)
+        result = await _complete_oauth_flow(db, provider, code, code_verifier=code_verifier)
     except HTTPException as e:
         result = {"status": "error", "error": e.detail}
     return RedirectResponse(f"{settings.FRONTEND_BASE_URL}/oauth-complete?{urlencode(result)}")
@@ -82,8 +89,8 @@ async def oauth_callback_json(provider: str, body: OAuthCallbackBody, db: Sessio
     rather than this service directly, the frontend can forward the code
     here instead of relying on the GET redirect above."""
     _require_provider(provider)
-    _verify_state(provider, body.state)
-    return await _complete_oauth_flow(db, provider, body.code)
+    code_verifier = _verify_state(provider, body.state)
+    return await _complete_oauth_flow(db, provider, body.code, code_verifier=code_verifier)
 
 
 @router.post("/link/confirm")
