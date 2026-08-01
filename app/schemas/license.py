@@ -17,6 +17,18 @@ class LicenseValidateResponse(BaseModel):
     user_info: dict | None = None
     reason: str | None = None  # populated only when valid is False
 
+    # Phase 1 PR3 -- additive superset, ahead of the eventual Electron
+    # cutover (Phase 1 PR4) onto this endpoint. Field names deliberately
+    # match what omnibioai-studio/src/ui/components/LicenseGate.jsx already
+    # reads from the currently-separate license_server.py response
+    # (`license.tier`, `license.expiry`, `license.days_remaining`), so that
+    # cutover is a pure URL change on the client side, not a response-shape
+    # migration too.
+    tier: str | None = None
+    expiry: str | None = None
+    days_remaining: int | None = None
+    org_id: int | None = None
+
 
 class LicenseGenerateRequest(BaseModel):
     email: str

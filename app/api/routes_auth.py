@@ -93,7 +93,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="failure").inc()
         raise HTTPException(401, "Invalid credentials")
 
-    access, refresh = generate_tokens(db, user)
+    access, refresh = generate_tokens(db, user, auth_method="password")
     JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="success").inc()
     return {
         "access_token": access,
@@ -167,6 +167,14 @@ def validate_token(req: dict, db: Session = Depends(get_db)):
             "email": user.email,
             "roles": payload.get("roles", []),
             "permissions": payload.get("permissions", []),
+            # Phase 1 PR3 -- additive. A token minted before this change
+            # has no org_id/org_role/auth_method/token_version claims at
+            # all, so these fall back to None/[]/None/1 exactly as they
+            # should for a genuinely pre-org-context token, not an error.
+            "org_id": payload.get("org_id"),
+            "org_role": payload.get("org_role", []),
+            "auth_method": payload.get("auth_method"),
+            "schema_version": payload.get("token_version", 1),
         }
     except Exception:
         return {"valid": False}

@@ -29,9 +29,17 @@ config = context.config
 if not config.get_main_option("sqlalchemy.url"):
     config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
-# Interpret the config file for Python logging.
+# Interpret the config file for Python logging. disable_existing_loggers
+# defaults to True, which silently disables (permanently, for the rest of
+# the process -- not just during this call) every logger not explicitly
+# listed in alembic.ini's [loggers] section, including every application
+# logger the app itself creates (e.g. permission_parity.py's). Explicit
+# False here to avoid that footgun -- discovered when running the test
+# suite: tests/test_migrations.py invoking Alembic commands was silently
+# disabling tests/test_permission_parity.py's caplog-based assertions
+# whenever it ran first in the same session.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
