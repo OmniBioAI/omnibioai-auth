@@ -102,8 +102,16 @@ def test_org_scoped_route_inventory_matches_expected_count():
     principle be added *and* correctly protected, changing this count for
     a completely benign reason -- this just makes route-surface growth
     visible rather than silent.
+
+    21 -> 25 as of Phase 3 PR3B: GET /orgs/{org_id}/roles, GET/POST
+    /orgs/{org_id}/members/{user_id}/roles, and DELETE
+    /orgs/{org_id}/members/{user_id}/roles/{role_id} were added, all using
+    require_org_permission_or_platform_admin(MANAGE_ORG) -- the same
+    dependency update_member_roles (the pre-existing PUT at the same path)
+    already used, so this is the deliberate, reviewed reason for the
+    count's change, not a silent gap.
     """
-    assert len(list(_org_scoped_routes())) == 21
+    assert len(list(_org_scoped_routes())) == 25
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():

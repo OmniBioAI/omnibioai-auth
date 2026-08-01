@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import create_engine, inspect, text
 
 # Cumulative table set introduced by each revision. "head" here means
-# 0009_user_directory_fields, the newest revision as of this script's
+# 0010_role_description, the newest revision as of this script's
 # writing -- update this manifest when new revisions are added.
 BASELINE_TABLES = {
     "users", "roles", "permissions", "user_roles", "role_permissions",
@@ -54,6 +54,7 @@ REVISION_TABLES = {
     "0007_refresh_token_rotation": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
     "0008_org_status_tracking": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
     "0009_user_directory_fields": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
+    "0010_role_description": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
     "head": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
 }
 
@@ -78,6 +79,9 @@ ORGANIZATIONS_0008_COLUMNS = {"status_changed_at", "status_changed_reason", "sta
 
 # Columns added to users by 0009 -- same reasoning as above.
 USERS_0009_COLUMNS = {"created_at", "status_changed_at", "status_changed_reason", "status_changed_by_user_id"}
+
+# Column added to roles by 0010 -- same reasoning as above.
+ROLES_0010_COLUMNS = {"description"}
 
 
 def _database_url(cli_url: str | None) -> str:
@@ -182,6 +186,12 @@ def check_tables(engine, expect_revision: str) -> list[str]:
         missing_cols = USERS_0009_COLUMNS - actual_columns
         if missing_cols:
             errors.append(f"users missing expected columns: {sorted(missing_cols)}")
+
+    if expect_revision in ("0010_role_description", "head") and "roles" in actual_tables:
+        actual_columns = {c["name"] for c in inspector.get_columns("roles")}
+        missing_cols = ROLES_0010_COLUMNS - actual_columns
+        if missing_cols:
+            errors.append(f"roles missing expected columns: {sorted(missing_cols)}")
 
     return errors
 

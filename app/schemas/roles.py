@@ -4,10 +4,14 @@ from pydantic import BaseModel
 class RoleCreate(BaseModel):
     name: str
     permissions: list[str] = []
+    # Phase 3 PR3B: optional, additive -- surfaced read-only via the new
+    # platform-admin/org-scoped RoleSummary (schemas/role_admin.py).
+    description: str | None = None
 
 
 class RoleUpdate(BaseModel):
     permissions: list[str]
+    description: str | None = None
 
 
 class RoleOut(BaseModel):
@@ -20,6 +24,7 @@ class RoleOut(BaseModel):
 class RoleDetailOut(BaseModel):
     id: int
     name: str
+    description: str | None = None
     permissions: list[str]
 
 

@@ -224,6 +224,31 @@ def permissions_for_membership(membership: OrganizationMembership) -> set[str]:
     return role_service.permissions_for_roles(membership.roles)
 
 
+# ---------------------------------------------------------------------------
+# Phase 3 PR3B: single-role add/remove for one org membership, mirroring
+# role_service.add_user_role/remove_user_role exactly (same "only touch
+# the one role passed in" contract) but for the org-scoped membership_roles
+# assignment rather than a user's global roles. Kept alongside, not instead
+# of, set_member_roles above -- that full-replace PUT endpoint is unchanged.
+# ---------------------------------------------------------------------------
+
+
+def add_member_role(db: Session, membership: OrganizationMembership, role) -> OrganizationMembership:
+    if role not in membership.roles:
+        membership.roles.append(role)
+        db.commit()
+        db.refresh(membership)
+    return membership
+
+
+def remove_member_role(db: Session, membership: OrganizationMembership, role) -> OrganizationMembership:
+    if role in membership.roles:
+        membership.roles.remove(role)
+        db.commit()
+        db.refresh(membership)
+    return membership
+
+
 def resolve_primary_membership(db: Session, user_id: int) -> OrganizationMembership | None:
     """Picks the one org membership a fresh JWT's org_id/org_role claims
     should reflect (Phase 1 PR3). A user can belong to multiple orgs, but a

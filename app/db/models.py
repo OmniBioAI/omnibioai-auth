@@ -69,6 +69,10 @@ class Role(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(100), unique=True)
+    # Phase 3 PR3B: nullable -- existing rows (and any role created via the
+    # legacy create_role() call sites that don't pass one) simply have no
+    # description until an operator sets one via the role CRUD endpoints.
+    description = Column(String(500), nullable=True)
 
     users = relationship("User", secondary=user_roles, back_populates="roles")
     permissions = relationship("Permission", secondary=role_permissions)

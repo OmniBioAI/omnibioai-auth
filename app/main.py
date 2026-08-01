@@ -17,6 +17,7 @@ from app.api.routes_org_sso import router as org_sso_router
 from app.api.routes_sso import router as sso_router
 from app.api.routes_platform_admin import router as platform_admin_router
 from app.api.routes_platform_users import router as platform_users_router
+from app.api.routes_platform_roles import router as platform_roles_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
@@ -62,6 +63,7 @@ app.include_router(org_sso_router)
 app.include_router(sso_router)
 app.include_router(platform_admin_router)
 app.include_router(platform_users_router)
+app.include_router(platform_roles_router)
 
 
 @app.get("/metrics")

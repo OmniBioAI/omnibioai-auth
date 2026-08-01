@@ -44,19 +44,51 @@ def assign_default_role(db: Session, user: User) -> None:
         user.roles.append(role)
 
 
-def create_role(db: Session, name: str, permission_names: list[str]) -> Role:
-    role = Role(name=name, permissions=_get_or_create_permissions(db, permission_names))
+def create_role(db: Session, name: str, permission_names: list[str], description: str | None = None) -> Role:
+    role = Role(name=name, permissions=_get_or_create_permissions(db, permission_names), description=description)
     db.add(role)
     db.commit()
     db.refresh(role)
     return role
 
 
-def update_role_permissions(db: Session, role: Role, permission_names: list[str]) -> Role:
+def update_role_permissions(db: Session, role: Role, permission_names: list[str], description: str | None = None) -> Role:
+    """`description` follows the same "None means leave unchanged" contract
+    as OrganizationUpdate.name/status elsewhere in this codebase -- a
+    caller updating only permissions (every existing test/caller) must not
+    silently blank out a description someone already set."""
     role.permissions = _get_or_create_permissions(db, permission_names)
+    if description is not None:
+        role.description = description
     db.commit()
     db.refresh(role)
     return role
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 PR3B: single-role add/remove, reused by both the platform-admin
+# (/platform/users/{id}/roles) and org-scoped (/orgs/{id}/members/{id}/roles)
+# route surfaces. Deliberately separate from set_user_roles above (a
+# full-replace operation, kept for the legacy /users/{id}/roles PUT
+# endpoint) -- these two only ever touch the one role passed in, leaving
+# every other role a user already holds untouched.
+# ---------------------------------------------------------------------------
+
+
+def add_user_role(db: Session, user: User, role: Role) -> User:
+    if role not in user.roles:
+        user.roles.append(role)
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+def remove_user_role(db: Session, user: User, role: Role) -> User:
+    if role in user.roles:
+        user.roles.remove(role)
+        db.commit()
+        db.refresh(user)
+    return user
 
 
 def delete_role(db: Session, role: Role) -> None:
