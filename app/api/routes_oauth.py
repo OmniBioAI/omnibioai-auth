@@ -42,7 +42,7 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str) -> dict:
 
     linked_user = oauth_service.find_linked_user(db, provider, provider_user_id)
     if linked_user:
-        access, refresh = generate_tokens(db, linked_user)
+        access, refresh = generate_tokens(db, linked_user, auth_method="oauth")
         return {"status": "ok", "access_token": access, "refresh_token": refresh, "token_type": "bearer"}
 
     existing_user = oauth_service.find_user_by_email(db, email)
@@ -53,7 +53,7 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str) -> dict:
         return {"status": "link_required", "link_token": link_token, "provider": provider, "email": email}
 
     new_user = oauth_service.create_user_with_oauth(db, provider, provider_user_id, email)
-    access, refresh = generate_tokens(db, new_user)
+    access, refresh = generate_tokens(db, new_user, auth_method="oauth")
     return {"status": "ok", "access_token": access, "refresh_token": refresh, "token_type": "bearer"}
 
 
@@ -112,5 +112,5 @@ def confirm_oauth_link(body: OAuthLinkConfirmRequest, db: Session = Depends(get_
         db, user, payload["provider"], payload["provider_user_id"], payload["email"]
     )
 
-    access, refresh = generate_tokens(db, user)
+    access, refresh = generate_tokens(db, user, auth_method="oauth")
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}

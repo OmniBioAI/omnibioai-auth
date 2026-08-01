@@ -129,3 +129,31 @@ def set_member_roles(db: Session, membership: OrganizationMembership, roles: lis
 
 def permissions_for_membership(membership: OrganizationMembership) -> set[str]:
     return role_service.permissions_for_roles(membership.roles)
+
+
+def resolve_primary_membership(db: Session, user_id: int) -> OrganizationMembership | None:
+    """Picks the one org membership a fresh JWT's org_id/org_role claims
+    should reflect (Phase 1 PR3). A user can belong to multiple orgs, but a
+    token only carries one org context at a time -- prefers the Default
+    Organization (where every backfilled pre-PR3 user ends up) so existing
+    accounts get a stable, predictable org_id the moment they next log in,
+    falling back to the earliest membership for users who only belong to
+    org(s) they created themselves. Returns None for a user with no active
+    membership anywhere yet (pre-backfill, or a brand new account) -- a
+    token with org_id=None is a valid, well-defined state, not an error.
+    """
+    memberships = (
+        db.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.user_id == user_id,
+            OrganizationMembership.status == "active",
+        )
+        .order_by(OrganizationMembership.id)
+        .all()
+    )
+    if not memberships:
+        return None
+    for m in memberships:
+        if m.organization.slug == "default":
+            return m
+    return memberships[0]
