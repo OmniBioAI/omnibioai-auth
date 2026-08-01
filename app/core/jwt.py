@@ -29,18 +29,30 @@ def decode_token(token: str):
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
 
 
-def create_oauth_state_token(provider: str):
+def create_oauth_state_token(provider: str, code_verifier: str | None = None):
     """Short-lived, self-contained CSRF token for the OAuth authorize step.
     Avoids needing server-side session storage — verified purely by
     signature + expiry on callback, consistent with the rest of this
-    service's stateless JWT approach."""
+    service's stateless JWT approach.
+
+    Phase 2 PR2: also the PKCE (RFC 7636) carrier -- code_verifier rides
+    inside this same signed token rather than needing separate storage,
+    the same "no server-side session" reasoning that motivated this
+    token's design in the first place. Optional so a state token minted
+    just before a rolling deploy (pre-PKCE) still decodes fine on a
+    post-deploy instance -- oauth_service.exchange_code_for_userinfo
+    treats a missing code_verifier as "don't send one," not an error.
+    """
+    payload = {
+        "type": "oauth_state",
+        "provider": provider,
+        "exp": datetime.utcnow() + timedelta(minutes=10),
+        "jti": str(uuid.uuid4()),
+    }
+    if code_verifier:
+        payload["code_verifier"] = code_verifier
     return jwt.encode(
-        {
-            "type": "oauth_state",
-            "provider": provider,
-            "exp": datetime.utcnow() + timedelta(minutes=10),
-            "jti": str(uuid.uuid4()),
-        },
+        payload,
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )

@@ -28,7 +28,8 @@ MULTI_TENANT_TABLES = {
     "membership_roles", "api_keys", "organization_config",
 }
 OAUTH_CLIENTS_TABLES = {"oauth_clients"}
-ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES
+ORG_SSO_TABLES = {"organization_sso_configs"}
+ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -54,9 +55,10 @@ def sqlite_db_url(tmp_path):
 
 
 def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
-    """From an empty database, `alembic upgrade head` must run 0001 and 0002
-    for real and produce every expected table, plus license_keys' 3 new
-    columns."""
+    """From an empty database, `alembic upgrade head` must run every
+    revision (0001-0004) for real and produce every expected table, plus
+    license_keys' 3 PR2/PR1-Phase-1 columns and oauth_accounts' new
+    organization_sso_config_id column."""
     cfg = _alembic_config(sqlite_db_url)
     command.upgrade(cfg, "head")
 
@@ -68,6 +70,13 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
 
     license_columns = {c["name"] for c in inspector.get_columns("license_keys")}
     assert {"organization_id", "machine_id", "max_devices"} <= license_columns
+
+    oauth_account_columns = {c["name"] for c in inspector.get_columns("oauth_accounts")}
+    assert "organization_sso_config_id" in oauth_account_columns
+
+    uqs = inspector.get_unique_constraints("oauth_accounts")
+    widened = next(uq for uq in uqs if uq["name"] == "uq_oauth_provider_account")
+    assert set(widened["column_names"]) == {"provider", "provider_user_id", "organization_sso_config_id"}
 
 
 def test_sqlite_downgrade_base_reverses_cleanly(sqlite_db_url):
@@ -85,6 +94,38 @@ def test_sqlite_downgrade_base_reverses_cleanly(sqlite_db_url):
 
     remaining = ALL_TABLES & actual_tables
     assert not remaining, f"Tables survived downgrade to base: {remaining}"
+
+
+def test_sqlite_oauth_accounts_rows_survive_the_0004_constraint_widen(sqlite_db_url):
+    """Phase 2 PR2's specific concern: a pre-existing oauth_accounts row
+    (created under the old 2-column unique constraint, before this
+    migration ever ran) must come out the other side of 0004 unchanged in
+    value, with organization_sso_config_id defaulting to NULL -- not
+    dropped, not renumbered, not forced into some new required value."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0003_oauth_clients")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO oauth_accounts (user_id, provider, provider_user_id, email) "
+                "VALUES (:user_id, :provider, :provider_user_id, :email)"
+            ),
+            {"user_id": 1, "provider": "google", "provider_user_id": "pre-existing-uid", "email": "pre@omnibioai.test"},
+        )
+
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT provider, provider_user_id, email, organization_sso_config_id FROM oauth_accounts WHERE provider_user_id = :uid"),
+            {"uid": "pre-existing-uid"},
+        ).mappings().one()
+
+    assert row["provider"] == "google"
+    assert row["email"] == "pre@omnibioai.test"
+    assert row["organization_sso_config_id"] is None
 
 
 def _load_revision_module(filename: str):
@@ -117,7 +158,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
     created by the old create_all() path, before Alembic or PR2's ORM
     classes existed), with no alembic_version bookkeeping at all. Then
     0001_baseline is stamped (no DDL executed), and `alembic upgrade head`
-    applies 0002 and 0003 for real. This is the exact procedure
+    applies 0002, 0003, and 0004 for real. This is the exact procedure
     docs/DEPLOYMENT_CHECKLIST.md prescribes -- if this test passes,
     `alembic upgrade 0001_baseline` would NOT have (it would hit a
     duplicate-table error), which is the whole reason stamp is required.
@@ -148,7 +189,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0003_oauth_clients"
+    assert recorded == "0004_org_sso_schema"
 
 
 # ---------------------------------------------------------------------------

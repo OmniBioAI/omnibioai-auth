@@ -14,7 +14,11 @@ def configured_google(monkeypatch):
 
 
 def _mock_exchange(monkeypatch, provider_user_id, email):
-    async def fake_exchange(provider, code):
+    # code_verifier accepted (Phase 2 PR2's PKCE plumbing) but ignored --
+    # these tests exercise the account-linking logic downstream of the
+    # exchange, not the exchange/PKCE mechanics themselves (see
+    # tests/test_pkce.py for that).
+    async def fake_exchange(provider, code, code_verifier=None):
         return provider_user_id, email
     monkeypatch.setattr(oauth_service, "exchange_code_for_userinfo", fake_exchange)
 

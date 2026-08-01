@@ -68,15 +68,34 @@ class RevokedToken(Base):
 class OAuthAccount(Base):
     __tablename__ = "oauth_accounts"
     __table_args__ = (
-        UniqueConstraint("provider", "provider_user_id", name="uq_oauth_provider_account"),
+        # Widened by Phase 2 PR2's 0004_org_sso_schema migration from
+        # (provider, provider_user_id) to include organization_sso_config_id
+        # -- every existing row has that column NULL, and MySQL treats each
+        # NULL as distinct across a composite unique index, so every row
+        # that satisfied the old 2-column constraint still satisfies this
+        # one unchanged. Needed once org-IdP logins exist (Phase 2 PR4):
+        # multiple orgs' custom OIDC IdPs can otherwise collide on the same
+        # generic provider="oidc" + a provider_user_id namespace that's
+        # only unique *within* one IdP, not globally.
+        UniqueConstraint(
+            "provider", "provider_user_id", "organization_sso_config_id",
+            name="uq_oauth_provider_account",
+        ),
     )
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    provider = Column(String(20), nullable=False)  # "google" | "github" | "microsoft"
+    provider = Column(String(20), nullable=False)  # "google" | "github" | "microsoft" | "oidc"
     provider_user_id = Column(String(255), nullable=False)
     email = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Added by Phase 2 PR2's 0004_org_sso_schema migration -- nullable, and
+    # not yet read or written by oauth_service.py (that cutover is Phase 2
+    # PR4, not this change). NULL on every row created by today's 3 global
+    # providers; populated only for accounts created via a future org-IdP
+    # login.
+    organization_sso_config_id = Column(Integer, ForeignKey("organization_sso_configs.id"), nullable=True)
 
     user = relationship("User")
 
@@ -256,3 +275,35 @@ class OAuthClient(Base):
     last_used_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
     revoked_reason = Column(String(255), nullable=True)
+
+
+class OrganizationSSOConfig(Base):
+    """Phase 2 PR2: schema only -- no CRUD exists yet (Phase 2 PR3) and no
+    login path reads it yet (Phase 2 PR4). One row per org (org-scoped
+    UNIQUE) registers that org's own OIDC identity provider (Okta, Entra
+    ID, Google Workspace, ...), as opposed to the 3 global consumer OAuth
+    apps in app/core/oauth_providers.py, which stay untouched by this
+    table entirely.
+    """
+    __tablename__ = "organization_sso_configs"
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), unique=True, nullable=False)
+    provider_type = Column(String(20), default="oidc")
+    issuer = Column(String(500), nullable=False)
+    client_id = Column(String(255), nullable=False)
+    # Fernet, same CONFIG_ENCRYPTION_KEY as OrganizationConfig's
+    # llm_api_key_encrypted -- see app/core/crypto.py.
+    client_secret_encrypted = Column(String(1000), nullable=False)
+    # Cached from the issuer's /.well-known/openid-configuration at
+    # registration time (Phase 2 PR3), not yet read by any login path.
+    authorization_endpoint = Column(String(500), nullable=True)
+    token_endpoint = Column(String(500), nullable=True)
+    userinfo_endpoint = Column(String(500), nullable=True)
+    jwks_uri = Column(String(500), nullable=True)
+    allowed_domains = Column(JSON, nullable=True)  # e.g. ["acme.com"] -- read starting Phase 2 PR4
+    enforced = Column(Boolean, default=False)  # read starting Phase 2 PR5, ignored until then
+    status = Column(String(20), default="pending_verification")  # pending_verification | active | disabled
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
