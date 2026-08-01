@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,7 +14,7 @@ from app.schemas.license import (
     LicenseValidateRequest,
     LicenseValidateResponse,
 )
-from app.services import license_service
+from app.services import license_service, org_service
 from app.services.auth_service import generate_tokens
 
 router = APIRouter(prefix="/license", tags=["license"])
@@ -32,7 +34,16 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
     user = license_service.get_or_create_user_for_email(db, req.email)
     license_service.mark_used(db, license_key, user)
 
-    access, refresh = generate_tokens(db, user)
+    access, refresh = generate_tokens(db, user, auth_method="license")
+
+    days_remaining = None
+    expiry = None
+    if license_key.expires_at:
+        days_remaining = max((license_key.expires_at - datetime.utcnow()).days, 0)
+        expiry = license_key.expires_at.date().isoformat()
+
+    membership = org_service.resolve_primary_membership(db, user.id)
+
     return LicenseValidateResponse(
         valid=True,
         access_token=access,
@@ -42,6 +53,10 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
             "email": user.email,
             "plan": license_key.plan,
         },
+        tier=license_key.plan,
+        expiry=expiry,
+        days_remaining=days_remaining,
+        org_id=membership.organization_id if membership else None,
     )
 
 
