@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey, Table, UniqueConstra
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean, JSON
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean, JSON, Text
 from app.db.base import Base
 
 class RefreshToken(Base):
@@ -307,3 +307,13 @@ class OrganizationSSOConfig(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Phase 2 PR3: operational fields for future enterprise troubleshooting.
+    # last_verified_at is set on every successful discovery (create or an
+    # issuer-changing update). verification_error is reserved for a future
+    # periodic re-verification job (not this PR) -- org_sso_service never
+    # persists a *failed* discovery attempt at all, so nothing in this PR
+    # writes verification_error yet; it exists now so that job doesn't
+    # need its own migration later.
+    last_verified_at = Column(DateTime, nullable=True)
+    verification_error = Column(Text, nullable=True)

@@ -30,8 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import create_engine, inspect, text
 
 # Cumulative table set introduced by each revision. "head" here means
-# 0004_org_sso_schema, the newest revision as of this script's writing --
-# update this manifest when new revisions are added.
+# 0005_org_sso_operational_fields, the newest revision as of this script's
+# writing -- update this manifest when new revisions are added.
 BASELINE_TABLES = {
     "users", "roles", "permissions", "user_roles", "role_permissions",
     "refresh_tokens", "revoked_tokens", "oauth_accounts", "global_config",
@@ -49,6 +49,7 @@ REVISION_TABLES = {
     "0002_multi_tenant_schema": BASELINE_TABLES | MULTI_TENANT_TABLES,
     "0003_oauth_clients": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES,
     "0004_org_sso_schema": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
+    "0005_org_sso_operational_fields": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
     "head": BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES,
 }
 
@@ -58,6 +59,9 @@ LICENSE_KEYS_0002_COLUMNS = {"organization_id", "machine_id", "max_devices"}
 
 # Column added to oauth_accounts by 0004 -- same reasoning as above.
 OAUTH_ACCOUNTS_0004_COLUMNS = {"organization_sso_config_id"}
+
+# Columns added to organization_sso_configs by 0005 -- same reasoning as above.
+ORG_SSO_CONFIGS_0005_COLUMNS = {"last_verified_at", "verification_error"}
 
 
 def _database_url(cli_url: str | None) -> str:
@@ -132,6 +136,12 @@ def check_tables(engine, expect_revision: str) -> list[str]:
         missing_cols = OAUTH_ACCOUNTS_0004_COLUMNS - actual_columns
         if missing_cols:
             errors.append(f"oauth_accounts missing expected columns: {sorted(missing_cols)}")
+
+    if expect_revision in ("0005_org_sso_operational_fields", "head") and "organization_sso_configs" in actual_tables:
+        actual_columns = {c["name"] for c in inspector.get_columns("organization_sso_configs")}
+        missing_cols = ORG_SSO_CONFIGS_0005_COLUMNS - actual_columns
+        if missing_cols:
+            errors.append(f"organization_sso_configs missing expected columns: {sorted(missing_cols)}")
 
     return errors
 
