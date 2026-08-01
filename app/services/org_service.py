@@ -109,6 +109,38 @@ def get_membership(db: Session, org_id: int, user_id: int) -> OrganizationMember
     )
 
 
+def jit_provision_membership(db: Session, organization_id: int, user_id: int) -> OrganizationMembership:
+    """Phase 2 PR4: ensures a successful enterprise SSO login results in
+    real org membership, not just a User row -- otherwise org_id/org_role
+    resolution (resolve_primary_membership, used by generate_tokens) would
+    never reflect the org whose IdP actually authenticated the user.
+    Default role is org_member (no permissions) -- basic JIT provisioning
+    only, deliberately not group sync or automatic role mapping (both out
+    of scope for this PR).
+
+    Idempotent: a user who already has a membership in this org (e.g. a
+    repeat SSO login, or they were already a member some other way) is
+    left completely untouched -- never duplicated, and any custom roles
+    they already hold here are never overwritten back down to org_member.
+    """
+    existing = get_membership(db, organization_id, user_id)
+    if existing:
+        return existing
+
+    member_role = role_service.get_or_create_role(db, ORG_MEMBER_ROLE, [])
+    membership = OrganizationMembership(
+        organization_id=organization_id,
+        user_id=user_id,
+        status="active",
+        joined_at=datetime.utcnow(),
+        roles=[member_role],
+    )
+    db.add(membership)
+    db.commit()
+    db.refresh(membership)
+    return membership
+
+
 def invite_member(
     db: Session, org: Organization, email: str, invited_by: User
 ) -> OrganizationMembership | None:

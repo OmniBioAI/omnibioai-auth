@@ -20,9 +20,9 @@ def authenticate_user(db, email, password):
     return user
 
 
-def generate_tokens(db, user, auth_method: str = "password"):
+def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | None = None):
     """`auth_method` records which flow issued this token ("password" |
-    "oauth" | "license") -- purely informational, not used for any
+    "oauth" | "license" | "sso") -- purely informational, not used for any
     authorization decision.
 
     Phase 1 PR3: payload gains org_id/org_role/auth_method/token_version=2,
@@ -36,6 +36,18 @@ def generate_tokens(db, user, auth_method: str = "password"):
     permission set and the new org-scoped one, but `permissions` below
     remains the global computation -- nothing about what's actually
     enforced changes in this PR.
+
+    Phase 2 PR4: idp_org_id additionally records which org's enterprise IdP
+    authenticated this specific login (None for every other auth_method).
+    Deliberately distinct from org_id above: org_id is the user's resolved
+    *primary* membership (could be a different org for a multi-org user),
+    while idp_org_id is the org whose IdP configuration this callback's
+    token exchange actually validated against -- the two usually agree
+    (JIT provisioning ensures the SSO org is a membership) but are tracked
+    separately rather than conflated. Still additive: still token_version=2,
+    not bumped, since /auth/validate's degradation is claim-presence-based,
+    not version-number-based, and this is the same "additive superset"
+    category PR3 already established for that version.
     """
     permissions = sorted({p.name for r in user.roles for p in r.permissions})
 
@@ -54,6 +66,7 @@ def generate_tokens(db, user, auth_method: str = "password"):
         "org_id": org_id,
         "org_role": org_role,
         "auth_method": auth_method,
+        "idp_org_id": idp_org_id,
         "token_version": 2,
     }
 

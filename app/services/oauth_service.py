@@ -106,12 +106,23 @@ async def exchange_code_for_userinfo(provider: str, code: str, code_verifier: st
     return provider_user_id, email
 
 
-def find_linked_user(db, provider: str, provider_user_id: str):
-    account = (
-        db.query(OAuthAccount)
-        .filter(OAuthAccount.provider == provider, OAuthAccount.provider_user_id == provider_user_id)
-        .first()
+def find_linked_user(db, provider: str, provider_user_id: str, organization_sso_config_id: int | None = None):
+    """organization_sso_config_id is a Phase 2 PR4 addition, default None
+    preserves the exact query (and therefore behavior) every existing
+    caller already gets. Passing it scopes the lookup to one org's IdP --
+    required for multi-tenant OIDC, where `provider` is the generic
+    string "oidc" for every enterprise IdP and provider_user_id (the
+    IdP's `sub`) is only guaranteed unique *within* one IdP, not globally.
+    Without this, two different orgs' IdPs that happen to issue the same
+    sub value could resolve to each other's linked account -- exactly the
+    cross-tenant identity confusion this scoping exists to prevent.
+    """
+    query = db.query(OAuthAccount).filter(
+        OAuthAccount.provider == provider, OAuthAccount.provider_user_id == provider_user_id
     )
+    if organization_sso_config_id is not None:
+        query = query.filter(OAuthAccount.organization_sso_config_id == organization_sso_config_id)
+    account = query.first()
     return account.user if account else None
 
 
@@ -119,21 +130,57 @@ def find_user_by_email(db, email: str):
     return db.query(User).filter(User.email == email).first()
 
 
-def create_user_with_oauth(db, provider: str, provider_user_id: str, email: str) -> User:
+def create_user_with_oauth(
+    db, provider: str, provider_user_id: str, email: str, organization_sso_config_id: int | None = None
+) -> User:
     user = User(email=email, hashed_password=None, status="active")
     db.add(user)
     db.flush()
     assign_default_role(db, user)
-    db.add(OAuthAccount(user_id=user.id, provider=provider, provider_user_id=provider_user_id, email=email))
+    db.add(
+        OAuthAccount(
+            user_id=user.id,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            email=email,
+            organization_sso_config_id=organization_sso_config_id,
+        )
+    )
     db.commit()
     db.refresh(user)
     return user
 
 
-def link_oauth_to_existing_user(db, user: User, provider: str, provider_user_id: str, email: str) -> None:
-    db.add(OAuthAccount(user_id=user.id, provider=provider, provider_user_id=provider_user_id, email=email))
+def link_oauth_to_existing_user(
+    db,
+    user: User,
+    provider: str,
+    provider_user_id: str,
+    email: str,
+    organization_sso_config_id: int | None = None,
+) -> None:
+    db.add(
+        OAuthAccount(
+            user_id=user.id,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            email=email,
+            organization_sso_config_id=organization_sso_config_id,
+        )
+    )
     db.commit()
 
 
-def issue_link_confirmation(user: User, provider: str, provider_user_id: str, email: str) -> str:
-    return create_link_token(user.id, provider, provider_user_id, email)
+def issue_link_confirmation(
+    user: User,
+    provider: str,
+    provider_user_id: str,
+    email: str,
+    organization_sso_config_id: int | None = None,
+    idp_org_id: int | None = None,
+) -> str:
+    return create_link_token(
+        user.id, provider, provider_user_id, email,
+        organization_sso_config_id=organization_sso_config_id,
+        idp_org_id=idp_org_id,
+    )
