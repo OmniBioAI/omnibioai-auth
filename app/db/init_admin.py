@@ -34,11 +34,24 @@ def create_admin(db):
         db.add(manage_config_perm)
         db.flush()
 
+    # Phase 2 PR5: deliberately a distinct global permission, not a reuse
+    # of "manage_sso" (which already means something different -- an
+    # org-scoped grant checked live via require_org_permission, not this
+    # JWT-claim-based global check). The SSO break-glass override is meant
+    # to be usable by this platform's own bootstrap admin even when an
+    # org's own admin is the one locked out (or untrusted), so it's kept
+    # separate from any org-level grant entirely.
+    override_sso_perm = db.query(Permission).filter(Permission.name == "override_sso_enforcement").first()
+    if not override_sso_perm:
+        override_sso_perm = Permission(name="override_sso_enforcement")
+        db.add(override_sso_perm)
+        db.flush()
+
     admin_role = db.query(Role).filter(Role.name == "admin").first()
     if not admin_role:
         admin_role = Role(
             name="admin",
-            permissions=[manage_roles_perm, manage_licenses_perm, manage_config_perm],
+            permissions=[manage_roles_perm, manage_licenses_perm, manage_config_perm, override_sso_perm],
         )
         db.add(admin_role)
         db.flush()
@@ -49,6 +62,8 @@ def create_admin(db):
             admin_role.permissions.append(manage_licenses_perm)
         if manage_config_perm not in admin_role.permissions:
             admin_role.permissions.append(manage_config_perm)
+        if override_sso_perm not in admin_role.permissions:
+            admin_role.permissions.append(override_sso_perm)
 
     admin = db.query(User).filter(User.email == "admin@omnibioai").first()
     if not admin:

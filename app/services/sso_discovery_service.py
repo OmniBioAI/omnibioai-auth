@@ -28,3 +28,19 @@ def find_org_for_email(db: Session, email: str) -> OrganizationSSOConfig | None:
         if domain in {d.lower() for d in allowed}:
             return config
     return None
+
+
+def find_enforced_org_for_email(db: Session, email: str) -> OrganizationSSOConfig | None:
+    """Phase 2 PR5: returns the org's SSO config if `email`'s domain
+    belongs to an org that currently enforces SSO (and has no active
+    break-glass override), else None. Deliberately reuses
+    find_org_for_email's exact domain-matching -- the same signal GET
+    /auth/sso/discover already uses, and the only one available before a
+    login attempt has proven any identity at all (there is no existing
+    account/membership to consult yet for a brand-new user hitting an
+    enforcing org's domain for the first time).
+    """
+    config = find_org_for_email(db, email)
+    if config and config.enforced and config.sso_override_at is None:
+        return config
+    return None
