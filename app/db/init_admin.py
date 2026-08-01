@@ -1,7 +1,8 @@
 import os
 import secrets
+from datetime import datetime
 
-from app.db.models import Permission, Role, User
+from app.db.models import Organization, Permission, Role, User
 from app.core.security import hash_password
 from app.services.role_service import get_or_create_role
 
@@ -87,3 +88,25 @@ def create_admin(db):
         admin.roles.append(admin_role)
 
     db.commit()
+
+
+def ensure_default_organization(db):
+    """Idempotent, mirrors the `if not admin:` guard above. Creates an
+    inert org shell only -- no existing user (not even admin@omnibioai) is
+    added as a member here. Organization membership is a brand-new concept
+    with nothing else in the app reading or writing it yet; backfilling
+    every existing user's global role assignment into this org is Phase 1
+    PR3's job, not this one, so real accounts intentionally have zero
+    organization_memberships rows until then.
+    """
+    org = db.query(Organization).filter(Organization.slug == "default").first()
+    if not org:
+        admin = db.query(User).filter(User.email == "admin@omnibioai").first()
+        org = Organization(
+            slug="default",
+            name="Default Organization",
+            created_by_user_id=admin.id if admin else None,
+            created_at=datetime.utcnow(),
+        )
+        db.add(org)
+        db.commit()
