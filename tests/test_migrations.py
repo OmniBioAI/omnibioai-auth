@@ -1,0 +1,193 @@
+"""Alembic migration mechanics: exercised against an isolated throwaway
+database, never against the app's own configured database (conftest.py's
+SQLite `test.db`, or any real MySQL instance). See docs/MIGRATIONS.md for
+the stamp-vs-upgrade distinction these tests are asserting.
+"""
+
+import os
+import uuid
+from pathlib import Path
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, inspect, text
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+BASELINE_TABLES = {
+    "users", "roles", "permissions", "user_roles", "role_permissions",
+    "refresh_tokens", "revoked_tokens", "oauth_accounts", "global_config",
+    "license_keys",
+}
+MULTI_TENANT_TABLES = {
+    "organizations", "teams", "team_memberships", "organization_memberships",
+    "membership_roles", "api_keys", "organization_config",
+}
+ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES
+
+
+def _alembic_config(db_url: str) -> Config:
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    # env.py only falls back to settings.DATABASE_URL when this is unset --
+    # setting it here points migrations at the throwaway test DB instead of
+    # whatever the app's own DB_HOST/DB_USER/etc. env vars resolve to.
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# SQLite: always runs, no external service required.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sqlite_db_url(tmp_path):
+    db_file = tmp_path / "migration_test.db"
+    yield f"sqlite:///{db_file}"
+    # tmp_path is pytest-managed and auto-cleaned; nothing else to do.
+
+
+def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
+    """From an empty database, `alembic upgrade head` must run 0001 and 0002
+    for real and produce every expected table, plus license_keys' 3 new
+    columns."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(sqlite_db_url)
+    inspector = inspect(engine)
+    actual_tables = set(inspector.get_table_names())
+
+    assert ALL_TABLES <= actual_tables, f"Missing tables: {ALL_TABLES - actual_tables}"
+
+    license_columns = {c["name"] for c in inspector.get_columns("license_keys")}
+    assert {"organization_id", "machine_id", "max_devices"} <= license_columns
+
+
+def test_sqlite_downgrade_base_reverses_cleanly(sqlite_db_url):
+    """Full upgrade then full downgrade must leave no application tables
+    behind -- proves the migration is cleanly reversible on a throwaway DB
+    (never to be run against real data, per both migration files' own
+    downgrade() docstrings)."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "base")
+
+    engine = create_engine(sqlite_db_url)
+    inspector = inspect(engine)
+    actual_tables = set(inspector.get_table_names())
+
+    remaining = ALL_TABLES & actual_tables
+    assert not remaining, f"Tables survived downgrade to base: {remaining}"
+
+
+def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_url):
+    """Simulates every existing environment: tables already exist (as if
+    created by the old create_all() path), 0001_baseline is stamped (no DDL
+    executed), then `alembic upgrade head` applies only 0002. This is the
+    exact procedure docs/DEPLOYMENT_CHECKLIST.md prescribes -- if this test
+    passes, `alembic upgrade 0001_baseline` would NOT have (it would hit a
+    duplicate-table error), which is the whole reason stamp is required.
+    """
+    from app.db.base import Base
+    import app.db.models  # noqa: F401 -- registers baseline tables on Base.metadata
+
+    engine = create_engine(sqlite_db_url)
+    Base.metadata.create_all(bind=engine)  # pre-existing tables, no Alembic involved yet
+
+    inspector = inspect(engine)
+    assert BASELINE_TABLES <= set(inspector.get_table_names())
+    assert not (MULTI_TENANT_TABLES & set(inspector.get_table_names()))
+
+    cfg = _alembic_config(sqlite_db_url)
+    command.stamp(cfg, "0001_baseline")
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    actual_tables = set(inspector.get_table_names())
+    assert ALL_TABLES <= actual_tables
+
+    with engine.connect() as conn:
+        recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert recorded == "0002_multi_tenant_schema"
+
+
+# ---------------------------------------------------------------------------
+# MySQL: runs against a throwaway database on a real MySQL server, skipped
+# entirely if one isn't reachable (e.g. in a CI environment without MySQL).
+# Never touches the app's actual configured database -- always a
+# dedicated, dropped-before-and-after throwaway database name.
+# ---------------------------------------------------------------------------
+
+_MYSQL_HOST = os.environ.get("TEST_MYSQL_HOST", "localhost")
+_MYSQL_PORT = os.environ.get("TEST_MYSQL_PORT", "3306")
+_MYSQL_USER = os.environ.get("TEST_MYSQL_USER", "root")
+_MYSQL_PASSWORD = os.environ.get("TEST_MYSQL_PASSWORD", "root")
+_MYSQL_SERVER_URL = (
+    f"mysql+pymysql://{_MYSQL_USER}:{_MYSQL_PASSWORD}@{_MYSQL_HOST}:{_MYSQL_PORT}/"
+)
+_THROWAWAY_DB = f"omnibioai_auth_migration_test_{uuid.uuid4().hex[:8]}"
+
+
+def _mysql_reachable() -> bool:
+    try:
+        engine = create_engine(_MYSQL_SERVER_URL, connect_args={"connect_timeout": 2})
+        with engine.connect():
+            pass
+        return True
+    except Exception:
+        return False
+
+
+@pytest.fixture
+def mysql_db_url():
+    if not _mysql_reachable():
+        pytest.skip(
+            f"No MySQL server reachable at {_MYSQL_HOST}:{_MYSQL_PORT} -- "
+            "skipping MySQL migration validation (SQLite coverage above still applies)."
+        )
+
+    admin_engine = create_engine(_MYSQL_SERVER_URL, isolation_level="AUTOCOMMIT")
+    with admin_engine.connect() as conn:
+        conn.execute(text(f"DROP DATABASE IF EXISTS `{_THROWAWAY_DB}`"))
+        conn.execute(text(f"CREATE DATABASE `{_THROWAWAY_DB}`"))
+
+    try:
+        yield f"{_MYSQL_SERVER_URL}{_THROWAWAY_DB}"
+    finally:
+        with admin_engine.connect() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS `{_THROWAWAY_DB}`"))
+        admin_engine.dispose()
+
+
+def test_mysql_fresh_upgrade_head_creates_all_tables(mysql_db_url):
+    """Same assertion as the SQLite equivalent, but against real MySQL --
+    catches dialect-specific DDL issues (JSON columns, composite primary
+    keys, FK constraint creation via batch_alter_table) that SQLite alone
+    would not."""
+    cfg = _alembic_config(mysql_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(mysql_db_url)
+    inspector = inspect(engine)
+    actual_tables = set(inspector.get_table_names())
+
+    assert ALL_TABLES <= actual_tables, f"Missing tables: {ALL_TABLES - actual_tables}"
+
+    license_columns = {c["name"] for c in inspector.get_columns("license_keys")}
+    assert {"organization_id", "machine_id", "max_devices"} <= license_columns
+
+
+def test_mysql_downgrade_base_reverses_cleanly(mysql_db_url):
+    cfg = _alembic_config(mysql_db_url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "base")
+
+    engine = create_engine(mysql_db_url)
+    inspector = inspect(engine)
+    actual_tables = set(inspector.get_table_names())
+
+    remaining = ALL_TABLES & actual_tables
+    assert not remaining, f"Tables survived downgrade to base: {remaining}"
