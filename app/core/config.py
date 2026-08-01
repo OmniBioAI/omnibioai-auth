@@ -25,6 +25,13 @@ class Settings:
         os.getenv("CLIENT_CREDENTIALS_TOKEN_EXPIRE_MINUTES", 10)
     )
 
+    # Phase 2 PR3: an org admin's issuer URL is untrusted input this
+    # service makes a real HTTP request to (OIDC discovery) -- require
+    # HTTPS by default. Only reason to ever set this false is standing up
+    # a local/self-hosted test IdP without TLS during development; real
+    # deployments should never override it.
+    REQUIRE_HTTPS_FOR_SSO_ISSUER = os.getenv("REQUIRE_HTTPS_FOR_SSO_ISSUER", "true").lower() == "true"
+
     # Comma-separated allowlist of browser origins permitted to call this API
     # directly (e.g. omnibioai-studio's web build). Production domains match
     # the CORS_ALLOWED_ORIGINS already set for the lims service in

@@ -12,7 +12,9 @@ from app.services import role_service
 # (org creation / invite), not at app startup -- an environment that never
 # creates an org never gets these rows either.
 ORG_ADMIN_ROLE = "org_admin"
-ORG_ADMIN_PERMISSIONS = ["manage_org", "manage_teams", "manage_api_keys", "manage_oauth_clients"]
+ORG_ADMIN_PERMISSIONS = [
+    "manage_org", "manage_teams", "manage_api_keys", "manage_oauth_clients", "manage_sso",
+]
 ORG_MEMBER_ROLE = "org_member"
 
 

@@ -13,6 +13,7 @@ from app.api.routes_teams import router as teams_router
 from app.api.routes_apikeys import router as apikeys_router
 from app.api.routes_oauth_clients import router as oauth_clients_router
 from app.api.routes_oauth_token import router as oauth_token_router
+from app.api.routes_org_sso import router as org_sso_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
@@ -53,6 +54,7 @@ app.include_router(teams_router)
 app.include_router(apikeys_router)
 app.include_router(oauth_clients_router)
 app.include_router(oauth_token_router)
+app.include_router(org_sso_router)
 
 
 @app.get("/metrics")
