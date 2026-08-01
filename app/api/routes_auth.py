@@ -174,6 +174,10 @@ def validate_token(req: dict, db: Session = Depends(get_db)):
             "org_id": payload.get("org_id"),
             "org_role": payload.get("org_role", []),
             "auth_method": payload.get("auth_method"),
+            # Phase 2 PR4 -- additive, same graceful-default reasoning as
+            # the rest of this block. None for every token minted before
+            # this change or by any non-SSO auth_method.
+            "idp_org_id": payload.get("idp_org_id"),
             "schema_version": payload.get("token_version", 1),
         }
     except Exception:

@@ -10,7 +10,7 @@ from app.core.oauth_providers import PROVIDERS, is_configured
 from app.core.security import verify_password
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody, OAuthLinkConfirmRequest
-from app.services import oauth_service
+from app.services import oauth_service, org_service
 from app.services.auth_service import generate_tokens
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
@@ -116,8 +116,21 @@ def confirm_oauth_link(body: OAuthLinkConfirmRequest, db: Session = Depends(get_
         raise HTTPException(401, "Incorrect password")
 
     oauth_service.link_oauth_to_existing_user(
-        db, user, payload["provider"], payload["provider_user_id"], payload["email"]
+        db, user, payload["provider"], payload["provider_user_id"], payload["email"],
+        organization_sso_config_id=payload.get("organization_sso_config_id"),
     )
 
-    access, refresh = generate_tokens(db, user, auth_method="oauth")
+    # Phase 2 PR4 -- additive. Every link token minted by the existing
+    # 3-provider flow has idp_org_id=None (oauth_service.issue_link_confirmation's
+    # default), so this branch is never taken for them: auth_method stays
+    # "oauth" and no membership is touched, byte-identical to before this
+    # change. Only a link token that originated from an enterprise SSO
+    # callback carries a real idp_org_id, which is when membership actually
+    # needs to exist for org_id/org_role to resolve to that org afterward.
+    idp_org_id = payload.get("idp_org_id")
+    if idp_org_id is not None:
+        org_service.jit_provision_membership(db, idp_org_id, user.id)
+
+    auth_method = "sso" if idp_org_id is not None else "oauth"
+    access, refresh = generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}

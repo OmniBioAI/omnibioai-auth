@@ -58,6 +58,40 @@ def create_oauth_state_token(provider: str, code_verifier: str | None = None):
     )
 
 
+def create_sso_state_token(
+    organization_id: int, organization_sso_config_id: int, code_verifier: str, nonce: str
+):
+    """Phase 2 PR4: state token for the per-org OIDC login flow
+    (/auth/sso/{org_slug}/login -> /auth/sso/{org_slug}/callback).
+
+    Deliberately a distinct token type ("sso_state", not "oauth_state") --
+    routes_oauth.py's _verify_state explicitly requires type == "oauth_state",
+    so a token minted here can never be replayed against the 3 existing
+    provider callback routes, and vice versa. Self-contained, same
+    reasoning as create_oauth_state_token: organization_id (which org's
+    login this is for -- the authoritative source for the eventual
+    idp_org_id JWT claim, never re-derived from the IdP's response),
+    organization_sso_config_id (which config to use for the token
+    exchange), code_verifier (PKCE), and nonce (OIDC replay protection)
+    all travel inside this one signed token, no server-side session
+    needed.
+    """
+    return jwt.encode(
+        {
+            "type": "sso_state",
+            "organization_id": organization_id,
+            "organization_sso_config_id": organization_sso_config_id,
+            "code_verifier": code_verifier,
+            "nonce": nonce,
+            "created_at": datetime.utcnow().isoformat(),
+            "exp": datetime.utcnow() + timedelta(minutes=10),
+            "jti": str(uuid.uuid4()),
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+
 def create_service_access_token(data: dict, expires_minutes: int):
     """Phase 2 PR1: issues a client_credentials-grant access token (RFC 6749
     SS4.4) -- a service identity, not a user. Deliberately does not go
@@ -77,9 +111,24 @@ def create_service_access_token(data: dict, expires_minutes: int):
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def create_link_token(user_id: int, provider: str, provider_user_id: str, email: str):
+def create_link_token(
+    user_id: int,
+    provider: str,
+    provider_user_id: str,
+    email: str,
+    organization_sso_config_id: int | None = None,
+    idp_org_id: int | None = None,
+):
     """Short-lived token proving an OAuth exchange resolved to `user_id`'s
-    existing email, pending password confirmation via POST /auth/link/confirm."""
+    existing email, pending password confirmation via POST /auth/link/confirm.
+
+    organization_sso_config_id/idp_org_id are Phase 2 PR4 additions --
+    both None for the existing 3-provider flow (unchanged payload shape
+    for those callers), populated only when the exchange that produced
+    this token came from an enterprise IdP, so /auth/link/confirm knows
+    which org to JIT-provision membership in and what idp_org_id to put
+    on the eventually-issued access token.
+    """
     return jwt.encode(
         {
             "type": "oauth_link",
@@ -87,6 +136,8 @@ def create_link_token(user_id: int, provider: str, provider_user_id: str, email:
             "provider": provider,
             "provider_user_id": provider_user_id,
             "email": email,
+            "organization_sso_config_id": organization_sso_config_id,
+            "idp_org_id": idp_org_id,
             "exp": datetime.utcnow() + timedelta(minutes=10),
             "jti": str(uuid.uuid4()),
         },
