@@ -1,8 +1,22 @@
 from datetime import datetime, timedelta
 from jose import jwt
 from app.core.config import settings
+from app.core.rsa_keys import KID, PRIVATE_KEY_PEM, PUBLIC_KEY_PEM
 
 import uuid
+
+
+def _sign(payload: dict) -> str:
+    """SSO Phase 2 PR15: single signing choke point for every token type
+    below. When JWT_ALGORITHM=RS256, signs with the RSA private key and
+    stamps a `kid` header so a verifier (this service or another one,
+    eventually) knows which JWKS entry to check against. Defaults to the
+    unchanged HS256 shared-secret path -- an operator has to opt in.
+    """
+    if settings.JWT_ALGORITHM == "RS256":
+        return jwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256", headers={"kid": KID})
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -13,7 +27,7 @@ def create_access_token(data: dict):
         "jti": str(uuid.uuid4())   # 👈 IMPORTANT
     })
 
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)    
+    return _sign(to_encode)
 
 
 def create_refresh_token(data: dict):
@@ -23,10 +37,26 @@ def create_refresh_token(data: dict):
         "type": "refresh",
         "jti": str(uuid.uuid4())   # without this, same-second logins collide on the refresh_tokens.token UNIQUE constraint
     })
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return _sign(to_encode)
+
 
 def decode_token(token: str):
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    """Verifies either algorithm, dispatched by the token's own `alg`
+    header rather than by settings.JWT_ALGORITHM -- a migration window
+    means already-issued HS256 tokens must keep validating for their full
+    remaining lifetime even after an operator switches new issuance to
+    RS256 (PR15 Task 6/success criteria). A malformed token that can't even
+    be parsed for its header falls through to the HS256 decode call so it
+    raises the same JWTError shape callers already catch.
+    """
+    try:
+        alg = jwt.get_unverified_header(token).get("alg")
+    except Exception:
+        alg = None
+
+    if alg == "RS256":
+        return jwt.decode(token, PUBLIC_KEY_PEM, algorithms=["RS256"])
+    return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
 
 
 def create_oauth_state_token(provider: str, code_verifier: str | None = None):
@@ -51,11 +81,7 @@ def create_oauth_state_token(provider: str, code_verifier: str | None = None):
     }
     if code_verifier:
         payload["code_verifier"] = code_verifier
-    return jwt.encode(
-        payload,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM,
-    )
+    return _sign(payload)
 
 
 def create_sso_state_token(
@@ -76,7 +102,7 @@ def create_sso_state_token(
     all travel inside this one signed token, no server-side session
     needed.
     """
-    return jwt.encode(
+    return _sign(
         {
             "type": "sso_state",
             "organization_id": organization_id,
@@ -86,9 +112,7 @@ def create_sso_state_token(
             "created_at": datetime.utcnow().isoformat(),
             "exp": datetime.utcnow() + timedelta(minutes=10),
             "jti": str(uuid.uuid4()),
-        },
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM,
+        }
     )
 
 
@@ -108,7 +132,7 @@ def create_service_access_token(data: dict, expires_minutes: int):
         "type": "access",
         "jti": str(uuid.uuid4()),
     })
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return _sign(to_encode)
 
 
 def create_link_token(
@@ -129,7 +153,7 @@ def create_link_token(
     which org to JIT-provision membership in and what idp_org_id to put
     on the eventually-issued access token.
     """
-    return jwt.encode(
+    return _sign(
         {
             "type": "oauth_link",
             "user_id": user_id,
@@ -140,8 +164,6 @@ def create_link_token(
             "idp_org_id": idp_org_id,
             "exp": datetime.utcnow() + timedelta(minutes=10),
             "jti": str(uuid.uuid4()),
-        },
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM,
+        }
     )
 
