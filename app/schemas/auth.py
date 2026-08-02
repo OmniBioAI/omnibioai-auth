@@ -12,7 +12,12 @@ class TokenResponse(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    # SSO Phase 2 PR10: optional so a browser session relying solely on the
+    # omnibioai_session cookie (no body at all, or an empty body) can still
+    # refresh -- routes_auth.py's refresh() falls back to the cookie when
+    # this is absent. A body-supplied token still always wins when present
+    # (existing API clients that only ever used the body are unaffected).
+    refresh_token: str | None = None
 
 
 class LogoutRequest(BaseModel):

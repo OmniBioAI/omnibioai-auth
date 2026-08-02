@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 import redis as _redis_sync
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from prometheus_client import Counter
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from app.core.jwt import decode_token
 from app.core import token_revocation
 from app.core.token_revocation import assert_token_usable
 from app.services.auth_service import (
+    REFRESH_TOKEN_TTL_DAYS as _REFRESH_TOKEN_TTL_DAYS,
     authenticate_user,
     generate_tokens,
     revoke_token,
@@ -30,6 +31,46 @@ from app.services.role_service import assign_default_role
 from app.services import org_service, sso_discovery_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# ── SSO Phase 2 PR10: browser session cookie ────────────────────────────────
+#
+# Mirrors the existing refresh_token exactly -- same value, same lifetime --
+# in a second, server-set form a browser can carry across first-party
+# subdomains without any frontend JS involvement. Does NOT replace the
+# existing JSON access_token/refresh_token response (backward compatible:
+# every existing API client that only ever read the JSON body is
+# unaffected). This is additive to the existing refresh-rotation/
+# revocation/logout machinery below, not a new session mechanism -- the
+# cookie's value IS the same refresh_token rotate_refresh_token/revoke_token
+# already manage; there is no separate session store, no Redis session
+# state, no sessions table (PR10 non-goals).
+SESSION_COOKIE_NAME = "omnibioai_session"
+SESSION_COOKIE_DOMAIN = os.getenv("SESSION_COOKIE_DOMAIN", ".omnibioai.org")
+SESSION_COOKIE_MAX_AGE = _REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60
+
+
+def _set_session_cookie(response: Response, refresh_token: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=refresh_token,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        path="/",
+        domain=SESSION_COOKIE_DOMAIN,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        domain=SESSION_COOKIE_DOMAIN,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
 
 _pub = _redis_sync.from_url(
     os.getenv("REDIS_URL", "redis://redis:6379"),
@@ -91,7 +132,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 
 # ---------------- LOGIN ----------------
 @router.post("/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     # Phase 2 PR5: checked before any credential verification at all --
     # authenticate_user (the only caller of verify_password) is never
     # reached for an org that enforces SSO, not just short-circuited
@@ -117,6 +158,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
     access, refresh = generate_tokens(db, user, auth_method="password")
     JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="success").inc()
+    _set_session_cookie(response, refresh)
     return {
         "access_token": access,
         "refresh_token": refresh,
@@ -126,17 +168,28 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
 # ---------------- REFRESH ----------------
 @router.post("/refresh")
-def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
+def refresh(req: RefreshRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     # PR0.2: rotate_refresh_token rebuilds claims from the current database
     # state (not the presented token's own stale payload) and returns a
     # NEW refresh token -- the presented one is single-use from here on.
     # Presenting it again is treated as token-family compromise; see
     # auth_service.rotate_refresh_token / _revoke_family.
-    result = rotate_refresh_token(db, req.refresh_token)
+    #
+    # SSO Phase 2 PR10: the body-supplied token still always wins when
+    # present -- existing API clients that only ever send it in the body
+    # are completely unaffected. Only falls back to the omnibioai_session
+    # cookie when the body omits it, so a browser holding only the cookie
+    # (no JS-visible token at all) can still refresh.
+    presented_token = req.refresh_token or request.cookies.get(SESSION_COOKIE_NAME)
+    if not presented_token:
+        raise HTTPException(401, "Invalid refresh token")
+
+    result = rotate_refresh_token(db, presented_token)
     if not result:
         raise HTTPException(401, "Invalid refresh token")
 
     new_access, new_refresh = result
+    _set_session_cookie(response, new_refresh)
     return {
         "access_token": new_access,
         "refresh_token": new_refresh,
@@ -145,7 +198,7 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
 
 # ---------------- LOGOUT ----------------
 @router.post("/logout")
-def logout(req: LogoutRequest, db: Session = Depends(get_db)):
+def logout(req: LogoutRequest, response: Response, db: Session = Depends(get_db)):
     revoke_token(db, req.refresh_token)
 
     if req.access_token:
@@ -160,6 +213,7 @@ def logout(req: LogoutRequest, db: Session = Depends(get_db)):
     except Exception:
         pass
 
+    _clear_session_cookie(response)
     return {"message": "Logged out"}
 
 
