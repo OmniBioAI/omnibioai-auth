@@ -1,0 +1,160 @@
+"""PR5 (Enterprise IAM Foundation): GET /platform/permissions -- read-only
+exposure of the Permission Registry (app/core/permission_names.py). Gated
+by require_permission(MANAGE_ALL_ORGS) only, mirroring
+test_platform_roles_api.py's own conventions exactly.
+"""
+import uuid
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.core.permission_names import REGISTRY
+from app.db.models import Role, User
+
+_direct_engine = create_engine("sqlite:///./test.db")
+_DirectSession = sessionmaker(bind=_direct_engine)
+
+FUTURE_NAMES = {
+    "workflow.execute",
+    "model.use",
+    "dataset.read",
+    "usage.read",
+    "billing.read",
+    "billing.manage",
+    "subscription.manage",
+    "marketplace.install",
+}
+
+LEGACY_NAMES = {
+    "manage_roles",
+    "manage_licenses",
+    "manage_config",
+    "override_sso_enforcement",
+    "manage_all_orgs",
+    "platform.manage_infra",
+    "platform.manage_cron",
+    "platform.manage_content",
+    "manage_org",
+    "manage_teams",
+    "manage_api_keys",
+    "manage_oauth_clients",
+    "manage_sso",
+}
+
+
+def _auth_header(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _register_and_login(client, email=None):
+    email = email or f"pp-api-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    password = "TestPassword123!"
+    client.post("/auth/register", json={"email": email, "password": password})
+    login = client.post("/auth/login", json={"email": email, "password": password})
+    return {"email": email, "password": password, **login.json()}
+
+
+def _grant_platform_admin(email: str) -> None:
+    db = _DirectSession()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        role = db.query(Role).filter(Role.name == "platform_admin").first()
+        assert role is not None, "ensure_platform_admin_role should have created this at startup"
+        user.roles.append(role)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _platform_admin(client):
+    admin = _register_and_login(client)
+    _grant_platform_admin(admin["email"])
+    relogged = client.post("/auth/login", json={"email": admin["email"], "password": admin["password"]}).json()
+    return {**admin, **relogged, "headers": _auth_header(relogged["access_token"])}
+
+
+# ── Authorized access ────────────────────────────────────────────────────────
+
+
+def test_platform_admin_can_list_permissions(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    assert resp.status_code == 200
+
+
+def test_response_contains_all_registered_permissions(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    names = {p["name"] for p in resp.json()}
+    assert names == set(REGISTRY.keys())
+    assert len(resp.json()) == len(REGISTRY)
+    # 13 legacy (5 platform + 3 PR3D + 5 org) + 8 future enterprise entries.
+    # PR4's own docs undercounted this as "20" -- corrected here to the
+    # actual registry size rather than perpetuating that error.
+    assert len(REGISTRY) == 21
+
+
+def test_response_fields_match_permission_def_as_dict(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    by_name = {p["name"]: p for p in resp.json()}
+    for name, perm in REGISTRY.items():
+        assert by_name[name] == perm.as_dict()
+
+
+def test_response_has_no_extra_fields(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    expected_keys = {
+        "name", "resource", "action", "scope", "category",
+        "description", "legacy", "deprecated", "deprecated_reason",
+    }
+    for row in resp.json():
+        assert set(row.keys()) == expected_keys
+
+
+def test_response_is_sorted_by_name(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    names = [p["name"] for p in resp.json()]
+    assert names == sorted(names)
+
+
+# ── Future enterprise permissions present ───────────────────────────────────
+
+
+def test_future_permissions_present_and_correctly_flagged(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    by_name = {p["name"]: p for p in resp.json()}
+    for name in FUTURE_NAMES:
+        assert name in by_name, f"{name} missing from response"
+        assert by_name[name]["legacy"] is False
+        assert by_name[name]["scope"] == "both"
+        assert by_name[name]["deprecated"] is False
+
+
+# ── Legacy permissions present ───────────────────────────────────────────────
+
+
+def test_legacy_permissions_present_and_correctly_flagged(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    by_name = {p["name"]: p for p in resp.json()}
+    for name in LEGACY_NAMES:
+        assert name in by_name, f"{name} missing from response"
+        assert by_name[name]["legacy"] is True
+
+
+# ── Unauthorized access ──────────────────────────────────────────────────────
+
+
+def test_non_platform_admin_cannot_list_permissions(client):
+    owner = _register_and_login(client)
+    resp = client.get("/platform/permissions", headers=_auth_header(owner["access_token"]))
+    assert resp.status_code == 403
+
+
+def test_missing_token_rejected(client):
+    resp = client.get("/platform/permissions")
+    assert resp.status_code in (401, 403)
