@@ -145,13 +145,17 @@ def test_ensure_org_admin_permissions_tops_up_existing_role_additively(client):
     try:
         role = role_service.get_or_create_role(db, org_service.ORG_ADMIN_ROLE, ["manage_org"])
         db.commit()
-        role_service.update_role_permissions(db, role, ["manage_org", "totally_custom_permission"])
+        # PR4: update_role_permissions now validates against the Permission
+        # Registry, so the "operator added something by hand" stand-in must
+        # be a registered (if unrelated to ORG_ADMIN_PERMISSIONS) name rather
+        # than an arbitrary string.
+        role_service.update_role_permissions(db, role, ["manage_org", "workflow.execute"])
 
         org_service.ensure_org_admin_permissions(db)
 
         db.refresh(role)
         names = {p.name for p in role.permissions}
         assert "manage_oauth_clients" in names
-        assert "totally_custom_permission" in names  # untouched, not removed
+        assert "workflow.execute" in names  # untouched, not removed
     finally:
         db.close()

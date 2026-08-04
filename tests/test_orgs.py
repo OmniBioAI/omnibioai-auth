@@ -474,11 +474,17 @@ def test_self_escalation_blocked_on_single_role_assign(client, admin_headers, or
     """Single-role POST variant of test_self_escalation_blocked_on_org_roles
     above: granting yourself one additional role that carries a permission
     you don't already have must be blocked too, not just the full-replace
-    PUT. Uses a brand-new, never-before-seen permission name so it's
+    PUT. Uses a registered-but-unrelated permission name (PR4's Permission
+    Registry rejects unregistered strings via POST /roles) so it's
     guaranteed absent from org_admin's own permission set -- reusing one of
     org_admin's existing 5 permissions here would make the assignment a
-    no-op in permission terms, not an actual escalation attempt."""
-    novel_permission = f"do-something-novel-{uuid.uuid4().hex[:8]}"
+    no-op in permission terms, not an actual escalation attempt. Deliberately
+    NOT "workflow.execute" -- test_oauth_clients.py's
+    test_ensure_org_admin_permissions_tops_up_existing_role_additively
+    permanently adds that one to the real, shared org_admin Role row within
+    the same test session, which would make this comparison a false no-op
+    depending on test order."""
+    novel_permission = "billing.manage"
     wide_role = f"org-wide-post-{uuid.uuid4().hex[:8]}"
     client.post(
         "/roles",

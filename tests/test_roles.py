@@ -38,13 +38,13 @@ def test_create_role(client, admin_headers):
     name = _unique_name("role")
     resp = client.post(
         "/roles",
-        json={"name": name, "permissions": ["read:samples"]},
+        json={"name": name, "permissions": ["dataset.read"]},
         headers=admin_headers,
     )
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == name
-    assert data["permissions"] == ["read:samples"]
+    assert data["permissions"] == ["dataset.read"]
 
 
 def test_create_duplicate_role_returns_409(client, admin_headers):
@@ -63,12 +63,12 @@ def test_list_roles_includes_bootstrap_admin_role(client, admin_headers):
 def test_get_role_detail(client, admin_headers):
     name = _unique_name("detail-role")
     create = client.post(
-        "/roles", json={"name": name, "permissions": ["write:samples"]}, headers=admin_headers
+        "/roles", json={"name": name, "permissions": ["model.use"]}, headers=admin_headers
     )
     role_id = create.json()["id"]
     resp = client.get(f"/roles/{role_id}", headers=admin_headers)
     assert resp.status_code == 200
-    assert resp.json()["permissions"] == ["write:samples"]
+    assert resp.json()["permissions"] == ["model.use"]
 
 
 def test_get_role_not_found(client, admin_headers):
@@ -79,16 +79,16 @@ def test_get_role_not_found(client, admin_headers):
 def test_update_role_permissions(client, admin_headers):
     name = _unique_name("update-role")
     create = client.post(
-        "/roles", json={"name": name, "permissions": ["read:samples"]}, headers=admin_headers
+        "/roles", json={"name": name, "permissions": ["dataset.read"]}, headers=admin_headers
     )
     role_id = create.json()["id"]
     resp = client.put(
         f"/roles/{role_id}",
-        json={"permissions": ["read:samples", "write:samples"]},
+        json={"permissions": ["dataset.read", "model.use"]},
         headers=admin_headers,
     )
     assert resp.status_code == 200
-    assert set(resp.json()["permissions"]) == {"read:samples", "write:samples"}
+    assert set(resp.json()["permissions"]) == {"dataset.read", "model.use"}
 
 
 def test_delete_unused_role(client, admin_headers):
@@ -121,6 +121,60 @@ def test_delete_role_in_use_returns_409(client, admin_headers, registered_user):
 def test_update_role_unknown_name_leaves_no_role(client, admin_headers):
     resp = client.get("/roles/0", headers=admin_headers)
     assert resp.status_code == 404
+
+
+# ── Permission Registry validation (PR4) ────────────────────────────────────────
+
+def test_create_role_with_unregistered_permission_returns_400(client, admin_headers):
+    resp = client.post(
+        "/roles",
+        json={"name": _unique_name("bad-perm-role"), "permissions": ["not_a_real_permission"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400
+
+
+def test_update_role_with_unregistered_permission_returns_400(client, admin_headers):
+    name = _unique_name("update-bad-perm-role")
+    create = client.post(
+        "/roles", json={"name": name, "permissions": ["dataset.read"]}, headers=admin_headers
+    )
+    role_id = create.json()["id"]
+
+    resp = client.put(
+        f"/roles/{role_id}",
+        json={"permissions": ["dataset.read", "not_a_real_permission"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400
+
+    # Rejected update must not have partially applied.
+    unchanged = client.get(f"/roles/{role_id}", headers=admin_headers)
+    assert unchanged.json()["permissions"] == ["dataset.read"]
+
+
+def test_create_role_with_legacy_permission_still_works(client, admin_headers):
+    """Legacy, pre-registry permission names (e.g. manage_org) must remain
+    valid forever -- the registry adds a floor, not a rename."""
+    resp = client.post(
+        "/roles",
+        json={"name": _unique_name("legacy-perm-role"), "permissions": ["manage_org"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["permissions"] == ["manage_org"]
+
+
+def test_create_role_with_future_enterprise_permission_succeeds(client, admin_headers):
+    """Reserved future permissions (billing.read etc.) are already assignable
+    via role CRUD, even though nothing enforces them yet."""
+    resp = client.post(
+        "/roles",
+        json={"name": _unique_name("future-perm-role"), "permissions": ["billing.read"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 201
+    assert resp.json()["permissions"] == ["billing.read"]
 
 
 # ── User role assignment (admin) ────────────────────────────────────────────────
@@ -215,7 +269,7 @@ def test_self_escalation_blocked(client, admin_headers, registered_user):
     escalated_role = _unique_name("escalated-role")
     client.post(
         "/roles",
-        json={"name": escalated_role, "permissions": ["manage_roles", "delete_everything"]},
+        json={"name": escalated_role, "permissions": ["manage_roles", "marketplace.install"]},
         headers=admin_headers,
     )
 
@@ -275,7 +329,7 @@ def test_manage_roles_holder_can_grant_higher_role_to_others(client, admin_heade
     target_role = _unique_name("other-user-role")
     client.post(
         "/roles",
-        json={"name": target_role, "permissions": ["manage_roles", "delete_everything"]},
+        json={"name": target_role, "permissions": ["manage_roles", "marketplace.install"]},
         headers=admin_headers,
     )
 
