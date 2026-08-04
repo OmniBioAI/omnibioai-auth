@@ -47,6 +47,17 @@ FUTURE_NAMES = {
     "marketplace.install": PermissionCategory.MARKETPLACE,
 }
 
+# omnibioai-workflow-bundles IAM integration: unlike FUTURE_NAMES above,
+# these are not unenforced placeholders -- they're consumed immediately by
+# that repo's require_permission dependency, so they don't carry the
+# "Reserved -- not yet enforced" description and get their own assertions
+# below rather than being folded into the FUTURE_NAMES checks.
+WORKFLOW_BUNDLES_NAMES = {
+    "workflow.read": PermissionCategory.WORKFLOW,
+    "workflow.publish": PermissionCategory.WORKFLOW,
+    "workflow.manage": PermissionCategory.WORKFLOW,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -119,6 +130,31 @@ def test_future_names_have_reserved_description():
         assert "not yet enforced" in REGISTRY[name].description.lower()
 
 
+# ── omnibioai-workflow-bundles permissions ──────────────────────────────────
+
+def test_all_workflow_bundles_names_are_known_not_legacy_scope_both():
+    for name, category in WORKFLOW_BUNDLES_NAMES.items():
+        assert is_known_permission(name), f"{name} missing from registry"
+        entry = REGISTRY[name]
+        assert entry.legacy is False
+        assert entry.scope == PermissionScope.BOTH
+        assert entry.category == category
+        assert entry.deprecated is False
+
+
+def test_all_workflow_bundles_names_pass_format_validation():
+    for name in WORKFLOW_BUNDLES_NAMES:
+        assert is_valid_permission_format(name), name
+
+
+def test_workflow_bundles_names_are_not_marked_reserved():
+    # These are real, immediately-enforced permissions (first consumer:
+    # omnibioai-workflow-bundles), not unenforced placeholders like
+    # FUTURE_NAMES -- so they must not carry that description.
+    for name in WORKFLOW_BUNDLES_NAMES:
+        assert "not yet enforced" not in REGISTRY[name].description.lower()
+
+
 # ── Registry-wide invariant ──────────────────────────────────────────────────
 
 def test_every_non_legacy_entry_satisfies_permission_format():
@@ -130,7 +166,9 @@ def test_every_non_legacy_entry_satisfies_permission_format():
 
 
 def test_registry_contains_exactly_the_expected_names():
-    assert set(REGISTRY.keys()) == LEGACY_NAMES | set(FUTURE_NAMES.keys())
+    assert set(REGISTRY.keys()) == (
+        LEGACY_NAMES | set(FUTURE_NAMES.keys()) | set(WORKFLOW_BUNDLES_NAMES.keys())
+    )
 
 
 # ── Format validation examples ───────────────────────────────────────────────
@@ -254,7 +292,7 @@ def test_registry_stats_totals_match_registry_size():
     assert stats["total_permissions"] == len(REGISTRY)
     assert stats["legacy_permissions"] + stats["future_permissions"] == len(REGISTRY)
     assert stats["legacy_permissions"] == len(LEGACY_NAMES)
-    assert stats["future_permissions"] == len(FUTURE_NAMES)
+    assert stats["future_permissions"] == len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES)
 
 
 def test_registry_stats_deprecated_count_is_zero_today():
@@ -266,7 +304,7 @@ def test_registry_stats_by_scope_sums_to_total():
     assert sum(stats["by_scope"].values()) == stats["total_permissions"]
     assert stats["by_scope"]["org"] == 5
     assert stats["by_scope"]["global"] == 8
-    assert stats["by_scope"]["both"] == 8
+    assert stats["by_scope"]["both"] == 11
 
 
 def test_registry_stats_by_category_sums_to_total():
