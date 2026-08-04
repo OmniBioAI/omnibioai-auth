@@ -231,3 +231,25 @@ def require_service_scope(scope: str):
             raise HTTPException(403, "Forbidden")
         return payload
     return wrapper
+
+
+def require_service_identity():
+    """PR9: authenticates a client_credentials service token without
+    requiring any specific scope -- unlike require_service_scope above,
+    this backs GET /service/me, where a service just needs to *be* a
+    valid service identity to read its own identity/permissions, not
+    already hold a particular one. Purely additive: does not change
+    require_service_scope, get_current_user, or any other existing
+    function's behavior -- a user token is still rejected here exactly as
+    require_service_scope already rejects one, and get_current_user's own
+    client_credentials rejection (Phase 2 PR1) is untouched, so a service
+    token still can never satisfy /me."""
+    def wrapper(token=Depends(security)):
+        try:
+            payload = decode_token(token.credentials)
+        except Exception:
+            raise HTTPException(401, "Invalid token")
+        if payload.get("auth_method") != "client_credentials":
+            raise HTTPException(403, "Forbidden -- service token required")
+        return payload
+    return wrapper

@@ -21,6 +21,7 @@ from app.api.routes_platform_roles import router as platform_roles_router
 from app.api.routes_platform_permissions import router as platform_permissions_router
 from app.api.routes_organization_roles import router as organization_roles_router
 from app.api.routes_identity import router as identity_router
+from app.api.routes_service_identity import router as service_identity_router
 from app.api.routes_jwks import router as jwks_router
 from app.db.base import Base
 from app.db.session import engine
@@ -76,6 +77,7 @@ app.include_router(platform_roles_router)
 app.include_router(platform_permissions_router)
 app.include_router(organization_roles_router)
 app.include_router(identity_router)
+app.include_router(service_identity_router)
 app.include_router(jwks_router)
 
 

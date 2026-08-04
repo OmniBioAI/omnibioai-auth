@@ -1,9 +1,11 @@
+import difflib
 import hashlib
 import secrets
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.core.permission_names import REGISTRY, is_known_permission
 from app.db.models import OAuthClient
 
 _CLIENT_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -44,7 +46,27 @@ def create_oauth_client(
     scopes must never exceed what the issuing user themselves holds in
     this org, or OAuth clients become a privilege-escalation path, same
     reasoning as API keys.
+
+    PR9: every scope must also be a name registered in the Permission
+    Registry (app/core/permission_names.py) -- checked first, before the
+    privilege check above, so a typo'd scope gets the more specific
+    "unknown permission" message (with a nearest-match suggestion, same
+    stdlib difflib approach role_service._validate_permission_names
+    already established in PR6) rather than being folded into the
+    unrelated "you don't hold this" message a garbage string would
+    otherwise trigger there too (it can never be in caller_permissions
+    either, since every real permission a caller can hold is already
+    registry-valid by construction).
     """
+    for scope in scopes:
+        if not is_known_permission(scope):
+            suggestions = difflib.get_close_matches(scope, REGISTRY.keys(), n=3, cutoff=0.6)
+            if suggestions:
+                raise ValueError(
+                    f"Unknown service permission: {scope}. Did you mean: {', '.join(suggestions)}?"
+                )
+            raise ValueError(f"Unknown service permission: {scope}")
+
     invalid_scopes = set(scopes) - caller_permissions
     if invalid_scopes:
         raise ValueError(f"Cannot grant scopes you don't hold: {sorted(invalid_scopes)}")
