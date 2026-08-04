@@ -16,6 +16,9 @@ _DirectSession = sessionmaker(bind=_direct_engine)
 
 FUTURE_NAMES = {
     "workflow.execute",
+    "workflow.read",
+    "workflow.publish",
+    "workflow.manage",
     "model.use",
     "dataset.read",
     "usage.read",
@@ -88,10 +91,12 @@ def test_response_contains_all_registered_permissions(client):
     names = {p["name"] for p in resp.json()}
     assert names == set(REGISTRY.keys())
     assert len(resp.json()) == len(REGISTRY)
-    # 13 legacy (5 platform + 3 PR3D + 5 org) + 8 future enterprise entries.
+    # 13 legacy (5 platform + 3 PR3D + 5 org) + 8 future enterprise entries
+    # + 3 omnibioai-workflow-bundles entries (workflow.read/publish/manage,
+    # added alongside the pre-existing workflow.execute).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 21
+    assert len(REGISTRY) == 24
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -209,7 +214,9 @@ def test_filter_combines_category_and_scope(client):
         "/platform/permissions", params={"category": "workflow", "scope": "both"}, headers=admin["headers"],
     )
     assert resp.status_code == 200
-    assert {p["name"] for p in resp.json()} == {"workflow.execute"}
+    assert {p["name"] for p in resp.json()} == {
+        "workflow.execute", "workflow.read", "workflow.publish", "workflow.manage",
+    }
 
 
 def test_no_filters_returns_full_unfiltered_list_unchanged(client):

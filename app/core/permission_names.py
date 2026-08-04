@@ -283,6 +283,55 @@ _register(
         legacy=False,
     )
 )
+
+# omnibioai-workflow-bundles IAM integration: three additional workflow
+# capabilities, split from workflow.execute because reading the catalog,
+# publishing a bundle version, and managing/deleting bundle definitions are
+# distinct security boundaries in that service, not different names for the
+# same one. BOTH-scoped like workflow.execute, for the same reason (not
+# inherently global- or org-only).
+_register(
+    PermissionDef(
+        name="workflow.read",
+        resource="workflow",
+        action="read",
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.WORKFLOW,
+        description=(
+            "List and view workflow bundle catalog entries/definitions "
+            "(omnibioai-workflow-bundles)."
+        ),
+        legacy=False,
+    )
+)
+_register(
+    PermissionDef(
+        name="workflow.publish",
+        resource="workflow",
+        action="publish",
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.WORKFLOW,
+        description=(
+            "Register/publish a new workflow bundle version "
+            "(omnibioai-workflow-bundles)."
+        ),
+        legacy=False,
+    )
+)
+_register(
+    PermissionDef(
+        name="workflow.manage",
+        resource="workflow",
+        action="manage",
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.WORKFLOW,
+        description=(
+            "Create/update/delete workflow bundle definitions; "
+            "administrative lifecycle operations (omnibioai-workflow-bundles)."
+        ),
+        legacy=False,
+    )
+)
 _register(
     PermissionDef(
         name="model.use",
