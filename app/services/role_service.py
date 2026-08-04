@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 
+from app.core.permission_names import is_known_permission
 from app.db.models import Permission, Role, User, user_roles
 
 
@@ -45,6 +46,7 @@ def assign_default_role(db: Session, user: User) -> None:
 
 
 def create_role(db: Session, name: str, permission_names: list[str], description: str | None = None) -> Role:
+    _validate_permission_names(permission_names)
     role = Role(name=name, permissions=_get_or_create_permissions(db, permission_names), description=description)
     db.add(role)
     db.commit()
@@ -57,6 +59,7 @@ def update_role_permissions(db: Session, role: Role, permission_names: list[str]
     as OrganizationUpdate.name/status elsewhere in this codebase -- a
     caller updating only permissions (every existing test/caller) must not
     silently blank out a description someone already set."""
+    _validate_permission_names(permission_names)
     role.permissions = _get_or_create_permissions(db, permission_names)
     if description is not None:
         role.description = description
@@ -120,6 +123,18 @@ def permissions_for_roles(roles: list[Role]) -> set[str]:
     for role in roles:
         perms.update(p.name for p in role.permissions)
     return perms
+
+
+def _validate_permission_names(names: list[str]) -> None:
+    """PR4: gate the one fully-open permission-creation path (create_role/
+    update_role_permissions, reachable from POST/PUT /roles) against the
+    Permission Registry (app/core/permission_names.py). A name already
+    known to the registry -- legacy or newly reserved -- is unaffected;
+    only a genuinely unregistered string is rejected, so every existing
+    role/test continues to work unchanged."""
+    for name in names:
+        if not is_known_permission(name):
+            raise ValueError(f"Unknown permission: {name}")
 
 
 def _get_or_create_permissions(db: Session, names: list[str]) -> list[Permission]:
