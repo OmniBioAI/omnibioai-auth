@@ -3,23 +3,44 @@ from datetime import datetime, timedelta
 from app.db.models import User, RefreshToken
 from app.core.security import verify_password
 from app.core.jwt import create_access_token, create_refresh_token, decode_token
-from app.services import org_service, permission_parity
+from app.services import audit_service, org_service, permission_parity
+from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
 
 
+def _log_login_failure(db, email: str, user: User | None, reason: str) -> None:
+    audit_service.log_event(
+        db, AuditEventType.LOGIN_FAILURE,
+        actor_user_id=user.id if user else None, target_user_id=user.id if user else None,
+        resource_type="user", resource_id=user.id if user else None,
+        metadata={"email": email, "reason": reason},
+    )
+
+
 def authenticate_user(db, email, password):
+    """PR9: emits exactly one login_success/login_failure audit event per
+    call, on every return path -- password-based login only
+    (/auth/login); OAuth/SSO logins have their own distinct flows and are
+    not in this change's scope."""
     user = db.query(User).filter(User.email == email).first()
 
     if not user or user.status != "active":
+        _log_login_failure(db, email, user, "unknown_user_or_inactive")
         return None
 
     if not user.hashed_password:
+        _log_login_failure(db, email, user, "no_password_set")
         return None  # OAuth-only account — no password set
 
     if not verify_password(password, user.hashed_password):
+        _log_login_failure(db, email, user, "invalid_password")
         return None
 
+    audit_service.log_event(
+        db, AuditEventType.LOGIN_SUCCESS, actor_user_id=user.id, target_user_id=user.id,
+        resource_type="user", resource_id=user.id, metadata={"email": email},
+    )
     return user
 
 
