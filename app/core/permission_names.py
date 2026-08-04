@@ -383,10 +383,58 @@ def is_valid_permission_format(name: str) -> bool:
 
 
 def list_registry() -> list[PermissionDef]:
-    """All registered permissions, sorted by name. Prepares a future
-    read-only `GET /platform/permissions` endpoint -- no such endpoint is
-    added by this module."""
+    """All registered permissions, sorted by name. Backs the read-only
+    `GET /platform/permissions` endpoint (PR5)."""
     return sorted(REGISTRY.values(), key=lambda p: p.name)
+
+
+def filter_registry(
+    category: PermissionCategory | None = None,
+    scope: PermissionScope | None = None,
+    legacy: bool | None = None,
+    deprecated: bool | None = None,
+    search: str | None = None,
+) -> list[PermissionDef]:
+    """PR6: in-memory filtering over the registry -- backs `GET
+    /platform/permissions`'s optional query parameters. No database access;
+    operates entirely on `list_registry()`'s already-sorted output, so the
+    result stays sorted by name. `search` matches case-insensitively
+    against both `name` and `description`."""
+    results = list_registry()
+    if category is not None:
+        results = [p for p in results if p.category == category]
+    if scope is not None:
+        results = [p for p in results if p.scope == scope]
+    if legacy is not None:
+        results = [p for p in results if p.legacy == legacy]
+    if deprecated is not None:
+        results = [p for p in results if p.deprecated == deprecated]
+    if search:
+        needle = search.lower()
+        results = [
+            p for p in results
+            if needle in p.name.lower() or needle in p.description.lower()
+        ]
+    return results
+
+
+def registry_stats() -> dict:
+    """PR6: aggregate counts over the registry, computed directly from
+    REGISTRY -- no database access. Backs `GET /platform/permissions/stats`."""
+    all_perms = list(REGISTRY.values())
+    by_scope: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    for p in all_perms:
+        by_scope[p.scope.value] = by_scope.get(p.scope.value, 0) + 1
+        by_category[p.category.value] = by_category.get(p.category.value, 0) + 1
+    return {
+        "total_permissions": len(all_perms),
+        "legacy_permissions": sum(1 for p in all_perms if p.legacy),
+        "future_permissions": sum(1 for p in all_perms if not p.legacy),
+        "by_scope": by_scope,
+        "by_category": by_category,
+        "deprecated_permissions": sum(1 for p in all_perms if p.deprecated),
+    }
 
 
 # ---------------------------------------------------------------------------

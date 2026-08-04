@@ -10,11 +10,16 @@ database access. list_registry() is a pure in-memory read of the module-
 level REGISTRY built at import time, so this router needs no `db` session
 at all.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
-from app.core.permission_names import list_registry
+from app.core.permission_names import (
+    PermissionCategory,
+    PermissionScope,
+    filter_registry,
+    registry_stats,
+)
 from app.rbac import MANAGE_ALL_ORGS, require_permission
-from app.schemas.permissions import PermissionOut
+from app.schemas.permissions import PermissionOut, PermissionStatsOut
 
 # Same prefix/tag convention routes_platform_admin.py, routes_platform_
 # roles.py, and routes_platform_users.py already established for this
@@ -30,8 +35,27 @@ _require_platform_admin = require_permission(MANAGE_ALL_ORGS)
 
 
 @router.get("/permissions", response_model=list[PermissionOut])
-def list_permissions(user=Depends(_require_platform_admin)):
-    # list_registry() already returns entries sorted by name -- passed
-    # through as-is via PermissionDef.as_dict(), never re-derived or
-    # hand-mapped, so this endpoint can't drift from the registry it wraps.
-    return [PermissionOut(**perm.as_dict()) for perm in list_registry()]
+def list_permissions(
+    category: PermissionCategory | None = Query(None),
+    scope: PermissionScope | None = Query(None),
+    legacy: bool | None = Query(None),
+    deprecated: bool | None = Query(None),
+    search: str | None = Query(None),
+    user=Depends(_require_platform_admin),
+):
+    # PR6: all filters default to None, which is a no-op in filter_registry
+    # -- identical output to PR5's unfiltered list_registry() call when no
+    # query parameters are given, so the default response is unchanged.
+    # Filtering happens entirely in memory; the registry stays the sole
+    # source of truth, never re-derived or hand-mapped.
+    perms = filter_registry(
+        category=category, scope=scope, legacy=legacy, deprecated=deprecated, search=search,
+    )
+    return [PermissionOut(**perm.as_dict()) for perm in perms]
+
+
+@router.get("/permissions/stats", response_model=PermissionStatsOut)
+def permission_registry_stats(user=Depends(_require_platform_admin)):
+    # registry_stats() is a pure in-memory computation over REGISTRY --
+    # no database access, matching list_registry()'s own contract.
+    return PermissionStatsOut(**registry_stats())

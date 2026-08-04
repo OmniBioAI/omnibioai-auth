@@ -15,15 +15,22 @@ permission PR1's org directory and PR3A's user directory already use, not
 a new manage_all_users-style permission (see this PR's report for that
 tradeoff, inherited unchanged from PR3A's own reasoning).
 """
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from sqlalchemy.orm import Session
 
+from app.core.permission_names import REGISTRY
 from app.db.models import Role, User
 from app.db.session import get_db
 from app.rbac import MANAGE_ALL_ORGS, get_current_user, require_permission
-from app.schemas.role_admin import RoleAssignRequest, RoleSummary, UserRoleAssignment
+from app.schemas.permissions import RolePermissionOut
+from app.schemas.role_admin import RoleAssignRequest, RoleDetailOut, RoleSummary, UserRoleAssignment
 from app.services import role_service
+
+logger = logging.getLogger("omnibioai.auth.platform_roles")
 
 router = APIRouter(prefix="/platform", tags=["platform-admin"])
 
@@ -39,6 +46,64 @@ def _role_summary(role: Role) -> RoleSummary:
     )
 
 
+def _permission_out_or_500(name: str) -> RolePermissionOut:
+    """PR6: look up full registry metadata for a Permission row already
+    attached to a role. If the name isn't in the registry, that's
+    registry/database drift -- a deployment error (see role_service
+    .assert_no_unregistered_permissions, checked once at startup), not a
+    request-time condition a caller can fix, hence 500 rather than 404/400."""
+    perm = REGISTRY.get(name)
+    if perm is None:
+        raise HTTPException(
+            500,
+            f"Registry drift: permission {name!r} exists on this role in the "
+            "database but is not present in the Permission Registry.",
+        )
+    return RolePermissionOut(**perm.as_dict())
+
+
+def _role_detail(role: Role) -> RoleDetailOut:
+    return RoleDetailOut(
+        id=role.id,
+        name=role.name,
+        description=role.description,
+        permissions=[_permission_out_or_500(p.name) for p in sorted(role.permissions, key=lambda p: p.name)],
+    )
+
+
+def _permission_out_or_none(name: str) -> RolePermissionOut | None:
+    """Lenient counterpart to _permission_out_or_500, used only by the bulk
+    expand_permissions=true list below. In real deployments this can never
+    actually differ from the strict version -- role_service
+    .assert_no_unregistered_permissions already refuses to let the
+    application start if any drift exists, and every validated write path
+    (create_role/update_role_permissions) rejects an unregistered name --
+    so this only matters as defense in depth for a listing surface that
+    must stay available. A single unrelated role's drifted permission must
+    not take down every other role's visibility in a bulk admin listing;
+    it's logged loudly and omitted from just that one role's entry instead
+    -- the same "log it, never silently pretend it isn't different, but
+    don't crash an unrelated read path either" precedent
+    permission_parity.py already established for the legacy/org permission
+    comparison. A caller who wants a hard failure on this exact role's
+    drift can still get one via GET /platform/roles/{role_name}."""
+    perm = REGISTRY.get(name)
+    if perm is None:
+        logger.warning("registry_drift_in_role_listing permission_name=%s", name)
+        return None
+    return RolePermissionOut(**perm.as_dict())
+
+
+def _role_detail_lenient(role: Role) -> RoleDetailOut:
+    permissions = [
+        out for out in (
+            _permission_out_or_none(p.name) for p in sorted(role.permissions, key=lambda p: p.name)
+        )
+        if out is not None
+    ]
+    return RoleDetailOut(id=role.id, name=role.name, description=role.description, permissions=permissions)
+
+
 def _user_role_assignments(user: User) -> list[UserRoleAssignment]:
     # assigned_at/assigned_by are always None -- see role_admin.py's
     # UserRoleAssignment docstring and 0010_role_description's migration
@@ -48,10 +113,36 @@ def _user_role_assignments(user: User) -> list[UserRoleAssignment]:
 
 @router.get("/roles", response_model=list[RoleSummary])
 def list_platform_roles(
+    expand_permissions: bool = Query(
+        False, description="If true, return full registry metadata per permission instead of plain names."
+    ),
     db: Session = Depends(get_db),
     user=Depends(_require_platform_admin),
 ):
-    return [_role_summary(r) for r in role_service.list_roles(db)]
+    roles = role_service.list_roles(db)
+    if expand_permissions:
+        # PR6: a distinct response shape (permissions carry full registry
+        # metadata, not just names) -- returning a Response subclass here
+        # bypasses this route's declared response_model entirely, so the
+        # default (expand_permissions=false) path above keeps its original,
+        # unmodified response_model validation/shape with zero risk of the
+        # expanded branch silently reshaping it. Uses the lenient variant,
+        # not _role_detail -- see _role_detail_lenient's docstring.
+        expanded = [_role_detail_lenient(r) for r in roles]
+        return JSONResponse([r.model_dump(mode="json") for r in expanded])
+    return [_role_summary(r) for r in roles]
+
+
+@router.get("/roles/{role_name}", response_model=RoleDetailOut)
+def get_platform_role_detail(
+    role_name: str,
+    db: Session = Depends(get_db),
+    user=Depends(_require_platform_admin),
+):
+    role = role_service.get_role_by_name(db, role_name)
+    if not role:
+        raise HTTPException(404, "Role not found")
+    return _role_detail(role)
 
 
 @router.get("/users/{user_id}/roles", response_model=list[UserRoleAssignment])

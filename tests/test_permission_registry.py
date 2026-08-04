@@ -2,15 +2,22 @@
 (app/core/permission_names.py) itself -- independent of any HTTP route.
 Route-level (POST/PUT /roles) validation behavior is covered in
 tests/test_roles.py alongside the rest of the role CRUD suite.
+
+PR6 additions: filter_registry()/registry_stats() (pure in-memory query
+helpers) get their own unit coverage here too, independent of the
+GET /platform/permissions HTTP wrapper (covered in
+tests/test_platform_permissions_api.py).
 """
 
 from app.core.permission_names import (
     REGISTRY,
     PermissionCategory,
     PermissionScope,
+    filter_registry,
     is_known_permission,
     is_valid_permission_format,
     list_registry,
+    registry_stats,
 )
 
 LEGACY_NAMES = {
@@ -179,3 +186,91 @@ def test_list_registry_is_sorted_by_name():
     names = [p.name for p in list_registry()]
     assert names == sorted(names)
     assert len(names) == len(REGISTRY)
+
+
+# ── filter_registry() (PR6) ──────────────────────────────────────────────────
+
+def test_filter_registry_no_filters_matches_list_registry():
+    assert filter_registry() == list_registry()
+
+
+def test_filter_registry_by_category():
+    results = filter_registry(category=PermissionCategory.BILLING)
+    assert {p.name for p in results} == {
+        "usage.read", "billing.read", "billing.manage", "subscription.manage",
+    }
+
+
+def test_filter_registry_by_scope():
+    results = filter_registry(scope=PermissionScope.ORG)
+    assert {p.name for p in results} == {
+        "manage_org", "manage_teams", "manage_api_keys", "manage_oauth_clients", "manage_sso",
+    }
+
+
+def test_filter_registry_by_legacy():
+    results = filter_registry(legacy=False)
+    assert {p.name for p in results} == {p.name for p in REGISTRY.values() if not p.legacy}
+    assert all(not p.legacy for p in results)
+
+
+def test_filter_registry_by_deprecated():
+    # Nothing is deprecated yet -- deprecated=True must return an empty list,
+    # deprecated=False must return everything.
+    assert filter_registry(deprecated=True) == []
+    assert len(filter_registry(deprecated=False)) == len(REGISTRY)
+
+
+def test_filter_registry_by_search_matches_name_case_insensitively():
+    results = filter_registry(search="MODEL")
+    names = {p.name for p in results}
+    assert "model.use" in names
+
+
+def test_filter_registry_by_search_matches_description():
+    results = filter_registry(search="break-glass")
+    assert {p.name for p in results} == {"override_sso_enforcement"}
+
+
+def test_filter_registry_combines_filters_with_and_semantics():
+    results = filter_registry(category=PermissionCategory.BILLING, legacy=False)
+    assert {p.name for p in results} == {
+        "usage.read", "billing.read", "billing.manage", "subscription.manage",
+    }
+    results2 = filter_registry(category=PermissionCategory.PLATFORM, legacy=False)
+    assert results2 == []  # every PLATFORM-category entry is legacy today
+
+
+def test_filter_registry_results_stay_sorted():
+    results = filter_registry(scope=PermissionScope.BOTH)
+    names = [p.name for p in results]
+    assert names == sorted(names)
+
+
+# ── registry_stats() (PR6) ───────────────────────────────────────────────────
+
+def test_registry_stats_totals_match_registry_size():
+    stats = registry_stats()
+    assert stats["total_permissions"] == len(REGISTRY)
+    assert stats["legacy_permissions"] + stats["future_permissions"] == len(REGISTRY)
+    assert stats["legacy_permissions"] == len(LEGACY_NAMES)
+    assert stats["future_permissions"] == len(FUTURE_NAMES)
+
+
+def test_registry_stats_deprecated_count_is_zero_today():
+    assert registry_stats()["deprecated_permissions"] == 0
+
+
+def test_registry_stats_by_scope_sums_to_total():
+    stats = registry_stats()
+    assert sum(stats["by_scope"].values()) == stats["total_permissions"]
+    assert stats["by_scope"]["org"] == 5
+    assert stats["by_scope"]["global"] == 8
+    assert stats["by_scope"]["both"] == 8
+
+
+def test_registry_stats_by_category_sums_to_total():
+    stats = registry_stats()
+    assert sum(stats["by_category"].values()) == stats["total_permissions"]
+    assert stats["by_category"]["billing"] == 4
+    assert stats["by_category"]["marketplace"] == 1

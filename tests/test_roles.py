@@ -134,6 +134,28 @@ def test_create_role_with_unregistered_permission_returns_400(client, admin_head
     assert resp.status_code == 400
 
 
+def test_unregistered_permission_error_suggests_nearest_match(client, admin_headers):
+    """PR6: difflib-based suggestions are informational only -- validation
+    behavior (still a 400) is unchanged from PR4."""
+    resp = client.post(
+        "/roles",
+        json={"name": _unique_name("typo-perm-role"), "permissions": ["billing.reed"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400
+    assert "billing.read" in resp.json()["detail"]
+
+
+def test_unregistered_permission_with_no_close_match_has_no_suggestion(client, admin_headers):
+    resp = client.post(
+        "/roles",
+        json={"name": _unique_name("no-match-perm-role"), "permissions": ["zzzzzzzzzzzzzzzzzzzz"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 400
+    assert "Did you mean" not in resp.json()["detail"]
+
+
 def test_update_role_with_unregistered_permission_returns_400(client, admin_headers):
     name = _unique_name("update-bad-perm-role")
     create = client.post(
