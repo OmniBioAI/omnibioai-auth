@@ -61,6 +61,18 @@ class User(Base):
     status_changed_reason = Column(String(500), nullable=True)
     status_changed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
+    # PR11.1: user-management enhancement. Both nullable -- existing rows
+    # predate these columns and have no history to backfill; a user who
+    # has never logged in since this migration also has a real, honest
+    # `None`/`None` rather than a fabricated value. Written in exactly one
+    # place, auth_service.generate_tokens (the shared choke point every
+    # login flow -- password/oauth/sso/license -- already funnels
+    # through), never per-route, so every login path stays in sync by
+    # construction. Deliberately NOT touched by rotate_refresh_token: a
+    # token refresh continues an existing session, it is not a new login.
+    last_login_at = Column(DateTime, nullable=True)
+    authentication_method = Column(String(20), nullable=True)
+
     roles = relationship("Role", secondary=user_roles, back_populates="users")
 
 

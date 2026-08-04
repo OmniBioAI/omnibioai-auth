@@ -75,7 +75,10 @@ def test_platform_users_list_is_lightweight_summaries_only(client):
     resp = client.get("/platform/users", headers=admin["headers"])
     assert resp.status_code == 200
     for item in resp.json()["items"]:
-        assert set(item.keys()) == {"id", "email", "status", "created_at", "global_roles", "org_count"}
+        assert set(item.keys()) == {
+            "id", "email", "status", "created_at", "global_roles", "org_count",
+            "last_login_at", "authentication_method",
+        }
         assert "memberships" not in item
 
 
@@ -299,3 +302,126 @@ def test_invalid_status_value_rejected(client):
         f"/platform/users/{target_id}", json={"status": "deleted"}, headers=admin["headers"]
     )
     assert resp.status_code == 400
+
+
+# ── E. PR11.1: login metadata (last_login_at / authentication_method) ──────
+
+
+def test_password_login_persists_last_login_and_auth_method(client):
+    admin = _platform_admin(client)
+    target = _register_and_login(client)
+    target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
+
+    detail = client.get(f"/platform/users/{target_id}", headers=admin["headers"]).json()
+    assert detail["authentication_method"] == "password"
+    assert detail["last_login_at"] is not None
+
+
+def test_last_login_advances_on_each_login(client):
+    admin = _platform_admin(client)
+    target = _register_and_login(client)
+    target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
+    first = client.get(f"/platform/users/{target_id}", headers=admin["headers"]).json()["last_login_at"]
+
+    client.post("/auth/login", json={"email": target["email"], "password": target["password"]})
+    second = client.get(f"/platform/users/{target_id}", headers=admin["headers"]).json()["last_login_at"]
+    assert second >= first
+
+
+def test_user_with_no_login_since_migration_has_null_metadata(client):
+    """A user created directly in the DB (never through a login flow this
+    session) must show null, not a fabricated value -- the platform-admin
+    account itself is created via register+login by _platform_admin, so
+    this uses a raw DB insert instead to model a genuinely never-logged-in
+    row."""
+    admin = _platform_admin(client)
+    db = _DirectSession()
+    try:
+        never_logged_in = User(email=f"never-{uuid.uuid4().hex[:8]}@omnibioai.test", hashed_password=None, status="active")
+        db.add(never_logged_in)
+        db.commit()
+        db.refresh(never_logged_in)
+        target_id = never_logged_in.id
+    finally:
+        db.close()
+
+    detail = client.get(f"/platform/users/{target_id}", headers=admin["headers"]).json()
+    assert detail["authentication_method"] is None
+    assert detail["last_login_at"] is None
+
+
+# ── F. PR11.1: organization_id / status / role filters ─────────────────────
+
+
+def test_filter_by_status(client):
+    admin = _platform_admin(client)
+    target = _register_and_login(client)
+    target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
+    client.patch(f"/platform/users/{target_id}", json={"status": "suspended"}, headers=admin["headers"])
+
+    suspended = client.get("/platform/users", params={"status": "suspended"}, headers=admin["headers"]).json()
+    assert any(i["id"] == target_id for i in suspended["items"])
+    assert all(i["status"] == "suspended" for i in suspended["items"])
+
+    active = client.get("/platform/users", params={"status": "active"}, headers=admin["headers"]).json()
+    assert all(i["id"] != target_id for i in active["items"])
+
+
+def test_filter_by_organization_id(client):
+    admin = _platform_admin(client)
+    owner = _register_and_login(client)
+    org = _make_org(client, owner)
+    member = _register_and_login(client)
+    client.post(f"/orgs/{org['id']}/invite", json={"email": member["email"]}, headers=org["owner_headers"])
+    outsider = _register_and_login(client)
+
+    resp = client.get("/platform/users", params={"organization_id": org["id"]}, headers=admin["headers"]).json()
+    emails = {i["email"] for i in resp["items"]}
+    assert member["email"] in emails
+    assert owner["email"] in emails
+    assert outsider["email"] not in emails
+
+
+def test_filter_by_global_role(client):
+    admin = _platform_admin(client)
+    plain = _register_and_login(client)
+
+    resp = client.get("/platform/users", params={"role": "platform_admin"}, headers=admin["headers"]).json()
+    emails = {i["email"] for i in resp["items"]}
+    assert admin["email"] in emails
+    assert plain["email"] not in emails
+
+
+def test_filter_by_role_within_organization(client):
+    """With organization_id present, `role` means the caller's role
+    *within that org* (membership_roles), not a global role -- an
+    org_member in org A must not match role=org_member scoped to org B."""
+    admin = _platform_admin(client)
+    owner_a = _register_and_login(client)
+    org_a = _make_org(client, owner_a, "Role Filter Org A")
+    member = _register_and_login(client)
+    client.post(f"/orgs/{org_a['id']}/invite", json={"email": member["email"]}, headers=org_a["owner_headers"])
+
+    owner_b = _register_and_login(client)
+    org_b = _make_org(client, owner_b, "Role Filter Org B")
+
+    resp = client.get(
+        "/platform/users",
+        params={"organization_id": org_a["id"], "role": "org_member"},
+        headers=admin["headers"],
+    ).json()
+    emails = {i["email"] for i in resp["items"]}
+    assert member["email"] in emails
+
+    resp_b = client.get(
+        "/platform/users",
+        params={"organization_id": org_b["id"], "role": "org_member"},
+        headers=admin["headers"],
+    ).json()
+    assert member["email"] not in {i["email"] for i in resp_b["items"]}
+
+
+def test_filters_are_backward_compatible_when_omitted(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/users", headers=admin["headers"])
+    assert resp.status_code == 200

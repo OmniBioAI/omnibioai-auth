@@ -17,7 +17,7 @@ from typing import Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import OrganizationMembership, User
+from app.db.models import OrganizationMembership, Role, User
 from app.schemas.user_admin import ALLOWED_USER_STATUSES
 
 DEFAULT_PAGE_SIZE = 20
@@ -55,14 +55,49 @@ def list_users(
     search: str | None,
     sort_by: SortField,
     sort_order: SortOrder,
+    organization_id: int | None = None,
+    status: str | None = None,
+    role: str | None = None,
 ) -> tuple[list[dict], int]:
     """Returns (page of summary dicts, total matching users). Assumes
     page/page_size/sort_by/sort_order are already validated -- see
     routes_platform_users.py, which owns HTTP-level input validation.
+
+    PR11.1 filters, each independent and AND-combined with the others:
+      - `status`: exact match against User.status.
+      - `organization_id`: only users with an OrganizationMembership row
+        in that org.
+      - `role`: two different things depending on whether
+        `organization_id` is also given, matching how this codebase
+        already models roles as two separate catalogs (global vs.
+        org-scoped, see app/db/models.py's user_roles/membership_roles) --
+        with an org_id, `role` matches the user's *role within that org*
+        (membership_roles); without one, it matches a *global* role
+        (user_roles). Asking "org_admin in org 7" and asking "has the
+        global role org_admin" are different questions, so this filter
+        answers whichever one the caller's other params imply.
     """
     query = db.query(User)
+    joined_membership = False
     if search:
         query = query.filter(User.email.ilike(f"%{search}%"))
+    if status:
+        query = query.filter(User.status == status)
+    if organization_id is not None:
+        query = query.join(OrganizationMembership, OrganizationMembership.user_id == User.id).filter(
+            OrganizationMembership.organization_id == organization_id
+        )
+        joined_membership = True
+        if role:
+            query = query.join(OrganizationMembership.roles).filter(Role.name == role)
+    elif role:
+        query = query.join(User.roles).filter(Role.name == role)
+
+    if joined_membership or role:
+        # A join can multiply User rows (e.g. more than one role
+        # assignment matching `role`) -- collapse back to one row per
+        # user before paginating/counting.
+        query = query.distinct()
 
     total = query.count()
 
@@ -90,6 +125,8 @@ def list_users(
             "created_at": u.created_at,
             "global_roles": sorted(r.name for r in u.roles),
             "org_count": org_counts.get(u.id, 0),
+            "last_login_at": u.last_login_at,
+            "authentication_method": u.authentication_method,
         }
         for u in users
     ]
@@ -138,6 +175,8 @@ def get_user_detail(db: Session, user_id: int) -> dict | None:
         "status_changed_at": user.status_changed_at,
         "status_changed_reason": user.status_changed_reason,
         "status_changed_by_email": status_changed_by.email if status_changed_by else None,
+        "last_login_at": user.last_login_at,
+        "authentication_method": user.authentication_method,
     }
 
 
