@@ -9,6 +9,20 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from app.schemas.permissions import RolePermissionOut
+
+
+class RoleDetailOut(BaseModel):
+    """PR6: full role detail with complete registry metadata per
+    permission (not just names, unlike RoleSummary below). Backs `GET
+    /platform/roles/{role_name}` and, when `?expand_permissions=true`,
+    `GET /platform/roles`'s expanded list items too -- same shape, so no
+    second schema was introduced for that variant."""
+    id: int
+    name: str
+    description: str | None = None
+    permissions: list[RolePermissionOut]
+
 
 class RoleSummary(BaseModel):
     id: int

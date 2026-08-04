@@ -1,6 +1,8 @@
+import difflib
+
 from sqlalchemy.orm import Session
 
-from app.core.permission_names import is_known_permission
+from app.core.permission_names import REGISTRY, is_known_permission
 from app.db.models import Permission, Role, User, user_roles
 
 
@@ -131,10 +133,38 @@ def _validate_permission_names(names: list[str]) -> None:
     Permission Registry (app/core/permission_names.py). A name already
     known to the registry -- legacy or newly reserved -- is unaffected;
     only a genuinely unregistered string is rejected, so every existing
-    role/test continues to work unchanged."""
+    role/test continues to work unchanged.
+
+    PR6: the rejection message is enriched with nearest-name suggestions
+    (stdlib difflib.get_close_matches, no third-party dependency) when any
+    exist, purely informational -- the validation outcome (reject unknown
+    names) is unchanged from PR4, only the message text gains a "Did you
+    mean" hint."""
     for name in names:
         if not is_known_permission(name):
+            suggestions = difflib.get_close_matches(name, REGISTRY.keys(), n=3, cutoff=0.6)
+            if suggestions:
+                raise ValueError(
+                    f"Unknown permission: {name}. Did you mean: {', '.join(suggestions)}?"
+                )
             raise ValueError(f"Unknown permission: {name}")
+
+
+def assert_no_unregistered_permissions(db: Session) -> None:
+    """PR6: startup drift check. Every `Permission` row in the database
+    must exist in the Permission Registry -- the registry is the permanent
+    vocabulary layer, and the database must never be allowed to invent a
+    permission outside it. Called once from app/main.py's bootstrap
+    sequence; never per-request, never as a background task. Raises
+    RuntimeError (not ValueError -- this is a deployment/data-integrity
+    failure, not a request-validation failure) so startup fails loudly
+    rather than serving traffic against a drifted database."""
+    unknown = sorted(p.name for p in db.query(Permission).all() if not is_known_permission(p.name))
+    if unknown:
+        raise RuntimeError(
+            "Permission Registry drift detected: the following Permission "
+            f"rows exist in the database but are not in the registry: {unknown}"
+        )
 
 
 def _get_or_create_permissions(db: Session, names: list[str]) -> list[Permission]:

@@ -158,3 +158,90 @@ def test_non_platform_admin_cannot_list_permissions(client):
 def test_missing_token_rejected(client):
     resp = client.get("/platform/permissions")
     assert resp.status_code in (401, 403)
+
+
+# ── Registry search / filtering (PR6) ────────────────────────────────────────
+
+
+def test_filter_by_category(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", params={"category": "billing"}, headers=admin["headers"])
+    assert resp.status_code == 200
+    names = {p["name"] for p in resp.json()}
+    assert names == {"usage.read", "billing.read", "billing.manage", "subscription.manage"}
+    assert all(p["category"] == "billing" for p in resp.json())
+
+
+def test_filter_by_scope(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", params={"scope": "org"}, headers=admin["headers"])
+    assert resp.status_code == 200
+    assert all(p["scope"] == "org" for p in resp.json())
+    assert len(resp.json()) == 5
+
+
+def test_filter_by_legacy(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", params={"legacy": "true"}, headers=admin["headers"])
+    assert resp.status_code == 200
+    assert all(p["legacy"] is True for p in resp.json())
+    assert len(resp.json()) == len(LEGACY_NAMES)
+
+
+def test_filter_by_deprecated(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", params={"deprecated": "true"}, headers=admin["headers"])
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_filter_by_search(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", params={"search": "model"}, headers=admin["headers"])
+    assert resp.status_code == 200
+    names = {p["name"] for p in resp.json()}
+    assert "model.use" in names
+
+
+def test_filter_combines_category_and_scope(client):
+    admin = _platform_admin(client)
+    resp = client.get(
+        "/platform/permissions", params={"category": "workflow", "scope": "both"}, headers=admin["headers"],
+    )
+    assert resp.status_code == 200
+    assert {p["name"] for p in resp.json()} == {"workflow.execute"}
+
+
+def test_no_filters_returns_full_unfiltered_list_unchanged(client):
+    """Backward compatibility: PR5's original no-query-params behavior."""
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    assert len(resp.json()) == len(REGISTRY)
+
+
+def test_invalid_category_returns_422(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", params={"category": "not-a-category"}, headers=admin["headers"])
+    assert resp.status_code == 422
+
+
+# ── Registry statistics (PR6) ────────────────────────────────────────────────
+
+
+def test_platform_admin_can_get_registry_stats(client):
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions/stats", headers=admin["headers"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_permissions"] == len(REGISTRY)
+    assert body["legacy_permissions"] == len(LEGACY_NAMES)
+    assert body["future_permissions"] == len(FUTURE_NAMES)
+    assert body["deprecated_permissions"] == 0
+    assert sum(body["by_scope"].values()) == len(REGISTRY)
+    assert sum(body["by_category"].values()) == len(REGISTRY)
+
+
+def test_non_platform_admin_cannot_get_registry_stats(client):
+    owner = _register_and_login(client)
+    resp = client.get("/platform/permissions/stats", headers=_auth_header(owner["access_token"]))
+    assert resp.status_code == 403

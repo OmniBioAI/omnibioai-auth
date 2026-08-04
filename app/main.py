@@ -25,6 +25,7 @@ from app.db.session import engine
 from app.db.session import SessionLocal
 from app.db.init_admin import create_admin, ensure_default_organization, ensure_platform_admin_role
 from app.services.org_service import ensure_org_admin_permissions
+from app.services.role_service import assert_no_unregistered_permissions
 from app.core.config import settings
 
 import app.db.models
@@ -49,6 +50,10 @@ create_admin(db)
 ensure_platform_admin_role(db)
 ensure_default_organization(db)
 ensure_org_admin_permissions(db)
+# PR6: registry/database drift is a deployment error -- fail startup
+# loudly rather than serve traffic against a Permission row the registry
+# doesn't know about. Runs once, here, never per-request.
+assert_no_unregistered_permissions(db)
 db.close()
 
 app.include_router(auth_router)
