@@ -367,3 +367,41 @@ class OrganizationSSOConfig(Base):
     sso_override_at = Column(DateTime, nullable=True)
     sso_override_reason = Column(String(500), nullable=True)
     sso_override_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class AuditEvent(Base):
+    """PR9 (Enterprise IAM Foundation): persistent IAM audit ledger,
+    colocated with Users/Organizations/Roles in this repo's own database
+    -- deliberately not routed through the separate omnibioai-security-
+    audit service's Redis/consumer pipeline (a real, existing system, but
+    a generic cross-service request/policy log with no columns for
+    actor/target/organization/before-after state; extending it would mean
+    a second, cross-repo migration for a difference in kind, not degree).
+    See app/services/audit_service.py for the single place rows here are
+    written from.
+
+    actor_user_id/target_user_id/organization_id are nullable and NOT
+    foreign keys with ON DELETE behavior -- an audit row must survive and
+    keep its historical identifiers even if the referenced user/org is
+    later deleted (this codebase has no user/org hard-delete path today,
+    but a ledger must never be designed to assume that stays true).
+    before_state/after_state/event_metadata are JSON so each event_type's
+    payload shape can differ without a schema migration per event kind.
+    """
+    __tablename__ = "audit_events"
+
+    id = Column(Integer, primary_key=True)
+    event_type = Column(String(100), nullable=False, index=True)
+    actor_user_id = Column(Integer, nullable=True, index=True)
+    target_user_id = Column(Integer, nullable=True, index=True)
+    organization_id = Column(Integer, nullable=True, index=True)
+    resource_type = Column(String(50), nullable=True)
+    resource_id = Column(String(100), nullable=True)
+    before_state = Column(JSON, nullable=True)
+    after_state = Column(JSON, nullable=True)
+    # Python attribute can't be named `metadata` -- that name is reserved
+    # by SQLAlchemy's declarative Base (Base.metadata is the schema
+    # MetaData object). The actual database column is still named
+    # `metadata`, matching the requested schema exactly.
+    event_metadata = Column("metadata", JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

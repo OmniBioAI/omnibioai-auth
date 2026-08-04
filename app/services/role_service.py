@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.core.permission_names import REGISTRY, is_known_permission
 from app.db.models import Permission, Role, User, user_roles
+from app.services import audit_service
+from app.services.audit_service import AuditEventType
 
 
 def list_roles(db: Session) -> list[Role]:
@@ -47,26 +49,54 @@ def assign_default_role(db: Session, user: User) -> None:
         user.roles.append(role)
 
 
-def create_role(db: Session, name: str, permission_names: list[str], description: str | None = None) -> Role:
+def create_role(
+    db: Session, name: str, permission_names: list[str], description: str | None = None,
+    actor_user_id: int | None = None,
+) -> Role:
     _validate_permission_names(permission_names)
     role = Role(name=name, permissions=_get_or_create_permissions(db, permission_names), description=description)
     db.add(role)
     db.commit()
     db.refresh(role)
+    audit_service.log_event(
+        db, AuditEventType.ROLE_CREATED, actor_user_id=actor_user_id,
+        resource_type="role", resource_id=role.id,
+        after_state={"name": role.name, "description": role.description, "permissions": sorted(permission_names)},
+    )
     return role
 
 
-def update_role_permissions(db: Session, role: Role, permission_names: list[str], description: str | None = None) -> Role:
+def update_role_permissions(
+    db: Session, role: Role, permission_names: list[str], description: str | None = None,
+    actor_user_id: int | None = None,
+) -> Role:
     """`description` follows the same "None means leave unchanged" contract
     as OrganizationUpdate.name/status elsewhere in this codebase -- a
     caller updating only permissions (every existing test/caller) must not
     silently blank out a description someone already set."""
     _validate_permission_names(permission_names)
+    before = sorted(p.name for p in role.permissions)
     role.permissions = _get_or_create_permissions(db, permission_names)
     if description is not None:
         role.description = description
     db.commit()
     db.refresh(role)
+
+    after = sorted(permission_names)
+    added, removed = set(after) - set(before), set(before) - set(after)
+    # PR9: exactly one audit event per call -- a mixed add+remove replace
+    # is still one row (PERMISSION_GRANTED, since a net new capability was
+    # introduced), with the full before/after + added/removed diff in the
+    # payload rather than splitting into two rows for one mutation. A true
+    # no-op (resubmitting the identical permission set) emits nothing.
+    if added or removed:
+        event_type = AuditEventType.PERMISSION_GRANTED if added else AuditEventType.PERMISSION_REVOKED
+        audit_service.log_event(
+            db, event_type, actor_user_id=actor_user_id,
+            resource_type="role", resource_id=role.id,
+            before_state={"permissions": before}, after_state={"permissions": after},
+            metadata={"added": sorted(added), "removed": sorted(removed)},
+        )
     return role
 
 
@@ -80,19 +110,27 @@ def update_role_permissions(db: Session, role: Role, permission_names: list[str]
 # ---------------------------------------------------------------------------
 
 
-def add_user_role(db: Session, user: User, role: Role) -> User:
+def add_user_role(db: Session, user: User, role: Role, actor_user_id: int | None = None) -> User:
     if role not in user.roles:
         user.roles.append(role)
         db.commit()
         db.refresh(user)
+        audit_service.log_event(
+            db, AuditEventType.ROLE_ASSIGNED, actor_user_id=actor_user_id, target_user_id=user.id,
+            resource_type="role", resource_id=role.id, after_state={"role": role.name},
+        )
     return user
 
 
-def remove_user_role(db: Session, user: User, role: Role) -> User:
+def remove_user_role(db: Session, user: User, role: Role, actor_user_id: int | None = None) -> User:
     if role in user.roles:
         user.roles.remove(role)
         db.commit()
         db.refresh(user)
+        audit_service.log_event(
+            db, AuditEventType.ROLE_REMOVED, actor_user_id=actor_user_id, target_user_id=user.id,
+            resource_type="role", resource_id=role.id, before_state={"role": role.name},
+        )
     return user
 
 

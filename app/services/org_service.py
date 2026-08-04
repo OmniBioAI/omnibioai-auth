@@ -3,7 +3,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.db.models import Organization, OrganizationMembership, User
-from app.services import role_service
+from app.services import audit_service, role_service
+from app.services.audit_service import AuditEventType
 
 # Reused across every organization -- Role/Permission remain a single
 # global catalog (see app/db/models.py's multi-tenant block); only the
@@ -177,6 +178,12 @@ def jit_provision_membership(db: Session, organization_id: int, user_id: int) ->
     db.add(membership)
     db.commit()
     db.refresh(membership)
+    audit_service.log_event(
+        db, AuditEventType.ORG_MEMBERSHIP_CHANGED, actor_user_id=user_id, target_user_id=user_id,
+        organization_id=organization_id, resource_type="organization_membership", resource_id=membership.id,
+        after_state={"status": membership.status, "roles": [member_role.name]},
+        metadata={"reason": "sso_jit_provisioning"},
+    )
     return membership
 
 
@@ -206,17 +213,37 @@ def invite_member(
     db.add(membership)
     db.commit()
     db.refresh(membership)
+    audit_service.log_event(
+        db, AuditEventType.ORG_MEMBERSHIP_CHANGED, actor_user_id=invited_by.id, target_user_id=invitee.id,
+        organization_id=org.id, resource_type="organization_membership", resource_id=membership.id,
+        after_state={"status": membership.status, "roles": [member_role.name]},
+        metadata={"reason": "invited", "email": email},
+    )
     return membership
 
 
-def set_member_roles(db: Session, membership: OrganizationMembership, roles: list) -> OrganizationMembership:
+def set_member_roles(
+    db: Session, membership: OrganizationMembership, roles: list, actor_user_id: int | None = None,
+) -> OrganizationMembership:
     """`roles` must already be resolved Role objects (see
     role_service.resolve_roles) -- mirrors role_service.set_user_roles'
     contract for the same reason: validation happens once, at the call site,
     before this is invoked."""
+    before = sorted(r.name for r in membership.roles)
     membership.roles = roles
     db.commit()
     db.refresh(membership)
+
+    after = sorted(r.name for r in membership.roles)
+    # PR9: one event per call, even though a full replace can add and
+    # remove roles simultaneously -- see role_service.update_role_
+    # permissions' identical reasoning. No-op resubmissions emit nothing.
+    if before != after:
+        audit_service.log_event(
+            db, AuditEventType.ROLE_ASSIGNED, actor_user_id=actor_user_id, target_user_id=membership.user_id,
+            organization_id=membership.organization_id, resource_type="organization_membership_roles",
+            resource_id=membership.id, before_state={"roles": before}, after_state={"roles": after},
+        )
     return membership
 
 
@@ -233,19 +260,33 @@ def permissions_for_membership(membership: OrganizationMembership) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def add_member_role(db: Session, membership: OrganizationMembership, role) -> OrganizationMembership:
+def add_member_role(
+    db: Session, membership: OrganizationMembership, role, actor_user_id: int | None = None,
+) -> OrganizationMembership:
     if role not in membership.roles:
         membership.roles.append(role)
         db.commit()
         db.refresh(membership)
+        audit_service.log_event(
+            db, AuditEventType.ROLE_ASSIGNED, actor_user_id=actor_user_id, target_user_id=membership.user_id,
+            organization_id=membership.organization_id, resource_type="organization_membership_roles",
+            resource_id=membership.id, after_state={"role": role.name},
+        )
     return membership
 
 
-def remove_member_role(db: Session, membership: OrganizationMembership, role) -> OrganizationMembership:
+def remove_member_role(
+    db: Session, membership: OrganizationMembership, role, actor_user_id: int | None = None,
+) -> OrganizationMembership:
     if role in membership.roles:
         membership.roles.remove(role)
         db.commit()
         db.refresh(membership)
+        audit_service.log_event(
+            db, AuditEventType.ROLE_REMOVED, actor_user_id=actor_user_id, target_user_id=membership.user_id,
+            organization_id=membership.organization_id, resource_type="organization_membership_roles",
+            resource_id=membership.id, before_state={"role": role.name},
+        )
     return membership
 
 

@@ -188,7 +188,7 @@ def assign_platform_user_role(
                 "Cannot assign yourself a role that grants additional permissions",
             )
 
-    role_service.add_user_role(db, target, role)
+    role_service.add_user_role(db, target, role, actor_user_id=int(caller.get("sub")))
     return _user_role_assignments(target)
 
 
@@ -210,4 +210,4 @@ def remove_platform_user_role(
     if role not in target.roles:
         raise HTTPException(404, "Role is not assigned to this user")
 
-    role_service.remove_user_role(db, target, role)
+    role_service.remove_user_role(db, target, role, actor_user_id=int(user.get("sub")))

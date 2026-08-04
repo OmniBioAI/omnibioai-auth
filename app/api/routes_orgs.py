@@ -164,7 +164,7 @@ def update_member_roles(
                 "Cannot modify your own org roles to grant yourself additional permissions",
             )
 
-    updated = org_service.set_member_roles(db, target, new_roles)
+    updated = org_service.set_member_roles(db, target, new_roles, actor_user_id=int(user.get("sub")))
     return MemberRolesOut(user_id=updated.user_id, roles=sorted(r.name for r in updated.roles))
 
 
@@ -245,7 +245,7 @@ def assign_member_role(
                 "Cannot assign yourself an org role that grants additional permissions",
             )
 
-    org_service.add_member_role(db, target, role)
+    org_service.add_member_role(db, target, role, actor_user_id=int(user.get("sub")))
     return OrganizationRoleAssignment(
         organization_id=org_id, user_id=user_id, roles=sorted(r.name for r in target.roles)
     )
@@ -270,4 +270,4 @@ def remove_member_role(
     if role not in target.roles:
         raise HTTPException(404, "Role is not assigned to this user in this organization")
 
-    org_service.remove_member_role(db, target, role)
+    org_service.remove_member_role(db, target, role, actor_user_id=caller_membership.user_id)

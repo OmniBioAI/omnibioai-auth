@@ -54,7 +54,9 @@ def create_role(
     if role_service.get_role_by_name(db, body.name):
         raise HTTPException(409, "Role already exists")
     try:
-        role = role_service.create_role(db, body.name, body.permissions, body.description)
+        role = role_service.create_role(
+            db, body.name, body.permissions, body.description, actor_user_id=int(user["sub"]),
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _role_detail_out(role)
@@ -83,7 +85,9 @@ def update_role(
     if not role:
         raise HTTPException(404, "Role not found")
     try:
-        role = role_service.update_role_permissions(db, role, body.permissions, body.description)
+        role = role_service.update_role_permissions(
+            db, role, body.permissions, body.description, actor_user_id=int(user["sub"]),
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _role_detail_out(role)

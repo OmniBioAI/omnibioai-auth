@@ -29,7 +29,8 @@ MULTI_TENANT_TABLES = {
 }
 OAUTH_CLIENTS_TABLES = {"oauth_clients"}
 ORG_SSO_TABLES = {"organization_sso_configs"}
-ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES
+AUDIT_TABLES = {"audit_events"}  # PR9 (0011)
+ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -56,12 +57,13 @@ def sqlite_db_url(tmp_path):
 
 def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     """From an empty database, `alembic upgrade head` must run every
-    revision (0001-0010) for real and produce every expected table, plus
+    revision (0001-0011) for real and produce every expected table, plus
     license_keys' 3 Phase-1 columns, oauth_accounts' organization_sso_config_id
     column, organization_sso_configs' operational (0005) and break-glass
     override (0006) columns, refresh_tokens' rotation (0007) columns,
     organizations' status-tracking (0008) columns, users' directory fields
-    (0009), and roles' description column (0010)."""
+    (0009), roles' description column (0010), and the audit_events table
+    (0011)."""
     cfg = _alembic_config(sqlite_db_url)
     command.upgrade(cfg, "head")
 
@@ -96,6 +98,12 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
 
     roles_columns = {c["name"] for c in inspector.get_columns("roles")}
     assert "description" in roles_columns
+
+    audit_event_columns = {c["name"] for c in inspector.get_columns("audit_events")}
+    assert {
+        "id", "event_type", "actor_user_id", "target_user_id", "organization_id",
+        "resource_type", "resource_id", "before_state", "after_state", "metadata", "created_at",
+    } <= audit_event_columns
 
 
 def test_sqlite_downgrade_base_reverses_cleanly(sqlite_db_url):
@@ -208,7 +216,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0010_role_description"
+    assert recorded == "0011_audit_events"
 
 
 # ---------------------------------------------------------------------------
