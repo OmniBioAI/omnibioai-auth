@@ -76,6 +76,12 @@ class AuditEventType:
     MFA_RECOVERY_CODES_REGENERATED = "mfa_recovery_codes_regenerated"
     MFA_RECOVERY_CODE_USED = "mfa_recovery_code_used"
     MFA_RESET_BY_ADMIN = "mfa_reset_by_admin"
+    # PR11.5.5 (Enterprise Organization MFA Policy). See
+    # docs/pr11-mfa-org-policy-discovery.md SS7.
+    MFA_POLICY_ENABLED = "mfa_policy_enabled"
+    MFA_POLICY_DISABLED = "mfa_policy_disabled"
+    MFA_POLICY_OVERRIDE_CREATED = "mfa_policy_override_created"
+    MFA_POLICY_OVERRIDE_REMOVED = "mfa_policy_override_removed"
 
 
 def log_event(

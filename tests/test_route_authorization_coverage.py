@@ -110,8 +110,16 @@ def test_org_scoped_route_inventory_matches_expected_count():
     dependency update_member_roles (the pre-existing PUT at the same path)
     already used, so this is the deliberate, reviewed reason for the
     count's change, not a silent gap.
+
+    25 -> 30 as of PR11.5.5 (Enterprise Organization MFA Policy): POST/GET/
+    PATCH /orgs/{org_id}/mfa-policy (require_org_permission_or_platform_admin(
+    MANAGE_SSO), mirroring the existing SSO config CRUD exactly) and POST/
+    DELETE /orgs/{org_id}/mfa-policy/override (require_permission(
+    MANAGE_ALL_ORGS), the same global-permission break-glass shape the SSO
+    override routes already use) -- see
+    docs/pr11-mfa-org-policy-discovery.md SS9.
     """
-    assert len(list(_org_scoped_routes())) == 25
+    assert len(list(_org_scoped_routes())) == 30
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
@@ -145,11 +153,18 @@ def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
     )
 
 
-def test_sso_override_routes_are_the_only_global_permission_exception():
+def test_sso_and_mfa_policy_override_routes_are_the_only_global_permission_exception():
     """Locks in *which* routes are allowed to skip org-membership checking
     in favor of a global permission -- so a future route reusing this
     pattern for the wrong reason (convenience, not a genuine break-glass
     need) shows up as a diff to this test, not a silent precedent.
+
+    PR11.5.5 adds the second deliberate exception here,
+    /orgs/{org_id}/mfa-policy/override -- same break-glass reasoning as
+    the SSO override route (must work even if the org's own admin is
+    locked out), reusing the existing manage_all_orgs permission rather
+    than a new one. SSO's override route is no longer the *only*
+    exception, just the first.
     """
     global_permission_only = []
     for route in _org_scoped_routes():
@@ -161,4 +176,5 @@ def test_sso_override_routes_are_the_only_global_permission_exception():
 
     assert set(global_permission_only) == {
         "/orgs/{org_id}/sso/override",
+        "/orgs/{org_id}/mfa-policy/override",
     }

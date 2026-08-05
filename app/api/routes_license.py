@@ -18,7 +18,7 @@ from app.schemas.license import (
     LicenseValidateResponse,
 )
 from app.services import license_service, org_service
-from app.services.auth_service import generate_tokens_or_mfa_challenge
+from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
 router = APIRouter(prefix="/license", tags=["license"])
 
@@ -52,7 +52,18 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
     # docs/pr11-mfa-login-challenge-discovery.md SS2. The license itself
     # is already valid/consumed regardless of this branch -- only token
     # issuance is gated.
-    result = generate_tokens_or_mfa_challenge(db, user, auth_method="license")
+    # PR11.5.5: org-required MFA the user hasn't personally enrolled --
+    # same 403 shape every other login route uses. Confirms this route
+    # was never a bypass path: it already funnels through the shared
+    # decision point since PR11.5.3, so org policy applies here for
+    # free -- see docs/pr11-mfa-org-policy-discovery.md SS5.
+    try:
+        result = generate_tokens_or_mfa_challenge(db, user, auth_method="license")
+    except MFAEnrollmentRequiredError:
+        raise HTTPException(403, detail={
+            "error": "mfa_enrollment_required",
+            "message": "Your organization requires MFA enrollment",
+        })
     if result["mfa_required"]:
         return LicenseValidateResponse(
             valid=True,

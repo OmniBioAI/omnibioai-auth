@@ -1,9 +1,11 @@
 """PR11.5.2 (Enterprise TOTP MFA Enrollment) + PR11.5.3 (Enterprise MFA
 Login Challenge) + PR11.5.4 (Enterprise MFA Recovery Codes + Admin
-Reset). See docs/pr11-totp-enrollment-discovery.md,
-docs/pr11-mfa-login-challenge-discovery.md, and
-docs/pr11-mfa-recovery-codes-discovery.md for the full design
-rationale of each part of this module.
+Reset) + PR11.5.5 (Enterprise Organization MFA Policy). See
+docs/pr11-totp-enrollment-discovery.md,
+docs/pr11-mfa-login-challenge-discovery.md,
+docs/pr11-mfa-recovery-codes-discovery.md, and
+docs/pr11-mfa-org-policy-discovery.md for the full design rationale of
+each part of this module.
 
 TOTP is implemented directly against the stdlib (RFC 6238 / RFC 4226),
 not a third-party library -- see the enrollment discovery doc SS2 for
@@ -24,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core import crypto
 from app.core.jwt import decode_token
-from app.db.models import MFADevice, MFARecoveryCode, RevokedToken, User
+from app.db.models import MFADevice, MFARecoveryCode, OrganizationMFAPolicy, RevokedToken, User
 from app.services import audit_service, org_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import generate_tokens
@@ -600,3 +602,151 @@ def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None
         after_state={"mfa_enabled": False, "mfa_status": "disabled"},
         metadata={"devices_disabled": len(devices), "recovery_codes_invalidated": invalidated_codes},
     )
+
+
+# ---------------------------------------------------------------------------
+# PR11.5.5 (Enterprise Organization MFA Policy). See
+# docs/pr11-mfa-org-policy-discovery.md for the full design. Deliberately
+# kept in this module rather than a new org_mfa_policy_service.py --
+# this PR's own deliverables list names app/services/mfa_service.py,
+# and every MFA-domain mutation (personal or org-level) now lives in one
+# place. No relationship to MFADevice/MFARecoveryCode -- this table only
+# ever asks "does this org require MFA."
+# ---------------------------------------------------------------------------
+
+
+def get_org_mfa_policy(db: Session, organization_id: int) -> OrganizationMFAPolicy | None:
+    return (
+        db.query(OrganizationMFAPolicy)
+        .filter(OrganizationMFAPolicy.organization_id == organization_id)
+        .first()
+    )
+
+
+def create_org_mfa_policy(
+    db: Session, organization_id: int, required: bool, actor_user_id: int
+) -> OrganizationMFAPolicy:
+    """Raises ValueError if a policy already exists (one per org --
+    organization_id is UNIQUE), same shape org_sso_service.configure_sso
+    uses for its own "already exists" case."""
+    if get_org_mfa_policy(db, organization_id) is not None:
+        raise ValueError("this organization already has an MFA policy")
+
+    now = datetime.utcnow()
+    policy = OrganizationMFAPolicy(
+        organization_id=organization_id,
+        required=required,
+        created_at=now,
+        enabled_at=now if required else None,
+        enabled_by_user_id=actor_user_id if required else None,
+    )
+    db.add(policy)
+    db.commit()
+    db.refresh(policy)
+
+    if required:
+        audit_service.log_event(
+            db, AuditEventType.MFA_POLICY_ENABLED, actor_user_id=actor_user_id,
+            organization_id=organization_id, resource_type="organization_mfa_policy", resource_id=policy.id,
+            before_state={"required": False}, after_state={"required": True},
+            metadata={"reason": None},
+        )
+    return policy
+
+
+def set_org_mfa_required(
+    db: Session, policy: OrganizationMFAPolicy, required: bool, actor_user_id: int, reason: str | None = None,
+) -> OrganizationMFAPolicy:
+    """Same "don't log a no-op" convention org_sso_service.set_enforced
+    already uses -- only emits an event on an actual flip. `reason` is
+    optional (unlike the override endpoints below): a routine policy
+    toggle doesn't always warrant one, but it's carried into the audit
+    event's metadata whenever supplied, satisfying this PR's own "every
+    event must contain organization_id/actor_user_id/reason" rule with
+    an honest `None` when omitted rather than forcing a value."""
+    before_required = policy.required
+    policy.required = required
+    policy.updated_at = datetime.utcnow()
+
+    if required and not before_required:
+        policy.enabled_at = datetime.utcnow()
+        policy.enabled_by_user_id = actor_user_id
+
+    db.commit()
+    db.refresh(policy)
+
+    if before_required != required:
+        event_type = AuditEventType.MFA_POLICY_ENABLED if required else AuditEventType.MFA_POLICY_DISABLED
+        audit_service.log_event(
+            db, event_type, actor_user_id=actor_user_id,
+            organization_id=policy.organization_id, resource_type="organization_mfa_policy", resource_id=policy.id,
+            before_state={"required": before_required}, after_state={"required": required},
+            metadata={"reason": reason},
+        )
+    return policy
+
+
+def set_org_mfa_override(
+    db: Session, policy: OrganizationMFAPolicy, reason: str, actor_user_id: int,
+) -> OrganizationMFAPolicy:
+    """Global-admin break-glass bypass: suspends the *effect* of
+    `required` for this org without changing `required` itself, so the
+    org's own configured intent is preserved and resumes automatically
+    once the override is cleared. Does NOT touch any User.mfa_enabled
+    value or any user's own enrolled devices/recovery codes -- see
+    docs/pr11-mfa-org-policy-discovery.md SS3 for why personal MFA is
+    unaffected by an org-level override. Deliberately overwrites any
+    prior override (re-triggering it just updates who/why/when, not an
+    error) -- idempotent from the caller's perspective, same as
+    org_sso_service.set_sso_override."""
+    was_active = policy.override_active
+    now = datetime.utcnow()
+    policy.override_active = True
+    policy.override_reason = reason
+    policy.override_at = now
+    policy.override_by_user_id = actor_user_id
+    db.commit()
+    db.refresh(policy)
+
+    audit_service.log_event(
+        db, AuditEventType.MFA_POLICY_OVERRIDE_CREATED, actor_user_id=actor_user_id,
+        organization_id=policy.organization_id, resource_type="organization_mfa_policy", resource_id=policy.id,
+        before_state={"override_active": was_active, "required": policy.required},
+        after_state={"override_active": True, "required": policy.required},
+        metadata={"reason": reason},
+    )
+    return policy
+
+
+def clear_org_mfa_override(
+    db: Session, policy: OrganizationMFAPolicy, actor_user_id: int,
+) -> OrganizationMFAPolicy:
+    """Only emits an event if an override was actually active before
+    clearing -- same no-op-avoidance convention as
+    org_sso_service.clear_sso_override. `reason` in the removal event's
+    metadata is the *outgoing* override's own reason (why it existed),
+    giving the removal event context without requiring a request body
+    on this DELETE endpoint."""
+    was_active = policy.override_active
+    before_reason = policy.override_reason
+    before_by_user_id = policy.override_by_user_id
+
+    policy.override_active = False
+    policy.override_reason = None
+    policy.override_at = None
+    policy.override_by_user_id = None
+    db.commit()
+    db.refresh(policy)
+
+    if was_active:
+        audit_service.log_event(
+            db, AuditEventType.MFA_POLICY_OVERRIDE_REMOVED, actor_user_id=actor_user_id,
+            organization_id=policy.organization_id, resource_type="organization_mfa_policy", resource_id=policy.id,
+            before_state={
+                "override_active": True, "override_reason": before_reason,
+                "override_by_user_id": before_by_user_id,
+            },
+            after_state={"override_active": False},
+            metadata={"reason": before_reason},
+        )
+    return policy
