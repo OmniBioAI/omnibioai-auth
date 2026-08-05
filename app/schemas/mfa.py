@@ -1,0 +1,29 @@
+from datetime import datetime
+
+from pydantic import BaseModel
+
+
+class TOTPEnrollOut(BaseModel):
+    """Response for POST /users/me/mfa/totp/enroll. The otpauth_uri
+    embeds the plaintext secret -- returned exactly once, here, and
+    never persisted or logged anywhere (see
+    docs/pr11-totp-enrollment-discovery.md SS3)."""
+    device_id: int
+    otpauth_uri: str
+
+
+class TOTPVerifyIn(BaseModel):
+    device_id: int
+    code: str
+
+
+class MFADeviceOut(BaseModel):
+    """Safe metadata only -- no encrypted_secret field, ever, mirroring
+    GlobalConfigOut's own "has_* flag, never the credential" shape
+    (app/schemas/config.py)."""
+    id: int
+    device_type: str
+    label: str | None
+    created_at: datetime
+    verified_at: datetime | None
+    last_used_at: datetime | None

@@ -54,6 +54,17 @@ class AuditEventType:
     # docs/pr11-breakglass-audit-discovery.md (omnibioai-control-center).
     SSO_OVERRIDE_CREATED = "sso_override_created"
     SSO_OVERRIDE_REMOVED = "sso_override_removed"
+    # PR11.5.2 (Enterprise TOTP MFA Enrollment). See
+    # docs/pr11-totp-enrollment-discovery.md. MFA_RESET_BY_ADMIN and
+    # MFA_RECOVERY_USED (named in PR11.5.1's own roadmap) are deliberately
+    # not added yet -- this PR implements neither admin reset nor recovery
+    # codes, so those constants would have nothing to emit them until the
+    # PR that actually adds that functionality (PR11.5.4).
+    MFA_DEVICE_ENROLLMENT_STARTED = "mfa_device_enrollment_started"
+    MFA_DEVICE_ADDED = "mfa_device_added"
+    MFA_DEVICE_REMOVED = "mfa_device_removed"
+    MFA_ENABLED = "mfa_enabled"
+    MFA_DISABLED = "mfa_disabled"
 
 
 def log_event(
