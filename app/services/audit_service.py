@@ -65,6 +65,11 @@ class AuditEventType:
     MFA_DEVICE_REMOVED = "mfa_device_removed"
     MFA_ENABLED = "mfa_enabled"
     MFA_DISABLED = "mfa_disabled"
+    # PR11.5.3 (Enterprise MFA Login Challenge). See
+    # docs/pr11-mfa-login-challenge-discovery.md SS10.
+    MFA_CHALLENGE_REQUIRED = "mfa_challenge_required"
+    MFA_VERIFIED = "mfa_verified"
+    MFA_VERIFICATION_FAILED = "mfa_verification_failed"
 
 
 def log_event(

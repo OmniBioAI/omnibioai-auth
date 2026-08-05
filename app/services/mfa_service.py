@@ -1,15 +1,13 @@
-"""PR11.5.2 (Enterprise TOTP MFA Enrollment). See
-docs/pr11-totp-enrollment-discovery.md for the full design rationale.
-
-Enrollment only -- this module has no login-flow entry point and is not
-called from anywhere in auth_service.py. `User.mfa_enabled` being True
-has no effect on any existing authentication path yet (that's PR11.5.3).
+"""PR11.5.2 (Enterprise TOTP MFA Enrollment) + PR11.5.3 (Enterprise MFA
+Login Challenge). See docs/pr11-totp-enrollment-discovery.md and
+docs/pr11-mfa-login-challenge-discovery.md for the full design
+rationale of each half of this module.
 
 TOTP is implemented directly against the stdlib (RFC 6238 / RFC 4226),
-not a third-party library -- see the discovery doc SS2 for why. Standard
-choices throughout: SHA1, 6 digits, 30s period -- what every mainstream
-authenticator app (Google Authenticator, Authy, 1Password, Microsoft
-Authenticator) assumes.
+not a third-party library -- see the enrollment discovery doc SS2 for
+why. Standard choices throughout: SHA1, 6 digits, 30s period -- what
+every mainstream authenticator app (Google Authenticator, Authy,
+1Password, Microsoft Authenticator) assumes.
 """
 import base64
 import hashlib
@@ -23,9 +21,11 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core import crypto
-from app.db.models import MFADevice, User
-from app.services import audit_service
+from app.core.jwt import decode_token
+from app.db.models import MFADevice, RevokedToken, User
+from app.services import audit_service, org_service
 from app.services.audit_service import AuditEventType
+from app.services.auth_service import generate_tokens
 
 _ISSUER = "OmniBioAI"
 _DIGITS = 6
@@ -285,3 +285,115 @@ def remove_device(db: Session, user_id: int, device_id: int) -> None:
                 resource_type="user", resource_id=user_id,
                 after_state={"mfa_enabled": False},
             )
+
+
+# ---------------------------------------------------------------------------
+# PR11.5.3 (Enterprise MFA Login Challenge). See
+# docs/pr11-mfa-login-challenge-discovery.md SS8 for the full design.
+# ---------------------------------------------------------------------------
+
+
+class MFAChallengeError(ValueError):
+    """Raised for anything wrong with the *challenge token itself* --
+    malformed, expired, wrong type, already used, or belonging to a
+    user who is no longer active or no longer has MFA enabled.
+    Deliberately one generic message across all of these (see
+    verify_mfa_challenge's own docstring) -- always mapped to 401 by
+    the route. A plain ValueError (not this subclass) means the token
+    was fine but the *code* was wrong -- mapped to 400 instead."""
+
+
+def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[str, str]:
+    """Completes an MFA-gated login. Validates `challenge_token` (issued
+    by auth_service.generate_tokens_or_mfa_challenge), verifies `code`
+    against every verified TOTP device the user holds -- not just one,
+    multiple verified devices are supported since PR11.5.1/PR11.5.2 --
+    and on success calls the existing, unchanged generate_tokens to
+    finish the login exactly as primary auth would have, had MFA not
+    been required.
+
+    Raises MFAChallengeError (-> 401) for any problem with the token
+    itself -- deliberately the same generic message regardless of which
+    of malformed/expired/wrong-type/reused/inactive-user/MFA-no-longer-
+    enabled applied, so a probing caller learns nothing about *why* a
+    given token/user doesn't check out. Raises plain ValueError (-> 400)
+    only when the token checks out fine but `code` doesn't match any
+    verified device.
+    """
+    try:
+        payload = decode_token(challenge_token)
+    except Exception:
+        raise MFAChallengeError("Invalid or expired challenge token")
+
+    if payload.get("type") != "mfa_challenge":
+        raise MFAChallengeError("Invalid or expired challenge token")
+
+    jti = payload.get("jti")
+    if jti and db.query(RevokedToken).filter(RevokedToken.token_jti == jti).first():
+        raise MFAChallengeError("Invalid or expired challenge token")
+
+    user_id = payload.get("user_id")
+    user = db.query(User).filter(User.id == user_id).first() if user_id is not None else None
+    if not user or user.status != "active":
+        raise MFAChallengeError("Invalid or expired challenge token")
+
+    # Re-checked here, not just at issuance time -- a user who disables
+    # MFA (removes their last verified device, see remove_device above)
+    # between requesting and completing a challenge must not be able to
+    # finish logging in on a now-stale challenge token.
+    if not user.mfa_enabled:
+        raise MFAChallengeError("Invalid or expired challenge token")
+
+    devices = (
+        db.query(MFADevice)
+        .filter(
+            MFADevice.user_id == user.id,
+            MFADevice.verified_at.isnot(None),
+            MFADevice.disabled_at.is_(None),
+        )
+        .all()
+    )
+
+    matched_device = None
+    for device in devices:
+        secret = crypto.decrypt(device.encrypted_secret)
+        if verify_totp_code(secret, code):
+            matched_device = device
+            break
+
+    org_membership = org_service.resolve_primary_membership(db, user.id)
+    organization_id = org_membership.organization_id if org_membership else None
+    auth_method = payload.get("auth_method") or "password"
+
+    if matched_device is None:
+        audit_service.log_event(
+            db, AuditEventType.MFA_VERIFICATION_FAILED,
+            actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
+            resource_type="user", resource_id=user.id,
+            metadata={"authentication_method": auth_method},
+        )
+        raise ValueError("Invalid verification code")
+
+    now = datetime.utcnow()
+    matched_device.last_used_at = now
+    user.mfa_last_verified_at = now
+    # Single-use: the jti is now permanently in revoked_tokens, the same
+    # table assert_token_usable already checks for any token type -- a
+    # second presentation of this same challenge_token hits the reuse
+    # check above and is rejected, defense-in-depth on top of
+    # get_current_user's own explicit type=="mfa_challenge" rejection
+    # (app/rbac.py) that already keeps it from being usable as an access
+    # token regardless.
+    if jti:
+        db.add(RevokedToken(token_jti=jti))
+    db.commit()
+
+    audit_service.log_event(
+        db, AuditEventType.MFA_VERIFIED,
+        actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
+        resource_type="mfa_device", resource_id=matched_device.id,
+        metadata={"authentication_method": auth_method},
+    )
+
+    idp_org_id = payload.get("idp_org_id")
+    return generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)

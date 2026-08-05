@@ -135,6 +135,37 @@ def create_service_access_token(data: dict, expires_minutes: int):
     return _sign(to_encode)
 
 
+def create_mfa_challenge_token(user_id: int, auth_method: str, idp_org_id: int | None = None):
+    """PR11.5.3: short-lived, self-contained proof that primary
+    authentication (password/oauth/sso/license) already succeeded for
+    `user_id` and only the second factor remains -- same "no
+    server-side session" design as create_oauth_state_token/
+    create_sso_state_token/create_link_token above.
+
+    Deliberately minimal claims: `user_id`, not `sub` -- so this token
+    doesn't structurally resemble a real access token's payload shape
+    at all (on top of the explicit `type` check get_current_user
+    performs, app/rbac.py). No roles/permissions/org_id/org_role, no
+    password/secret/OTP code -- see
+    docs/pr11-mfa-login-challenge-discovery.md SS5. auth_method/idp_org_id
+    are carried through so a successful verification
+    (mfa_service.verify_mfa_challenge) can call the existing
+    generate_tokens() and produce a token identical in shape to what
+    primary auth would have issued directly, had MFA not been required.
+    """
+    return _sign(
+        {
+            "type": "mfa_challenge",
+            "user_id": user_id,
+            "mfa_required": True,
+            "auth_method": auth_method,
+            "idp_org_id": idp_org_id,
+            "exp": datetime.utcnow() + timedelta(minutes=5),
+            "jti": str(uuid.uuid4()),
+        }
+    )
+
+
 def create_link_token(
     user_id: int,
     provider: str,

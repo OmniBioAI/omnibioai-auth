@@ -35,6 +35,17 @@ def get_current_user(token=Depends(security), db: Session = Depends(get_db)):
     # itself.
     if payload.get("auth_method") == "client_credentials":
         raise HTTPException(401, "Invalid token")
+
+    # PR11.5.3: an MFA challenge token (app/core/jwt.py's
+    # create_mfa_challenge_token) proves primary auth succeeded but the
+    # second factor is still outstanding -- it must never satisfy a
+    # user-identity check anywhere in this service, the same reasoning
+    # as the client_credentials rejection immediately above (one shared
+    # dependency, one explicit check, rather than relying on every
+    # individual route to remember it). See
+    # docs/pr11-mfa-login-challenge-discovery.md SS7.
+    if payload.get("type") == "mfa_challenge":
+        raise HTTPException(401, "Invalid token")
     return payload
 
 

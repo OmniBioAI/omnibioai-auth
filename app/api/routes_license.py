@@ -18,7 +18,7 @@ from app.schemas.license import (
     LicenseValidateResponse,
 )
 from app.services import license_service, org_service
-from app.services.auth_service import generate_tokens
+from app.services.auth_service import generate_tokens_or_mfa_challenge
 
 router = APIRouter(prefix="/license", tags=["license"])
 
@@ -39,8 +39,6 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
     if req.machine_id:
         license_service.bind_machine_id(db, license_key, req.machine_id)
 
-    access, refresh = generate_tokens(db, user, auth_method="license")
-
     days_remaining = None
     expiry = None
     if license_key.expires_at:
@@ -48,16 +46,31 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
         expiry = license_key.expires_at.date().isoformat()
 
     membership = org_service.resolve_primary_membership(db, user.id)
+    user_info = {"id": user.id, "email": user.email, "plan": license_key.plan}
+
+    # PR11.5.3: single shared MFA decision point, see
+    # docs/pr11-mfa-login-challenge-discovery.md SS2. The license itself
+    # is already valid/consumed regardless of this branch -- only token
+    # issuance is gated.
+    result = generate_tokens_or_mfa_challenge(db, user, auth_method="license")
+    if result["mfa_required"]:
+        return LicenseValidateResponse(
+            valid=True,
+            mfa_required=True,
+            challenge_token=result["challenge_token"],
+            methods=result["methods"],
+            user_info=user_info,
+            tier=license_key.plan,
+            expiry=expiry,
+            days_remaining=days_remaining,
+            org_id=membership.organization_id if membership else None,
+        )
 
     return LicenseValidateResponse(
         valid=True,
-        access_token=access,
-        refresh_token=refresh,
-        user_info={
-            "id": user.id,
-            "email": user.email,
-            "plan": license_key.plan,
-        },
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        user_info=user_info,
         tier=license_key.plan,
         expiry=expiry,
         days_remaining=days_remaining,

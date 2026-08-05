@@ -10,7 +10,7 @@ from app.core.jwt import create_sso_state_token, decode_token
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody
 from app.services import org_oidc_service, org_service, org_sso_service, oauth_service, sso_discovery_service
-from app.services.auth_service import generate_tokens
+from app.services.auth_service import generate_tokens_or_mfa_challenge
 # Reusing PR2's own PKCE helpers rather than re-implementing them --
 # they're pure functions with no shared state, and the task this PR
 # implements explicitly calls for reusing PR2's PKCE support as-is.
@@ -108,8 +108,14 @@ async def _complete_sso_flow(db: Session, org_slug: str, code: str, state: str) 
     linked_user = oauth_service.find_linked_user(db, "oidc", sub, organization_sso_config_id=config.id)
     if linked_user:
         org_service.jit_provision_membership(db, org.id, linked_user.id)
-        access, refresh = generate_tokens(db, linked_user, auth_method="sso", idp_org_id=org.id)
-        return {"status": "ok", "access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+        # PR11.5.3: single shared MFA decision point, see
+        # docs/pr11-mfa-login-challenge-discovery.md SS2. Applies uniformly
+        # here too -- this platform's own MFA gate is independent of
+        # whatever the enterprise IdP itself may already enforce.
+        result = generate_tokens_or_mfa_challenge(db, linked_user, auth_method="sso", idp_org_id=org.id)
+        if result["mfa_required"]:
+            return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
+        return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
 
     existing_user = oauth_service.find_user_by_email(db, email)
     if existing_user:
@@ -125,8 +131,10 @@ async def _complete_sso_flow(db: Session, org_slug: str, code: str, state: str) 
 
     new_user = oauth_service.create_user_with_oauth(db, "oidc", sub, email, organization_sso_config_id=config.id)
     org_service.jit_provision_membership(db, org.id, new_user.id)
-    access, refresh = generate_tokens(db, new_user, auth_method="sso", idp_org_id=org.id)
-    return {"status": "ok", "access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+    result = generate_tokens_or_mfa_challenge(db, new_user, auth_method="sso", idp_org_id=org.id)
+    if result["mfa_required"]:
+        return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
+    return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
 
 
 # ---------------- CALLBACK ----------------
