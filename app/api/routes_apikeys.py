@@ -67,4 +67,4 @@ def revoke_api_key(
     key = apikey_service.get_api_key(db, org_id, key_id)
     if not key:
         raise HTTPException(404, "API key not found")
-    apikey_service.revoke_api_key(db, key)
+    apikey_service.revoke_api_key(db, key, actor_user_id=membership.user_id)

@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import OrganizationMembership, Role, User
 from app.schemas.user_admin import ALLOWED_USER_STATUSES
+from app.services import audit_service
+from app.services.audit_service import AuditEventType
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
@@ -208,7 +210,10 @@ def set_user_status(
     if status not in ALLOWED_USER_STATUSES:
         raise ValueError(f"Unknown status: {status!r} (expected one of {sorted(ALLOWED_USER_STATUSES)})")
 
-    if status != user.status:
+    changed = status != user.status
+    before_status = user.status
+
+    if changed:
         user.status = status
         user.status_changed_at = datetime.utcnow()
         user.status_changed_reason = reason
@@ -216,4 +221,20 @@ def set_user_status(
 
     db.commit()
     db.refresh(user)
+
+    if changed:
+        # PR11.4b: event *type* uses the task's requested enabled/
+        # disabled framing; the stored before/after state keeps the
+        # real active/suspended values verbatim -- see
+        # docs/pr11-identity-audit-discovery.md §4a. No organization_id
+        # -- this is a cross-tenant, platform-admin action with no
+        # single org in scope.
+        audit_service.log_event(
+            db,
+            AuditEventType.USER_ENABLED if status == "active" else AuditEventType.USER_DISABLED,
+            actor_user_id=actor_user_id, target_user_id=user.id,
+            resource_type="user", resource_id=user.id,
+            before_state={"status": before_status}, after_state={"status": status},
+            metadata={"reason": reason},
+        )
     return user
