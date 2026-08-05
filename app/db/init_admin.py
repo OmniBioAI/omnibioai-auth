@@ -3,6 +3,11 @@ import secrets
 from datetime import datetime
 
 from app.db.models import Organization, Permission, Role, User
+from app.core.permission_names import (
+    PLATFORM_MANAGE_CONTENT,
+    PLATFORM_MANAGE_CRON,
+    PLATFORM_MANAGE_INFRA,
+)
 from app.core.security import hash_password
 from app.services.role_service import get_or_create_role
 
@@ -47,11 +52,44 @@ def create_admin(db):
         db.add(override_sso_perm)
         db.flush()
 
+    # PR3D: gates omnibioai-control-center's docker/services/summary/config
+    # routers via require_iam_permission -- replaces that repo's former
+    # hardcoded "admin" in roles check. Same get-or-create/append-if-missing
+    # shape as every permission above; kept as three separate permissions
+    # (rather than folded into an existing one) so each of Control Center's
+    # operational surfaces -- infra, cron, content -- can be granted
+    # independently of the others in a future, more finely-scoped role.
+    manage_infra_perm = db.query(Permission).filter(Permission.name == PLATFORM_MANAGE_INFRA).first()
+    if not manage_infra_perm:
+        manage_infra_perm = Permission(name=PLATFORM_MANAGE_INFRA)
+        db.add(manage_infra_perm)
+        db.flush()
+
+    manage_cron_perm = db.query(Permission).filter(Permission.name == PLATFORM_MANAGE_CRON).first()
+    if not manage_cron_perm:
+        manage_cron_perm = Permission(name=PLATFORM_MANAGE_CRON)
+        db.add(manage_cron_perm)
+        db.flush()
+
+    manage_content_perm = db.query(Permission).filter(Permission.name == PLATFORM_MANAGE_CONTENT).first()
+    if not manage_content_perm:
+        manage_content_perm = Permission(name=PLATFORM_MANAGE_CONTENT)
+        db.add(manage_content_perm)
+        db.flush()
+
     admin_role = db.query(Role).filter(Role.name == "admin").first()
     if not admin_role:
         admin_role = Role(
             name="admin",
-            permissions=[manage_roles_perm, manage_licenses_perm, manage_config_perm, override_sso_perm],
+            permissions=[
+                manage_roles_perm,
+                manage_licenses_perm,
+                manage_config_perm,
+                override_sso_perm,
+                manage_infra_perm,
+                manage_cron_perm,
+                manage_content_perm,
+            ],
         )
         db.add(admin_role)
         db.flush()
@@ -64,6 +102,12 @@ def create_admin(db):
             admin_role.permissions.append(manage_config_perm)
         if override_sso_perm not in admin_role.permissions:
             admin_role.permissions.append(override_sso_perm)
+        if manage_infra_perm not in admin_role.permissions:
+            admin_role.permissions.append(manage_infra_perm)
+        if manage_cron_perm not in admin_role.permissions:
+            admin_role.permissions.append(manage_cron_perm)
+        if manage_content_perm not in admin_role.permissions:
+            admin_role.permissions.append(manage_content_perm)
 
     admin = db.query(User).filter(User.email == "admin@omnibioai").first()
     if not admin:
