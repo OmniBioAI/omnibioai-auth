@@ -142,5 +142,5 @@ def clear_sso_override(
     user=Depends(require_permission(OVERRIDE_SSO_ENFORCEMENT)),
 ):
     config = _get_or_404(db, org_id)
-    config = org_sso_service.clear_sso_override(db, config)
+    config = org_sso_service.clear_sso_override(db, config, actor_user_id=int(user["sub"]))
     return _to_out(config)

@@ -282,18 +282,62 @@ def set_sso_override(
     the override is cleared. Deliberately overwrites any prior override
     (re-triggering it just updates who/why/when, not an error) --
     idempotent from the caller's perspective."""
+    was_active = config.sso_override_at is not None
     config.sso_override_at = datetime.utcnow()
     config.sso_override_reason = reason
     config.sso_override_by_user_id = actor_user_id
     db.commit()
     db.refresh(config)
+    # PR11.4c: emitted on every call, including a re-trigger of an
+    # already-active override -- see this function's own docstring
+    # ("re-triggering it just updates who/why/when, not an error"),
+    # each is independently audit-worthy. Never client_secret/
+    # client_secret_encrypted/tokens -- neither is touched by this
+    # function at all.
+    audit_service.log_event(
+        db, AuditEventType.SSO_OVERRIDE_CREATED, actor_user_id=actor_user_id,
+        organization_id=config.organization_id, resource_type="organization_sso_config", resource_id=config.id,
+        before_state={"sso_override_active": was_active, "enforced": config.enforced},
+        after_state={"sso_override_active": True, "enforced": config.enforced},
+        metadata={
+            "action": "override_created", "override_reason": reason,
+            "enforced_before": config.enforced, "timestamp": config.sso_override_at.isoformat(),
+        },
+    )
     return config
 
 
-def clear_sso_override(db: Session, config: OrganizationSSOConfig) -> OrganizationSSOConfig:
+def clear_sso_override(
+    db: Session, config: OrganizationSSOConfig, actor_user_id: int | None = None,
+) -> OrganizationSSOConfig:
+    # PR11.4c. `actor_user_id` is a new, optional kwarg (same
+    # backward-compatible pattern PR11.4b used for
+    # apikey_service.revoke_api_key/oauth_client_service.
+    # revoke_oauth_client) -- routes_org_sso.py always passes it.
+    was_active = config.sso_override_at is not None
+    before_reason = config.sso_override_reason
+    before_by_user_id = config.sso_override_by_user_id
+
     config.sso_override_at = None
     config.sso_override_reason = None
     config.sso_override_by_user_id = None
     db.commit()
     db.refresh(config)
+
+    # Only emitted when an override was actually active before clearing
+    # -- same "don't log a no-op" convention set_enforced already
+    # follows. DELETE /override on a config with no active override
+    # silently no-ops (resets already-None fields to None); this PR
+    # doesn't manufacture an audit event for that.
+    if was_active:
+        audit_service.log_event(
+            db, AuditEventType.SSO_OVERRIDE_REMOVED, actor_user_id=actor_user_id,
+            organization_id=config.organization_id, resource_type="organization_sso_config", resource_id=config.id,
+            before_state={
+                "sso_override_active": True, "sso_override_reason": before_reason,
+                "sso_override_by_user_id": before_by_user_id,
+            },
+            after_state={"sso_override_active": False},
+            metadata={"action": "override_removed", "timestamp": datetime.utcnow().isoformat()},
+        )
     return config

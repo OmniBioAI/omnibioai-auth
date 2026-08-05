@@ -50,6 +50,10 @@ class AuditEventType:
     SSO_CONFIGURATION_CREATED = "sso_configuration_created"
     SSO_CONFIGURATION_UPDATED = "sso_configuration_updated"
     SSO_ENFORCEMENT_CHANGED = "sso_enforcement_changed"
+    # PR11.4c (Break-Glass Audit Completion). See
+    # docs/pr11-breakglass-audit-discovery.md (omnibioai-control-center).
+    SSO_OVERRIDE_CREATED = "sso_override_created"
+    SSO_OVERRIDE_REMOVED = "sso_override_removed"
 
 
 def log_event(
