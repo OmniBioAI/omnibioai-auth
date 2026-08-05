@@ -27,6 +27,7 @@ from app.db.models import (
     LicenseKey,
     OAuthClient,
     Organization,
+    OrganizationMFAPolicy,
     OrganizationMembership,
     OrganizationSSOConfig,
     Team,
@@ -68,6 +69,40 @@ def _org_ids_with_sso(db: Session, org_ids: list[int]) -> set[int]:
     rows = (
         db.query(OrganizationSSOConfig.organization_id)
         .filter(OrganizationSSOConfig.organization_id.in_(org_ids))
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def _org_ids_requiring_mfa(db: Session, org_ids: list[int]) -> set[int]:
+    """PR11.5.6 (discovery §6.2): same shape as _org_ids_with_sso above,
+    scoped to policies with required=True -- an existing-but-disabled
+    OrganizationMFAPolicy row (required=False) does not count."""
+    if not org_ids:
+        return set()
+    rows = (
+        db.query(OrganizationMFAPolicy.organization_id)
+        .filter(
+            OrganizationMFAPolicy.organization_id.in_(org_ids),
+            OrganizationMFAPolicy.required.is_(True),
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def _org_ids_with_mfa_policy(db: Session, org_ids: list[int]) -> set[int]:
+    """PR11.5.6: distinct from _org_ids_requiring_mfa above -- true iff
+    any OrganizationMFAPolicy row exists at all, regardless of its
+    `required` value. The Security Dashboard's "organizations without an
+    MFA policy" tile needs this (an org with a row but required=False
+    has *configured* a policy, just not turned it on -- a different,
+    narrower fact than "never configured one")."""
+    if not org_ids:
+        return set()
+    rows = (
+        db.query(OrganizationMFAPolicy.organization_id)
+        .filter(OrganizationMFAPolicy.organization_id.in_(org_ids))
         .all()
     )
     return {r[0] for r in rows}
@@ -121,6 +156,8 @@ def list_organizations(
     oauth_client_counts = _counts_by_org(db, OAuthClient, org_ids, OAuthClient.status == "active")
     license_counts = _counts_by_org(db, LicenseKey, org_ids, LicenseKey.revoked_at.is_(None))
     sso_org_ids = _org_ids_with_sso(db, org_ids)
+    mfa_required_org_ids = _org_ids_requiring_mfa(db, org_ids)
+    mfa_configured_org_ids = _org_ids_with_mfa_policy(db, org_ids)
 
     summaries = [
         {
@@ -135,6 +172,8 @@ def list_organizations(
             "oauth_client_count": oauth_client_counts.get(org.id, 0),
             "license_count": license_counts.get(org.id, 0),
             "sso_enabled": org.id in sso_org_ids,
+            "mfa_policy_required": org.id in mfa_required_org_ids,
+            "mfa_policy_configured": org.id in mfa_configured_org_ids,
         }
         for org, owner_email in rows
     ]

@@ -172,6 +172,8 @@ def test_create_policy_defaults_to_not_required(client, org):
     assert data["required"] is False
     assert data["override_active"] is False
     assert data["enabled_at"] is None
+    assert data["enabled_by_email"] is None
+    assert data["override_reason"] is None
 
 
 def test_create_policy_required_true_sets_enabled_at_and_emits_event(client, org):
@@ -180,6 +182,7 @@ def test_create_policy_required_true_sets_enabled_at_and_emits_event(client, org
     data = resp.json()
     assert data["required"] is True
     assert data["enabled_at"] is not None
+    assert data["enabled_by_email"] == org["owner"]["email"]
 
     events = _events(organization_id=org["id"], event_type="mfa_policy_enabled")
     assert len(events) == 1
@@ -401,6 +404,7 @@ def test_override_active_bypasses_enrollment_requirement(client, org, platform_a
     assert override.status_code == 200
     assert override.json()["required"] is True  # org's own setting untouched
     assert override.json()["override_active"] is True
+    assert override.json()["override_reason"] == "locked out during rollout"
 
     resp = client.post(
         "/auth/login", json={"email": org["owner"]["email"], "password": org["owner"]["password"]}
@@ -420,6 +424,9 @@ def test_override_removed_restores_enforcement(client, org, platform_admin_heade
     cleared = client.delete(f"/orgs/{org['id']}/mfa-policy/override", headers=platform_admin_headers)
     assert cleared.status_code == 200
     assert cleared.json()["override_active"] is False
+    # PR11.5.6: override_reason clears with override_active -- it only
+    # ever reflects the *currently* active override, not history.
+    assert cleared.json()["override_reason"] is None
 
     resp = client.post(
         "/auth/login", json={"email": org["owner"]["email"], "password": org["owner"]["password"]}

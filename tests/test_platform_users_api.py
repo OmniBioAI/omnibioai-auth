@@ -3,10 +3,16 @@ Every route here is gated by require_permission(MANAGE_ALL_ORGS) only --
 the same permission PR1's org directory and PR0.4's org bypass already
 use (see routes_platform_users.py's own comment on this choice).
 """
+import time
+import urllib.parse
 import uuid
 
+import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from app.services import mfa_service
 
 from app.db.models import Role, User
 
@@ -56,6 +62,34 @@ def _platform_admin(client):
     return {**admin, **relogged, "headers": _auth_header(relogged["access_token"])}
 
 
+# PR11.5.6: same technique as tests/test_mfa_org_policy.py's fixture of
+# the same name -- app.core.crypto's Fernet instance is computed once at
+# import time, so patch the already-imported module's singleton.
+@pytest.fixture
+def configured_crypto(monkeypatch):
+    import app.core.crypto as crypto
+
+    key = Fernet.generate_key()
+    monkeypatch.setattr(crypto, "_fernet", Fernet(key))
+    return crypto
+
+
+def _extract_secret(otpauth_uri: str) -> str:
+    return urllib.parse.parse_qs(urllib.parse.urlparse(otpauth_uri).query)["secret"][0]
+
+
+def _enable_mfa(client, headers) -> None:
+    """Enrolls + verifies a TOTP device for the caller. Requires
+    configured_crypto to be in effect."""
+    enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
+    secret = _extract_secret(enroll["otpauth_uri"])
+    code = mfa_service._totp_code_at(secret, int(time.time()))
+    verify = client.post(
+        "/users/me/mfa/totp/verify", json={"device_id": enroll["device_id"], "code": code}, headers=headers
+    )
+    assert verify.status_code == 200
+
+
 # ── A. Basic listing / detail ───────────────────────────────────────────────
 
 
@@ -77,7 +111,7 @@ def test_platform_users_list_is_lightweight_summaries_only(client):
     for item in resp.json()["items"]:
         assert set(item.keys()) == {
             "id", "email", "status", "created_at", "global_roles", "org_count",
-            "last_login_at", "authentication_method",
+            "last_login_at", "authentication_method", "mfa_enabled",
         }
         assert "memberships" not in item
 
@@ -114,6 +148,40 @@ def test_user_detail_shows_global_roles(client):
     detail = client.get(f"/platform/users/{admin_id}", headers=admin["headers"])
     assert detail.status_code == 200
     assert "platform_admin" in detail.json()["global_roles"]
+
+
+def test_user_detail_shows_default_mfa_state_when_none_enrolled(client):
+    admin = _platform_admin(client)
+    someone = _register_and_login(client)
+    user_id = client.post("/auth/validate", json={"token": someone["access_token"]}).json()["user_id"]
+
+    detail = client.get(f"/platform/users/{user_id}", headers=admin["headers"]).json()
+    assert detail["mfa_enabled"] is False
+    assert detail["mfa_status"] == "disabled"
+    assert detail["mfa_primary_method"] is None
+    assert detail["mfa_enabled_at"] is None
+    assert detail["mfa_devices"] == []
+    assert detail["mfa_recovery_codes_remaining"] == 0
+
+
+def test_user_detail_reflects_real_enrolled_mfa_state(client, configured_crypto):
+    admin = _platform_admin(client)
+    someone = _register_and_login(client)
+    headers = _auth_header(someone["access_token"])
+    _enable_mfa(client, headers)
+    client.post("/users/me/mfa/recovery-codes", headers=headers)
+    user_id = client.post("/auth/validate", json={"token": someone["access_token"]}).json()["user_id"]
+
+    detail = client.get(f"/platform/users/{user_id}", headers=admin["headers"]).json()
+    assert detail["mfa_enabled"] is True
+    assert detail["mfa_status"] == "enabled"
+    assert detail["mfa_primary_method"] == "totp"
+    assert detail["mfa_enabled_at"] is not None
+    assert len(detail["mfa_devices"]) == 1
+    assert detail["mfa_devices"][0]["device_type"] == "totp"
+    # Never a secret, ever -- see PlatformMFADeviceSummary's own docstring.
+    assert "encrypted_secret" not in detail["mfa_devices"][0]
+    assert detail["mfa_recovery_codes_remaining"] == 10
 
 
 def test_nonexistent_user_returns_404(client):
