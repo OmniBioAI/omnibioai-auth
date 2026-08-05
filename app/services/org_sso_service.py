@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from app.core import crypto
 from app.core.config import settings
 from app.db.models import OAuthAccount, OrganizationSSOConfig
+from app.services import audit_service
+from app.services.audit_service import AuditEventType
 
 _DISCOVERY_TIMEOUT_SECONDS = 5.0
 _REQUIRED_DISCOVERY_FIELDS = ("authorization_endpoint", "token_endpoint", "jwks_uri")
@@ -147,6 +149,14 @@ async def configure_sso(
     db.add(config)
     db.commit()
     db.refresh(config)
+    # PR11.4b: never client_secret/client_secret_encrypted or any token
+    # in audit metadata -- provider_type and issuer are not secrets.
+    audit_service.log_event(
+        db, AuditEventType.SSO_CONFIGURATION_CREATED, actor_user_id=actor_user_id,
+        organization_id=organization_id, resource_type="organization_sso_config", resource_id=config.id,
+        after_state={"provider_type": config.provider_type, "issuer": config.issuer, "status": config.status},
+        metadata={"provider_type": config.provider_type},
+    )
     return config
 
 
@@ -166,6 +176,8 @@ async def update_sso_config(
     at all if the new issuer fails discovery -- the existing config is
     left exactly as it was, not partially updated.
     """
+    before_issuer, before_client_id, before_domains = config.issuer, config.client_id, config.allowed_domains
+
     if issuer is not None and issuer != config.issuer:
         doc = await verify_oidc_discovery(issuer)
         config.issuer = issuer
@@ -187,6 +199,21 @@ async def update_sso_config(
     config.updated_by_user_id = actor_user_id
     db.commit()
     db.refresh(config)
+    # PR11.4b: one event per update call, even when it touches more than
+    # one field, mirroring org_service.set_member_roles' identical
+    # reasoning -- never client_secret/client_secret_encrypted. Emitted
+    # unconditionally (not gated on "did anything actually change") --
+    # unlike set_user_status/set_enforced below, update_sso_config has no
+    # single before/after value to compare; a no-op resupply is rare
+    # enough here not to warrant tracking per-field dirtiness just to
+    # suppress it.
+    audit_service.log_event(
+        db, AuditEventType.SSO_CONFIGURATION_UPDATED, actor_user_id=actor_user_id,
+        organization_id=config.organization_id, resource_type="organization_sso_config", resource_id=config.id,
+        before_state={"issuer": before_issuer, "client_id": before_client_id, "allowed_domains": before_domains},
+        after_state={"issuer": config.issuer, "client_id": config.client_id, "allowed_domains": config.allowed_domains},
+        metadata={"provider_type": config.provider_type},
+    )
     return config
 
 
@@ -226,11 +253,23 @@ def set_enforced(
             "completed a successful SSO login"
         )
 
+    before_enforced = config.enforced
     config.enforced = enforced
     config.updated_at = datetime.utcnow()
     config.updated_by_user_id = actor_user_id
     db.commit()
     db.refresh(config)
+    # PR11.4b: only emitted on an actual flip -- a resubmission of the
+    # same value (enforced=False -> False) is a no-op the caller already
+    # allows unconditionally, but isn't a real enforcement change worth
+    # a ledger entry.
+    if before_enforced != enforced:
+        audit_service.log_event(
+            db, AuditEventType.SSO_ENFORCEMENT_CHANGED, actor_user_id=actor_user_id,
+            organization_id=config.organization_id, resource_type="organization_sso_config", resource_id=config.id,
+            before_state={"enforced": before_enforced}, after_state={"enforced": enforced},
+            metadata={"enforced_before": before_enforced, "enforced_after": enforced},
+        )
     return config
 
 

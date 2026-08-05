@@ -19,6 +19,7 @@ from app.api.routes_platform_admin import router as platform_admin_router
 from app.api.routes_platform_users import router as platform_users_router
 from app.api.routes_platform_roles import router as platform_roles_router
 from app.api.routes_platform_permissions import router as platform_permissions_router
+from app.api.routes_platform_audit import router as platform_audit_router
 from app.api.routes_organization_roles import router as organization_roles_router
 from app.api.routes_identity import router as identity_router
 from app.api.routes_service_identity import router as service_identity_router
@@ -75,6 +76,7 @@ app.include_router(platform_admin_router)
 app.include_router(platform_users_router)
 app.include_router(platform_roles_router)
 app.include_router(platform_permissions_router)
+app.include_router(platform_audit_router)
 app.include_router(organization_roles_router)
 app.include_router(identity_router)
 app.include_router(service_identity_router)

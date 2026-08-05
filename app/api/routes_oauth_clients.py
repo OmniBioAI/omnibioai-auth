@@ -67,4 +67,4 @@ def revoke_oauth_client(
     client = oauth_client_service.get_oauth_client(db, org_id, client_id)
     if not client:
         raise HTTPException(404, "OAuth client not found")
-    oauth_client_service.revoke_oauth_client(db, client)
+    oauth_client_service.revoke_oauth_client(db, client, actor_user_id=membership.user_id)

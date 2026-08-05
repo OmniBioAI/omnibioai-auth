@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.core.permission_names import REGISTRY, is_known_permission
 from app.db.models import OAuthClient
+from app.services import audit_service
+from app.services.audit_service import AuditEventType
 
 _CLIENT_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _CLIENT_ID_LENGTH = 24
@@ -89,6 +91,13 @@ def create_oauth_client(
     db.add(oauth_client)
     db.commit()
     db.refresh(oauth_client)
+    # PR11.4b: never client_secret (or its hash) in audit metadata.
+    audit_service.log_event(
+        db, AuditEventType.OAUTH_CLIENT_CREATED, actor_user_id=creator_user_id,
+        organization_id=organization_id, resource_type="oauth_client", resource_id=oauth_client.id,
+        after_state={"name": oauth_client.name, "scopes": oauth_client.scopes, "status": oauth_client.status},
+        metadata={"client_id": oauth_client.client_id, "client_name": oauth_client.name, "scopes": oauth_client.scopes},
+    )
     return oauth_client, client_secret
 
 
@@ -104,12 +113,23 @@ def get_oauth_client(db: Session, organization_id: int, client_id: int) -> OAuth
     )
 
 
-def revoke_oauth_client(db: Session, oauth_client: OAuthClient, reason: str | None = None) -> OAuthClient:
+def revoke_oauth_client(
+    db: Session, oauth_client: OAuthClient, reason: str | None = None, actor_user_id: int | None = None,
+) -> OAuthClient:
     oauth_client.status = "revoked"
     oauth_client.revoked_at = datetime.utcnow()
     oauth_client.revoked_reason = reason
     db.commit()
     db.refresh(oauth_client)
+    # PR11.4b. `actor_user_id` is a new, optional kwarg, same reasoning
+    # as apikey_service.revoke_api_key -- see
+    # docs/pr11-identity-audit-discovery.md §4b.
+    audit_service.log_event(
+        db, AuditEventType.OAUTH_CLIENT_REVOKED, actor_user_id=actor_user_id,
+        organization_id=oauth_client.organization_id, resource_type="oauth_client", resource_id=oauth_client.id,
+        before_state={"status": "active"}, after_state={"status": "revoked"},
+        metadata={"client_id": oauth_client.client_id, "client_name": oauth_client.name, "scopes": oauth_client.scopes, "reason": reason},
+    )
     return oauth_client
 
 

@@ -5,6 +5,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.db.models import ApiKey
+from app.services import audit_service
+from app.services.audit_service import AuditEventType
 
 _ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _SECRET_LENGTH = 40
@@ -54,6 +56,14 @@ def create_api_key(
     db.add(api_key)
     db.commit()
     db.refresh(api_key)
+    # PR11.4b: never the plaintext key or its hash in audit metadata --
+    # only the name/scopes an admin reviewing the trail actually needs.
+    audit_service.log_event(
+        db, AuditEventType.API_KEY_CREATED, actor_user_id=creator_user_id,
+        organization_id=organization_id, resource_type="api_key", resource_id=api_key.id,
+        after_state={"name": api_key.name, "scopes": api_key.scopes, "status": api_key.status},
+        metadata={"api_key_name": api_key.name, "scopes": api_key.scopes},
+    )
     return api_key, full_key
 
 
@@ -69,12 +79,24 @@ def get_api_key(db: Session, organization_id: int, key_id: int) -> ApiKey | None
     )
 
 
-def revoke_api_key(db: Session, api_key: ApiKey, reason: str | None = None) -> ApiKey:
+def revoke_api_key(
+    db: Session, api_key: ApiKey, reason: str | None = None, actor_user_id: int | None = None,
+) -> ApiKey:
     api_key.status = "revoked"
     api_key.revoked_at = datetime.utcnow()
     api_key.revoked_reason = reason
     db.commit()
     db.refresh(api_key)
+    # PR11.4b. `actor_user_id` is a new, optional kwarg (see
+    # docs/pr11-identity-audit-discovery.md §4b) -- backward compatible
+    # for any caller that doesn't pass it, though routes_apikeys.py
+    # always does.
+    audit_service.log_event(
+        db, AuditEventType.API_KEY_REVOKED, actor_user_id=actor_user_id,
+        organization_id=api_key.organization_id, resource_type="api_key", resource_id=api_key.id,
+        before_state={"status": "active"}, after_state={"status": "revoked"},
+        metadata={"api_key_name": api_key.name, "scopes": api_key.scopes, "reason": reason},
+    )
     return api_key
 
 
