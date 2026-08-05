@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timedelta
 from app.db.models import User, RefreshToken
 from app.core.security import verify_password
-from app.core.jwt import create_access_token, create_refresh_token, decode_token
+from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
 from app.services import audit_service, org_service, permission_parity
 from app.services.audit_service import AuditEventType
 
@@ -83,6 +83,16 @@ def build_user_claims(
     not bumped, since /auth/validate's degradation is claim-presence-based,
     not version-number-based, and this is the same "additive superset"
     category PR3 already established for that version.
+
+    PR11.5.3: mfa_verified is unconditionally True, not computed per-user
+    here -- this function is only ever called from generate_tokens
+    (either directly, for a user with no MFA, or from inside
+    mfa_service.verify_mfa_challenge, only after a correct TOTP code) or
+    from rotate_refresh_token (continuing a session that already cleared
+    this bar once, at the original login). There is no calling path by
+    which this function runs for a user who still owes a second factor,
+    so the claim is provably always True at every point it's actually
+    built -- see docs/pr11-mfa-login-challenge-discovery.md SS6.
     """
     permissions = sorted({p.name for r in user.roles for p in r.permissions})
 
@@ -103,6 +113,7 @@ def build_user_claims(
         "auth_method": auth_method,
         "idp_org_id": idp_org_id,
         "token_version": 2,
+        "mfa_verified": True,
     }
 
 
@@ -163,6 +174,46 @@ def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | N
     db.commit()
 
     return access, refresh
+
+
+def generate_tokens_or_mfa_challenge(
+    db, user, auth_method: str = "password", idp_org_id: int | None = None
+) -> dict:
+    """PR11.5.3: the single shared MFA decision point every login flow
+    (password/oauth/sso/license -- all seven generate_tokens call sites,
+    see docs/pr11-mfa-login-challenge-discovery.md SS1-SS2) calls instead
+    of generate_tokens directly. Exists so the `if user.mfa_enabled`
+    branch lives in exactly one place, never duplicated per route.
+
+    Returns one of two shapes:
+      {"mfa_required": False, "access_token": ..., "refresh_token": ...}
+      {"mfa_required": True, "challenge_token": ..., "methods": ["totp"]}
+
+    Deliberately does NOT write last_login_at/authentication_method or
+    emit any login-completion state when a challenge is issued -- the
+    user hasn't finished authenticating yet. Those only happen inside
+    generate_tokens itself, called either directly below (no MFA) or
+    from mfa_service.verify_mfa_challenge on successful code
+    verification -- the same, unchanged function either way, so a
+    challenge-gated login and a direct one produce identical-shaped
+    sessions.
+    """
+    if not user.mfa_enabled:
+        access, refresh = generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+        return {"mfa_required": False, "access_token": access, "refresh_token": refresh}
+
+    challenge_token = create_mfa_challenge_token(user.id, auth_method=auth_method, idp_org_id=idp_org_id)
+
+    org_membership = org_service.resolve_primary_membership(db, user.id)
+    audit_service.log_event(
+        db, AuditEventType.MFA_CHALLENGE_REQUIRED,
+        actor_user_id=user.id, target_user_id=user.id,
+        organization_id=org_membership.organization_id if org_membership else None,
+        resource_type="user", resource_id=user.id,
+        metadata={"authentication_method": auth_method},
+    )
+
+    return {"mfa_required": True, "challenge_token": challenge_token, "methods": ["totp"]}
 
 
 def revoke_token(db, token):

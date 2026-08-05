@@ -27,3 +27,12 @@ class MFADeviceOut(BaseModel):
     created_at: datetime
     verified_at: datetime | None
     last_used_at: datetime | None
+
+
+class MFAChallengeVerifyIn(BaseModel):
+    """PR11.5.3 (Enterprise MFA Login Challenge). challenge_token is
+    itself the credential proving primary auth already succeeded -- see
+    docs/pr11-mfa-login-challenge-discovery.md SS8 for why this endpoint,
+    unlike its siblings above, is not gated by get_current_user."""
+    challenge_token: str
+    code: str

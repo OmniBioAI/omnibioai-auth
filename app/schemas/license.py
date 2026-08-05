@@ -39,6 +39,16 @@ class LicenseValidateResponse(BaseModel):
     days_remaining: int | None = None
     org_id: int | None = None
 
+    # PR11.5.3 (Enterprise MFA Login Challenge) -- additive, all optional
+    # with defaults, same pattern every field above already established.
+    # Non-MFA response is unchanged: these three simply stay at their
+    # defaults, indistinguishable from before this PR to any consumer
+    # that doesn't look for them. See
+    # docs/pr11-mfa-login-challenge-discovery.md SS9.
+    mfa_required: bool = False
+    challenge_token: str | None = None
+    methods: list[str] | None = None
+
 
 class LicenseGenerateRequest(BaseModel):
     email: str

@@ -23,7 +23,7 @@ from app.core.token_revocation import assert_token_usable
 from app.services.auth_service import (
     REFRESH_TOKEN_TTL_DAYS as _REFRESH_TOKEN_TTL_DAYS,
     authenticate_user,
-    generate_tokens,
+    generate_tokens_or_mfa_challenge,
     revoke_token,
     rotate_refresh_token,
 )
@@ -156,7 +156,20 @@ def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
         JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="failure").inc()
         raise HTTPException(401, "Invalid credentials")
 
-    access, refresh = generate_tokens(db, user, auth_method="password")
+    # PR11.5.3: single shared MFA decision point, see
+    # docs/pr11-mfa-login-challenge-discovery.md SS2. Non-MFA response
+    # shape below is byte-identical to before this PR -- backward
+    # compatible per that PR's own explicit requirement.
+    result = generate_tokens_or_mfa_challenge(db, user, auth_method="password")
+    if result["mfa_required"]:
+        JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="mfa_required").inc()
+        return {
+            "mfa_required": True,
+            "challenge_token": result["challenge_token"],
+            "methods": result["methods"],
+        }
+
+    access, refresh = result["access_token"], result["refresh_token"]
     JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="success").inc()
     _set_session_cookie(response, refresh)
     return {
