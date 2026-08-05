@@ -400,6 +400,106 @@ def _sso_config_id(organization_id: int) -> int | None:
         db.close()
 
 
+# ── Break-Glass Override lifecycle (PR11.4c) ─────────────────────────────
+# override_sso_enforcement is global-scoped (require_permission, not
+# require_org_permission) -- admin_headers (the bootstrap platform admin
+# account, seeded with every Phase 2/3 permission) is the right caller
+# here, same as test_sso_enforcement.py's own override tests. Neither
+# set_sso_override nor clear_sso_override requires enforcement to
+# actually be on first -- no _enable_enforcement/OIDC-login simulation
+# needed, unlike test_sso_enforcement.py's fuller integration tests.
+
+
+def test_enable_override_emits_sso_override_created_event(client, org, configured_discovery, admin_headers, admin_token):
+    client.post(
+        f"/orgs/{org['id']}/sso",
+        json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
+        headers=org["owner_headers"],
+    )
+    admin_id = _user_id(client, admin_token)
+
+    resp = client.post(
+        f"/orgs/{org['id']}/sso/override", json={"reason": "IdP outage, unblocking pending fix"},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+
+    events = _events(event_type="sso_override_created", organization_id=org["id"])
+    assert len(events) == 1
+    event = events[0]
+    assert event["actor_user_id"] == admin_id
+    assert event["organization_id"] == org["id"]
+    assert event["before_state"]["sso_override_active"] is False
+    assert event["after_state"]["sso_override_active"] is True
+    assert event["metadata"]["override_reason"] == "IdP outage, unblocking pending fix"
+    assert event["metadata"]["action"] == "override_created"
+    assert "enforced_before" in event["metadata"]
+    assert "timestamp" in event["metadata"]
+    _assert_no_secret_leakage(event)
+
+
+def test_re_triggering_an_active_override_emits_a_second_event(client, org, configured_discovery, admin_headers):
+    """The service's own docstring frames re-triggering as deliberate
+    (updates who/why/when) -- each call is independently audit-worthy,
+    not deduplicated."""
+    client.post(
+        f"/orgs/{org['id']}/sso",
+        json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
+        headers=org["owner_headers"],
+    )
+    client.post(f"/orgs/{org['id']}/sso/override", json={"reason": "first reason"}, headers=admin_headers)
+    client.post(f"/orgs/{org['id']}/sso/override", json={"reason": "second reason"}, headers=admin_headers)
+
+    events = _events(event_type="sso_override_created", organization_id=org["id"])
+    assert len(events) == 2
+    assert events[0]["metadata"]["override_reason"] == "first reason"
+    assert events[1]["metadata"]["override_reason"] == "second reason"
+    # Re-triggering doesn't claim the override was previously inactive.
+    assert events[1]["before_state"]["sso_override_active"] is True
+
+
+def test_remove_override_emits_sso_override_removed_event(client, org, configured_discovery, admin_headers, admin_token):
+    client.post(
+        f"/orgs/{org['id']}/sso",
+        json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
+        headers=org["owner_headers"],
+    )
+    admin_id = _user_id(client, admin_token)
+    client.post(f"/orgs/{org['id']}/sso/override", json={"reason": "IdP outage"}, headers=admin_headers)
+
+    resp = client.delete(f"/orgs/{org['id']}/sso/override", headers=admin_headers)
+    assert resp.status_code == 200
+
+    events = _events(event_type="sso_override_removed", organization_id=org["id"])
+    assert len(events) == 1
+    event = events[0]
+    assert event["actor_user_id"] == admin_id
+    assert event["organization_id"] == org["id"]
+    assert event["before_state"]["sso_override_active"] is True
+    assert event["before_state"]["sso_override_reason"] == "IdP outage"
+    assert event["after_state"]["sso_override_active"] is False
+    assert event["metadata"]["action"] == "override_removed"
+    assert "timestamp" in event["metadata"]
+    _assert_no_secret_leakage(event)
+
+
+def test_removing_an_inactive_override_emits_no_event(client, org, configured_discovery, admin_headers):
+    """DELETE /override on a config with no active override silently
+    no-ops (pre-existing behavior, unchanged by this PR) -- no event is
+    manufactured for it, same "don't log a no-op" convention
+    set_enforced's own audit call already follows."""
+    client.post(
+        f"/orgs/{org['id']}/sso",
+        json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
+        headers=org["owner_headers"],
+    )
+
+    resp = client.delete(f"/orgs/{org['id']}/sso/override", headers=admin_headers)
+    assert resp.status_code == 200
+
+    assert _events(event_type="sso_override_removed", organization_id=org["id"]) == []
+
+
 # ── GET /platform/audit-events ───────────────────────────────────────────
 
 
