@@ -10,7 +10,14 @@ class RefreshToken(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    token = Column(String(500), unique=True, index=True)
+    # PR12: widened from 500 -- adding iss/aud claims (core/jwt.py::_sign)
+    # pushed a real token past 500 chars (~524 for a plain no-org user;
+    # an org-scoped user with org_role/permissions is longer still),
+    # causing a real "Data too long for column" failure on login against
+    # MySQL. 767 is the largest VARCHAR that keeps this column's UNIQUE
+    # index under InnoDB's 3072-byte max key length at 4 bytes/char
+    # (utf8mb4): 767 * 4 = 3068.
+    token = Column(String(767), unique=True, index=True)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime)
