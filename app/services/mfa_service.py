@@ -1,7 +1,9 @@
 """PR11.5.2 (Enterprise TOTP MFA Enrollment) + PR11.5.3 (Enterprise MFA
-Login Challenge). See docs/pr11-totp-enrollment-discovery.md and
-docs/pr11-mfa-login-challenge-discovery.md for the full design
-rationale of each half of this module.
+Login Challenge) + PR11.5.4 (Enterprise MFA Recovery Codes + Admin
+Reset). See docs/pr11-totp-enrollment-discovery.md,
+docs/pr11-mfa-login-challenge-discovery.md, and
+docs/pr11-mfa-recovery-codes-discovery.md for the full design
+rationale of each part of this module.
 
 TOTP is implemented directly against the stdlib (RFC 6238 / RFC 4226),
 not a third-party library -- see the enrollment discovery doc SS2 for
@@ -22,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.core import crypto
 from app.core.jwt import decode_token
-from app.db.models import MFADevice, RevokedToken, User
+from app.db.models import MFADevice, MFARecoveryCode, RevokedToken, User
 from app.services import audit_service, org_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import generate_tokens
@@ -31,6 +33,13 @@ _ISSUER = "OmniBioAI"
 _DIGITS = 6
 _PERIOD = 30
 _VERIFY_WINDOW = 1  # +-1 step (~90s total tolerance) for clock drift
+
+# PR11.5.4: no I/O -- avoids 1/0 confusion when hand-typed from a
+# printed sheet. See docs/pr11-mfa-recovery-codes-discovery.md SS5.
+_RECOVERY_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+_RECOVERY_CODE_GROUP_LEN = 4
+_RECOVERY_CODE_GROUPS = 3
+_RECOVERY_CODE_COUNT = 10
 
 
 # ---------------------------------------------------------------------------
@@ -364,36 +373,230 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
     org_membership = org_service.resolve_primary_membership(db, user.id)
     organization_id = org_membership.organization_id if org_membership else None
     auth_method = payload.get("auth_method") or "password"
+    idp_org_id = payload.get("idp_org_id")
 
-    if matched_device is None:
+    if matched_device is not None:
+        now = datetime.utcnow()
+        matched_device.last_used_at = now
+        user.mfa_last_verified_at = now
+        _consume_challenge_jti(db, jti)
+
         audit_service.log_event(
-            db, AuditEventType.MFA_VERIFICATION_FAILED,
+            db, AuditEventType.MFA_VERIFIED,
+            actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
+            resource_type="mfa_device", resource_id=matched_device.id,
+            metadata={"authentication_method": auth_method},
+        )
+        return generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+
+    # PR11.5.4: TOTP didn't match any device -- try `code` as a recovery
+    # code before giving up. Same challenge_token, same request shape;
+    # the code's own format (6 digits vs "AAAA-BBBB-CCCC") is what
+    # disambiguates, never a separate endpoint or field. See
+    # docs/pr11-mfa-recovery-codes-discovery.md SS3.
+    recovery_match = verify_recovery_code(db, user.id, code)
+    if recovery_match is not None:
+        now = datetime.utcnow()
+        consume_recovery_code(db, recovery_match.id)
+        user.mfa_last_verified_at = now
+        _consume_challenge_jti(db, jti)
+
+        audit_service.log_event(
+            db, AuditEventType.MFA_RECOVERY_CODE_USED,
             actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
             resource_type="user", resource_id=user.id,
             metadata={"authentication_method": auth_method},
         )
-        raise ValueError("Invalid verification code")
+        return generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
 
-    now = datetime.utcnow()
-    matched_device.last_used_at = now
-    user.mfa_last_verified_at = now
-    # Single-use: the jti is now permanently in revoked_tokens, the same
-    # table assert_token_usable already checks for any token type -- a
-    # second presentation of this same challenge_token hits the reuse
-    # check above and is rejected, defense-in-depth on top of
-    # get_current_user's own explicit type=="mfa_challenge" rejection
-    # (app/rbac.py) that already keeps it from being usable as an access
-    # token regardless.
+    audit_service.log_event(
+        db, AuditEventType.MFA_VERIFICATION_FAILED,
+        actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
+        resource_type="user", resource_id=user.id,
+        metadata={"authentication_method": auth_method},
+    )
+    raise ValueError("Invalid verification code")
+
+
+def _consume_challenge_jti(db: Session, jti: str | None) -> None:
+    """Single-use enforcement, shared by both the TOTP and recovery-code
+    success paths above: the jti is now permanently in revoked_tokens,
+    the same table assert_token_usable already checks for any token
+    type -- a second presentation of this same challenge_token hits the
+    reuse check earlier in verify_mfa_challenge and is rejected,
+    defense-in-depth on top of get_current_user's own explicit
+    type=="mfa_challenge" rejection (app/rbac.py) that already keeps it
+    from being usable as an access token regardless."""
     if jti:
         db.add(RevokedToken(token_jti=jti))
     db.commit()
 
+
+# ---------------------------------------------------------------------------
+# PR11.5.4 (Enterprise MFA Recovery Codes + Admin Reset). See
+# docs/pr11-mfa-recovery-codes-discovery.md for the full design.
+# ---------------------------------------------------------------------------
+
+
+def _generate_one_recovery_code() -> str:
+    groups = [
+        "".join(secrets.choice(_RECOVERY_CODE_ALPHABET) for _ in range(_RECOVERY_CODE_GROUP_LEN))
+        for _ in range(_RECOVERY_CODE_GROUPS)
+    ]
+    return "-".join(groups)
+
+
+def _hash_recovery_code(code: str) -> str:
+    # Normalize case/whitespace -- a user re-typing a code from a
+    # printed sheet may vary casing/spacing; the hyphens are part of the
+    # canonical displayed format and hashed as-is, matching exactly what
+    # was generated and shown.
+    return hashlib.sha256(code.strip().upper().encode()).hexdigest()
+
+
+def invalidate_recovery_codes(db: Session, user_id: int) -> int:
+    """Marks every currently-unused recovery code for this user as used
+    -- MFARecoveryCode has no separate disabled_at column (and none is
+    added by this PR); reusing `used_at` as a general "no longer
+    redeemable" marker is deliberate, see the discovery doc SS1. Called
+    by regenerate_recovery_codes (before issuing a fresh batch) and by
+    reset_user_mfa (admin reset). Returns the number of codes
+    invalidated, for the caller's own audit metadata -- purely
+    informational, the invalidation itself has already happened by the
+    time this returns. No audit event of its own: both callers already
+    emit a more specific event that captures *why*."""
+    now = datetime.utcnow()
+    unused = (
+        db.query(MFARecoveryCode)
+        .filter(MFARecoveryCode.user_id == user_id, MFARecoveryCode.used_at.is_(None))
+        .all()
+    )
+    for row in unused:
+        row.used_at = now
+    if unused:
+        db.commit()
+    return len(unused)
+
+
+def _issue_recovery_codes(db: Session, user_id: int, event_type: str) -> list[str]:
+    invalidated = invalidate_recovery_codes(db, user_id)
+
+    plaintext_codes = [_generate_one_recovery_code() for _ in range(_RECOVERY_CODE_COUNT)]
+    now = datetime.utcnow()
+    for code in plaintext_codes:
+        db.add(MFARecoveryCode(user_id=user_id, code_hash=_hash_recovery_code(code), created_at=now))
+    db.commit()
+
     audit_service.log_event(
-        db, AuditEventType.MFA_VERIFIED,
-        actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
-        resource_type="mfa_device", resource_id=matched_device.id,
-        metadata={"authentication_method": auth_method},
+        db, event_type, actor_user_id=user_id, target_user_id=user_id,
+        resource_type="user", resource_id=user_id,
+        metadata={"codes_issued": len(plaintext_codes), "codes_invalidated": invalidated},
+    )
+    return plaintext_codes
+
+
+def generate_recovery_codes(db: Session, user_id: int) -> list[str]:
+    """Generates 10 new recovery codes. Always invalidates any existing
+    unused codes first (via invalidate_recovery_codes) so a user can
+    never end up with two live batches at once -- safe to call
+    unconditionally, including a second time for a user who already has
+    an unused batch. Returns the plaintext codes -- the only moment they
+    exist outside this function; only their SHA-256 hash is ever
+    persisted."""
+    return _issue_recovery_codes(db, user_id, AuditEventType.MFA_RECOVERY_CODES_GENERATED)
+
+
+def regenerate_recovery_codes(db: Session, user_id: int) -> list[str]:
+    """Same underlying operation as generate_recovery_codes (invalidate
+    old, issue new 10) -- distinguished only by which audit event fires.
+    POST /users/me/mfa/recovery-codes/regenerate is a distinct, explicit
+    user action worth its own event type
+    (MFA_RECOVERY_CODES_REGENERATED)."""
+    return _issue_recovery_codes(db, user_id, AuditEventType.MFA_RECOVERY_CODES_REGENERATED)
+
+
+def recovery_codes_remaining(db: Session, user_id: int) -> int:
+    return (
+        db.query(MFARecoveryCode)
+        .filter(MFARecoveryCode.user_id == user_id, MFARecoveryCode.used_at.is_(None))
+        .count()
     )
 
-    idp_org_id = payload.get("idp_org_id")
-    return generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+
+def verify_recovery_code(db: Session, user_id: int, code: str) -> MFARecoveryCode | None:
+    """Returns the matching, still-unused row for this user, or None.
+    Comparison is a direct hash-equality lookup, not
+    hmac.compare_digest -- unlike TOTP's 6-digit code (short, guessable
+    digit-by-digit, so a timing side-channel on the comparison matters),
+    the value compared here is already an irreversible SHA-256 digest,
+    not the secret itself; there is no analogous incremental-guessing
+    shape to defend against. See the discovery doc SS5 for the full
+    reasoning."""
+    if not code:
+        return None
+    code_hash = _hash_recovery_code(code)
+    return (
+        db.query(MFARecoveryCode)
+        .filter(
+            MFARecoveryCode.user_id == user_id,
+            MFARecoveryCode.code_hash == code_hash,
+            MFARecoveryCode.used_at.is_(None),
+        )
+        .first()
+    )
+
+
+def consume_recovery_code(db: Session, code_id: int) -> None:
+    """Marks a specific MFARecoveryCode row as used (one-time use).
+    Separate from verify_recovery_code so a caller can check-then-decide
+    before committing to consumption, mirroring TOTP verification's own
+    "check first, then update state" shape. No audit event here -- the
+    caller (verify_mfa_challenge) owns the actual MFA_RECOVERY_CODE_USED
+    event, since it has the auth_method/organization context this
+    function's own single-argument signature deliberately doesn't
+    carry."""
+    row = db.query(MFARecoveryCode).filter(MFARecoveryCode.id == code_id).first()
+    if row is None:
+        return
+    row.used_at = datetime.utcnow()
+    db.commit()
+
+
+def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None:
+    """Admin break-glass: fully resets a user's MFA state. Disables
+    every device, invalidates every recovery code, and clears the
+    user's own mfa_* fields -- but never touches User.status,
+    last_login_at, authentication_method, or any AuditEvent row (login
+    history and audit history are explicitly preserved). The user can
+    freely re-enroll from scratch afterward via the normal PR11.5.2
+    enrollment flow. Raises LookupError if target_user_id doesn't exist
+    (-> 404, route)."""
+    user = db.query(User).filter(User.id == target_user_id).first()
+    if user is None:
+        raise LookupError("User not found")
+
+    now = datetime.utcnow()
+    devices = (
+        db.query(MFADevice)
+        .filter(MFADevice.user_id == target_user_id, MFADevice.disabled_at.is_(None))
+        .all()
+    )
+    for device in devices:
+        device.disabled_at = now
+
+    invalidated_codes = invalidate_recovery_codes(db, target_user_id)
+
+    user.mfa_enabled = False
+    user.mfa_status = "disabled"
+    user.mfa_primary_method = None
+    user.mfa_enabled_at = None
+    user.mfa_last_verified_at = None
+    db.commit()
+
+    audit_service.log_event(
+        db, AuditEventType.MFA_RESET_BY_ADMIN,
+        actor_user_id=actor_user_id, target_user_id=target_user_id,
+        resource_type="user", resource_id=target_user_id,
+        after_state={"mfa_enabled": False, "mfa_status": "disabled"},
+        metadata={"devices_disabled": len(devices), "recovery_codes_invalidated": invalidated_codes},
+    )

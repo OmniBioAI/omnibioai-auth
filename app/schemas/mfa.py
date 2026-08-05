@@ -36,3 +36,24 @@ class MFAChallengeVerifyIn(BaseModel):
     unlike its siblings above, is not gated by get_current_user."""
     challenge_token: str
     code: str
+
+
+class RecoveryCodesOut(BaseModel):
+    """PR11.5.4. Returned only once, at generation/regeneration time --
+    no endpoint ever returns plaintext codes again afterward (see
+    docs/pr11-mfa-recovery-codes-discovery.md)."""
+    codes: list[str]
+
+
+class RecoveryCodesStatusOut(BaseModel):
+    """PR11.5.4. Count only -- codes themselves are never retrievable
+    after generation."""
+    remaining: int
+
+
+class MFAResetOut(BaseModel):
+    """PR11.5.4. Response for the admin reset endpoint
+    (POST /platform/users/{user_id}/mfa/reset)."""
+    user_id: int
+    mfa_enabled: bool
+    mfa_status: str

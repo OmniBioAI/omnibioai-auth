@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 from app.db.models import User
 from app.db.session import get_db
 from app.rbac import MANAGE_ALL_ORGS, get_current_user, require_permission
+from app.schemas.mfa import MFAResetOut
 from app.schemas.user_admin import PlatformUserDetailOut, PlatformUserListOut, UserStatusUpdate
-from app.services import user_admin_service
+from app.services import mfa_service, user_admin_service
 
 # Phase 3 PR3A. New prefix, mirroring routes_platform_admin.py's own
 # /platform/orgs shape exactly -- /platform/users is a platform-admin-only,
@@ -82,3 +83,21 @@ def update_platform_user_status(
 
     detail = user_admin_service.get_user_detail(db, user_id)
     return detail
+
+
+# PR11.5.4 (Enterprise MFA Recovery Codes + Admin Reset). Same
+# _require_platform_admin/actor-target shape as update_platform_user_status
+# immediately above -- no new permission, see
+# docs/pr11-mfa-recovery-codes-discovery.md SS6.
+@router.post("/{user_id}/mfa/reset", response_model=MFAResetOut)
+def reset_platform_user_mfa(
+    user_id: int,
+    db: Session = Depends(get_db),
+    caller=Depends(get_current_user),
+    _admin=Depends(_require_platform_admin),
+):
+    try:
+        mfa_service.reset_user_mfa(db, user_id, actor_user_id=int(caller["sub"]))
+    except LookupError:
+        raise HTTPException(404, "User not found")
+    return MFAResetOut(user_id=user_id, mfa_enabled=False, mfa_status="disabled")
