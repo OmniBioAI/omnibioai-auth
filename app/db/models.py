@@ -73,6 +73,21 @@ class User(Base):
     last_login_at = Column(DateTime, nullable=True)
     authentication_method = Column(String(20), nullable=True)
 
+    # PR11.5.1 (MFA database foundation): status metadata only, no
+    # secrets -- see docs/pr11-mfa-database-foundation-discovery.md §2.1.
+    # mfa_enabled is a live current-state flag (not a historical fact
+    # like the fields above), so unlike them it gets a real
+    # NOT NULL DEFAULT false rather than a nullable/no-backfill column --
+    # every pre-existing row is unambiguously "MFA not enabled" today,
+    # since MFA doesn't exist anywhere in this codebase yet. Schema only:
+    # no login flow reads these columns, no enrollment/challenge logic
+    # exists yet (that's PR11.5.2/11.5.3).
+    mfa_enabled = Column(Boolean, nullable=False, default=False)
+    mfa_status = Column(String(20), nullable=False, default="disabled")  # disabled | pending | enabled
+    mfa_primary_method = Column(String(20), nullable=True)  # "totp" | "webauthn"
+    mfa_enabled_at = Column(DateTime, nullable=True)
+    mfa_last_verified_at = Column(DateTime, nullable=True)
+
     roles = relationship("Role", secondary=user_roles, back_populates="users")
 
 
@@ -417,3 +432,59 @@ class AuditEvent(Base):
     # `metadata`, matching the requested schema exactly.
     event_metadata = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class MFADevice(Base):
+    """PR11.5.1: a single enrolled MFA factor. Separate from `User`
+    (see docs/pr11-mfa-database-foundation-discovery.md §2.2) because a
+    user may enroll more than one factor -- mirrors ApiKey/OAuthClient's
+    own "secret-bearing row, separate from its owning identity, FK +
+    indexed by owner" shape exactly.
+
+    Schema only: no enrollment/verification logic exists yet (that's
+    PR11.5.2), so nothing in this codebase writes a row here today.
+    `encrypted_secret` uses the same Fernet CONFIG_ENCRYPTION_KEY as
+    OrganizationSSOConfig.client_secret_encrypted / OrganizationConfig.
+    llm_api_key_encrypted (app/core/crypto.py) -- reversible encryption,
+    not a hash, because a TOTP code can only be verified by decrypting
+    the shared secret back to plaintext.
+    """
+    __tablename__ = "mfa_devices"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    device_type = Column(String(20), nullable=False)  # "totp" | "webauthn"
+    label = Column(String(255), nullable=True)  # user-chosen display name, e.g. "iPhone"
+    encrypted_secret = Column(String(1000), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    verified_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    disabled_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
+class MFARecoveryCode(Base):
+    """PR11.5.1: one-time-use recovery codes, hashed at rest -- never
+    the plaintext code. Same "store a hash, never the plaintext"
+    convention as ApiKey.key_hash / OAuthClient.client_secret_hash, not
+    MFADevice's reversible-encryption pattern, because a recovery code
+    only ever needs to be *checked*, never decrypted for reuse.
+
+    code_hash is deliberately not unique=True: a recovery code is
+    always looked up scoped to an already-known user_id (the user is
+    mid-login, missing only their second factor), unlike ApiKey/
+    OAuthClient secrets which must resolve to their owner on a global
+    lookup -- see docs/pr11-mfa-database-foundation-discovery.md §2.3.
+
+    Schema only: no generation/consumption logic exists yet.
+    """
+    __tablename__ = "mfa_recovery_codes"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    code_hash = Column(String(64), nullable=False)  # sha256 hex, same shape as OAuthClient.client_secret_hash
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    used_at = Column(DateTime, nullable=True)  # NULL = unused
+
+    user = relationship("User")
