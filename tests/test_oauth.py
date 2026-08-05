@@ -1,10 +1,16 @@
 import uuid
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.core.jwt import create_oauth_state_token
 from app.core.oauth_providers import PROVIDERS
+from app.db.models import User
 from app.services import oauth_service
+
+_direct_engine = create_engine("sqlite:///./test.db")
+_DirectSession = sessionmaker(bind=_direct_engine)
 
 
 @pytest.fixture
@@ -67,6 +73,17 @@ def test_callback_creates_new_user_and_issues_token(client, configured_google, m
     validate = client.post("/auth/validate", json={"token": data["access_token"]})
     assert validate.json()["valid"] is True
     assert validate.json()["email"] == email
+
+    # PR11.1: persisted users.authentication_method for the 3-provider
+    # consumer-OAuth flow (google/github/microsoft) is "oauth" -- distinct
+    # from enterprise SSO's "oidc" (see test_sso_login.py).
+    db = _DirectSession()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        assert user.authentication_method == "oauth"
+        assert user.last_login_at is not None
+    finally:
+        db.close()
 
 
 def test_callback_invalid_state_returns_400(client, configured_google, monkeypatch):

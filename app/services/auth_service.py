@@ -106,12 +106,42 @@ def build_user_claims(
     }
 
 
+# PR11.1: the persisted `users.authentication_method` vocabulary is
+# deliberately narrower than the JWT `auth_method` claim above --
+# password/oauth/oidc/unknown only, matching what the admin console
+# actually needs to display. "sso" (this service's internal name for
+# enterprise OIDC login) maps to "oidc" for that display; "license" (a
+# fourth real flow, routes_license.py) has no dedicated column value in
+# the PR11.1 spec and maps to "unknown" rather than silently inventing a
+# fifth displayed value. The JWT claim itself is untouched by this map --
+# every existing consumer of `auth_method` in a token payload keeps
+# seeing exactly what it always has.
+_PERSISTED_AUTH_METHODS = {"password": "password", "oauth": "oauth", "sso": "oidc"}
+
+
+def _persisted_auth_method(auth_method: str) -> str:
+    return _PERSISTED_AUTH_METHODS.get(auth_method, "unknown")
+
+
 def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | None = None):
     """`auth_method` records which flow issued this token ("password" |
     "oauth" | "license" | "sso") -- purely informational, not used for any
     authorization decision. Claims themselves come from `build_user_claims`
     (above) -- see that docstring for what each field means.
+
+    PR11.1: also the single place `users.last_login_at`/
+    `authentication_method` are written, for exactly this reason -- every
+    login flow (password/oauth/sso/license) already calls this function
+    with the right `auth_method`, so hooking here keeps every flow in
+    sync by construction rather than repeating the write at each of the
+    seven call sites across routes_auth.py/routes_oauth.py/routes_sso.py/
+    routes_license.py. Deliberately not in `build_user_claims`, which
+    `rotate_refresh_token` also calls on every token refresh -- a refresh
+    continues an existing session, it must not look like a new login.
     """
+    user.last_login_at = datetime.utcnow()
+    user.authentication_method = _persisted_auth_method(auth_method)
+
     payload = build_user_claims(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
 
     access = create_access_token(payload)

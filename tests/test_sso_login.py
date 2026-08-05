@@ -333,6 +333,18 @@ def test_successful_callback_creates_user_and_issues_sso_token(client, org_with_
     assert validate.json()["valid"] is True
     assert validate.json()["idp_org_id"] == org_with_sso["org_id"]
 
+    # PR11.1: the JWT claim above stays "sso" (unchanged, still checked
+    # above) -- the *persisted* users.authentication_method column uses
+    # the admin-console-facing vocabulary and maps "sso" -> "oidc".
+    from app.db.models import User
+    db = _DirectSession()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        assert user.authentication_method == "oidc"
+        assert user.last_login_at is not None
+    finally:
+        db.close()
+
 
 def test_repeat_login_reuses_same_user_no_duplicate_membership(client, org_with_sso, monkeypatch, rsa_keypair):
     private_key, private_pem = rsa_keypair

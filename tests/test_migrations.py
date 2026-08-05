@@ -216,7 +216,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0011_audit_events"
+    assert recorded == "0012_user_login_metadata"
 
 
 # ---------------------------------------------------------------------------

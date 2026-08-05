@@ -30,6 +30,12 @@ def list_platform_users(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: str | None = Query(None, description="Matches user email"),
+    # PR11.1: all three additive and independently optional -- an
+    # omitted param behaves exactly as it did before this PR (backward
+    # compatible), see user_admin_service.list_users for how they combine.
+    organization_id: int | None = Query(None),
+    status: str | None = Query(None),
+    role: str | None = Query(None),
     sort_by: Literal["email", "created_at", "status"] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
     db: Session = Depends(get_db),
@@ -37,6 +43,7 @@ def list_platform_users(
 ):
     items, total = user_admin_service.list_users(
         db, page=page, page_size=page_size, search=search, sort_by=sort_by, sort_order=sort_order,
+        organization_id=organization_id, status=status, role=role,
     )
     total_pages = (total + page_size - 1) // page_size if total else 0
     return PlatformUserListOut(items=items, total=total, page=page, page_size=page_size, total_pages=total_pages)

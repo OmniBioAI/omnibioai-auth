@@ -18,6 +18,11 @@ class PlatformUserSummary(BaseModel):
     created_at: datetime | None
     global_roles: list[str]
     org_count: int
+    # PR11.1: null for any user who predates this migration or has never
+    # logged in since -- never fabricated. See User.last_login_at's own
+    # comment in app/db/models.py for where these are written.
+    last_login_at: datetime | None = None
+    authentication_method: str | None = None
 
 
 class PlatformUserListOut(BaseModel):
@@ -49,6 +54,9 @@ class PlatformUserDetailOut(BaseModel):
     status_changed_at: datetime | None = None
     status_changed_reason: str | None = None
     status_changed_by_email: str | None = None
+    # PR11.1: same null-means-no-data convention as PlatformUserSummary above.
+    last_login_at: datetime | None = None
+    authentication_method: str | None = None
 
 
 class UserStatusUpdate(BaseModel):
