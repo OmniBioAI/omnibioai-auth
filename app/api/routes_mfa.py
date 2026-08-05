@@ -16,7 +16,14 @@ from app.db.models import MFADevice
 from app.db.session import get_db
 from app.rbac import get_current_user
 from app.schemas.auth import TokenResponse
-from app.schemas.mfa import MFAChallengeVerifyIn, MFADeviceOut, TOTPEnrollOut, TOTPVerifyIn
+from app.schemas.mfa import (
+    MFAChallengeVerifyIn,
+    MFADeviceOut,
+    RecoveryCodesOut,
+    RecoveryCodesStatusOut,
+    TOTPEnrollOut,
+    TOTPVerifyIn,
+)
 from app.services import mfa_service
 
 router = APIRouter(prefix="/users/me/mfa", tags=["mfa"])
@@ -81,6 +88,42 @@ def remove_mfa_device(
         mfa_service.remove_device(db, int(user["sub"]), device_id)
     except LookupError:
         raise HTTPException(404, "MFA device not found")
+
+
+# ── Recovery codes (PR11.5.4) ────────────────────────────────────────────────
+
+
+@router.post("/recovery-codes", response_model=RecoveryCodesOut, status_code=201)
+def generate_recovery_codes(
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Returned only once -- never retrievable again after this response.
+    Safe to call even for a user without MFA enabled yet (the codes
+    simply can't be presented anywhere until a challenge is ever issued
+    for them); see docs/pr11-mfa-recovery-codes-discovery.md."""
+    codes = mfa_service.generate_recovery_codes(db, int(user["sub"]))
+    return RecoveryCodesOut(codes=codes)
+
+
+@router.get("/recovery-codes", response_model=RecoveryCodesStatusOut)
+def recovery_codes_status(
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    remaining = mfa_service.recovery_codes_remaining(db, int(user["sub"]))
+    return RecoveryCodesStatusOut(remaining=remaining)
+
+
+@router.post("/recovery-codes/regenerate", response_model=RecoveryCodesOut)
+def regenerate_recovery_codes(
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Disables every existing unused code, issues a fresh 10, returns
+    the new plaintext codes once."""
+    codes = mfa_service.regenerate_recovery_codes(db, int(user["sub"]))
+    return RecoveryCodesOut(codes=codes)
 
 
 @router.post("/challenge", response_model=TokenResponse)

@@ -70,6 +70,12 @@ class AuditEventType:
     MFA_CHALLENGE_REQUIRED = "mfa_challenge_required"
     MFA_VERIFIED = "mfa_verified"
     MFA_VERIFICATION_FAILED = "mfa_verification_failed"
+    # PR11.5.4 (Enterprise MFA Recovery Codes + Admin Reset). See
+    # docs/pr11-mfa-recovery-codes-discovery.md SS4.
+    MFA_RECOVERY_CODES_GENERATED = "mfa_recovery_codes_generated"
+    MFA_RECOVERY_CODES_REGENERATED = "mfa_recovery_codes_regenerated"
+    MFA_RECOVERY_CODE_USED = "mfa_recovery_code_used"
+    MFA_RESET_BY_ADMIN = "mfa_reset_by_admin"
 
 
 def log_event(
