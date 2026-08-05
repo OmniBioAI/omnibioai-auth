@@ -78,6 +78,10 @@ def test_platform_admin_can_list_organizations(client):
     assert listed["oauth_client_count"] == 0
     assert listed["license_count"] == 0
     assert listed["sso_enabled"] is False
+    # PR11.5.6: same computed-boolean shape as sso_enabled -- no
+    # OrganizationMFAPolicy row exists yet for this org.
+    assert listed["mfa_policy_required"] is False
+    assert listed["mfa_policy_configured"] is False
     # Never a nested list -- summaries only.
     assert "members" not in listed and "teams" not in listed
 
@@ -90,7 +94,43 @@ def test_platform_orgs_list_never_includes_nested_members_or_teams(client):
         assert set(item.keys()) == {
             "id", "name", "status", "created_at", "owner_email", "member_count",
             "team_count", "api_key_count", "oauth_client_count", "license_count", "sso_enabled",
+            "mfa_policy_required", "mfa_policy_configured",
         }
+
+
+def test_mfa_policy_required_reflects_a_real_required_policy(client):
+    """PR11.5.6: mfa_policy_required is True only once an
+    OrganizationMFAPolicy row with required=True exists (PR11.5.5's own
+    POST /orgs/{org_id}/mfa-policy, unmodified) -- not a new policy
+    concept invented by this endpoint."""
+    admin = _platform_admin(client)
+    owner = _register_and_login(client)
+    org = _make_org(client, owner)
+
+    created = client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
+    assert created.status_code == 201
+
+    resp = client.get("/platform/orgs", headers=admin["headers"])
+    listed = next(item for item in resp.json()["items"] if item["id"] == org["id"])
+    assert listed["mfa_policy_required"] is True
+    assert listed["mfa_policy_configured"] is True
+
+
+def test_mfa_policy_configured_true_even_when_not_required(client):
+    """PR11.5.6: mfa_policy_configured and mfa_policy_required are
+    distinct -- a policy row with required=False has been configured,
+    just not turned on."""
+    admin = _platform_admin(client)
+    owner = _register_and_login(client)
+    org = _make_org(client, owner)
+
+    created = client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": False}, headers=org["owner_headers"])
+    assert created.status_code == 201
+
+    resp = client.get("/platform/orgs", headers=admin["headers"])
+    listed = next(item for item in resp.json()["items"] if item["id"] == org["id"])
+    assert listed["mfa_policy_required"] is False
+    assert listed["mfa_policy_configured"] is True
 
 
 def test_organization_detail_endpoint_reflects_real_resources(client):

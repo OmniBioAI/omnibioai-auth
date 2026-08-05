@@ -17,7 +17,7 @@ from typing import Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import OrganizationMembership, Role, User
+from app.db.models import MFADevice, MFARecoveryCode, OrganizationMembership, Role, User
 from app.schemas.user_admin import ALLOWED_USER_STATUSES
 from app.services import audit_service
 from app.services.audit_service import AuditEventType
@@ -129,6 +129,7 @@ def list_users(
             "org_count": org_counts.get(u.id, 0),
             "last_login_at": u.last_login_at,
             "authentication_method": u.authentication_method,
+            "mfa_enabled": u.mfa_enabled,
         }
         for u in users
     ]
@@ -157,6 +158,23 @@ def get_user_detail(db: Session, user_id: int) -> dict | None:
         .all()
     )
 
+    # PR11.5.6: two small, single-user-scoped queries (not a page of
+    # users, so no N+1 risk the way list_users above must guard
+    # against) -- never a TOTP secret or a recovery code, only
+    # metadata/counts. See docs/pr11-5-6-security-ui-discovery.md SS6.1
+    # (omnibioai-control-center).
+    devices = (
+        db.query(MFADevice)
+        .filter(MFADevice.user_id == user_id, MFADevice.disabled_at.is_(None))
+        .order_by(MFADevice.created_at)
+        .all()
+    )
+    recovery_codes_remaining = (
+        db.query(MFARecoveryCode)
+        .filter(MFARecoveryCode.user_id == user_id, MFARecoveryCode.used_at.is_(None))
+        .count()
+    )
+
     return {
         "id": user.id,
         "email": user.email,
@@ -179,6 +197,21 @@ def get_user_detail(db: Session, user_id: int) -> dict | None:
         "status_changed_by_email": status_changed_by.email if status_changed_by else None,
         "last_login_at": user.last_login_at,
         "authentication_method": user.authentication_method,
+        "mfa_enabled": user.mfa_enabled,
+        "mfa_status": user.mfa_status,
+        "mfa_primary_method": user.mfa_primary_method,
+        "mfa_enabled_at": user.mfa_enabled_at,
+        "mfa_last_verified_at": user.mfa_last_verified_at,
+        "mfa_devices": [
+            {
+                "device_type": d.device_type,
+                "label": d.label,
+                "created_at": d.created_at,
+                "last_used_at": d.last_used_at,
+            }
+            for d in devices
+        ],
+        "mfa_recovery_codes_remaining": recovery_codes_remaining,
     }
 
 

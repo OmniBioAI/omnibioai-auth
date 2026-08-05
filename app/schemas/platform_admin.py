@@ -17,6 +17,17 @@ class PlatformOrgSummary(BaseModel):
     oauth_client_count: int
     license_count: int
     sso_enabled: bool
+    # PR11.5.6 (Admin Console Security UI, discovery §6.2): same
+    # computed-boolean shape as sso_enabled above -- true iff an
+    # OrganizationMFAPolicy row exists for this org with required=True.
+    # See docs/pr11-5-6-security-ui-discovery.md
+    # (omnibioai-control-center).
+    mfa_policy_required: bool
+    # PR11.5.6: distinct from mfa_policy_required -- true iff any
+    # OrganizationMFAPolicy row exists (configured, whether on or off),
+    # not only ones with required=True. See platform_admin_service.py's
+    # _org_ids_with_mfa_policy for why this is a separate field.
+    mfa_policy_configured: bool
 
 
 class PlatformOrgListOut(BaseModel):
