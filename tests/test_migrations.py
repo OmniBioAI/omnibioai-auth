@@ -15,6 +15,7 @@ from alembic.config import Config
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,7 +31,10 @@ MULTI_TENANT_TABLES = {
 OAUTH_CLIENTS_TABLES = {"oauth_clients"}
 ORG_SSO_TABLES = {"organization_sso_configs"}
 AUDIT_TABLES = {"audit_events"}  # PR9 (0011)
-ALL_TABLES = BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
+MFA_TABLES = {"mfa_devices", "mfa_recovery_codes"}  # PR11.5.1 (0013)
+ALL_TABLES = (
+    BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES | MFA_TABLES
+)
 
 
 def _alembic_config(db_url: str) -> Config:
@@ -104,6 +108,93 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
         "id", "event_type", "actor_user_id", "target_user_id", "organization_id",
         "resource_type", "resource_id", "before_state", "after_state", "metadata", "created_at",
     } <= audit_event_columns
+
+    users_mfa_columns = {c["name"] for c in inspector.get_columns("users")}
+    assert {
+        "mfa_enabled", "mfa_status", "mfa_primary_method", "mfa_enabled_at", "mfa_last_verified_at",
+    } <= users_mfa_columns
+
+    mfa_device_columns = {c["name"] for c in inspector.get_columns("mfa_devices")}
+    assert {
+        "id", "user_id", "device_type", "label", "encrypted_secret",
+        "created_at", "verified_at", "last_used_at", "disabled_at",
+    } <= mfa_device_columns
+
+    mfa_recovery_code_columns = {c["name"] for c in inspector.get_columns("mfa_recovery_codes")}
+    assert {"id", "user_id", "code_hash", "created_at", "used_at"} <= mfa_recovery_code_columns
+
+
+def test_sqlite_pre_existing_user_row_survives_0013_with_correct_mfa_defaults(sqlite_db_url):
+    """PR11.5.1's specific concern: a user row created *before* this
+    migration ever ran (no mfa_* columns existed yet) must come out the
+    other side of 0013 with mfa_enabled=False and mfa_status="disabled"
+    -- not NULL, not dropped, not requiring any backfill script -- while
+    every pre-existing column on that row (email, hashed_password, ...)
+    is left completely unchanged. This is the concrete migration-safety
+    check requested by PR11.5.1 ("existing users migrate successfully").
+    """
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0012_user_login_metadata")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO users (email, hashed_password, status) "
+                "VALUES (:email, :hashed_password, :status)"
+            ),
+            {"email": "pre-mfa@omnibioai.test", "hashed_password": "not-a-real-hash", "status": "active"},
+        )
+
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT email, hashed_password, status, mfa_enabled, mfa_status, "
+                "mfa_primary_method, mfa_enabled_at, mfa_last_verified_at "
+                "FROM users WHERE email = :email"
+            ),
+            {"email": "pre-mfa@omnibioai.test"},
+        ).mappings().one()
+
+    assert row["email"] == "pre-mfa@omnibioai.test"
+    assert row["hashed_password"] == "not-a-real-hash"
+    assert row["status"] == "active"
+    # SQLite has no native boolean type -- server_default=sa.false() lands
+    # as integer 0, same as every other Boolean column in this schema.
+    assert row["mfa_enabled"] in (False, 0)
+    assert row["mfa_status"] == "disabled"
+    assert row["mfa_primary_method"] is None
+    assert row["mfa_enabled_at"] is None
+    assert row["mfa_last_verified_at"] is None
+
+
+def test_sqlite_new_user_row_after_0013_has_correct_mfa_defaults(sqlite_db_url):
+    """A user registered *after* this migration (going through the ORM's
+    own Column(default=...), not just the migration's server_default)
+    gets the identical defaults -- both write paths agree."""
+    from app.db.models import User
+
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(sqlite_db_url)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        user = User(email="post-mfa@omnibioai.test", hashed_password="not-a-real-hash", status="active")
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+
+        assert user.mfa_enabled is False
+        assert user.mfa_status == "disabled"
+        assert user.mfa_primary_method is None
+        assert user.mfa_enabled_at is None
+        assert user.mfa_last_verified_at is None
+    finally:
+        session.close()
 
 
 def test_sqlite_downgrade_base_reverses_cleanly(sqlite_db_url):
@@ -216,7 +307,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0012_user_login_metadata"
+    assert recorded == "0013_mfa_foundation"
 
 
 # ---------------------------------------------------------------------------
