@@ -488,3 +488,49 @@ class MFARecoveryCode(Base):
     used_at = Column(DateTime, nullable=True)  # NULL = unused
 
     user = relationship("User")
+
+
+class OrganizationMFAPolicy(Base):
+    """PR11.5.5: org-level MFA requirement, deliberately a sibling table
+    to Organization -- not columns on it -- mirroring
+    OrganizationSSOConfig's own shape exactly (see
+    docs/pr11-mfa-org-policy-discovery.md §1). One row per org
+    (organization_id UNIQUE); absence of a row means "no policy
+    configured," not "required=false enforced", same as
+    OrganizationSSOConfig's own "no CRUD exists until explicitly
+    configured" precedent.
+
+    `required` is this table's analog of OrganizationSSOConfig.enforced.
+    `override_active`/`override_reason`/`override_at`/
+    `override_by_user_id` mirror sso_override_at/reason/by_user_id's
+    "who/why/when for a privileged toggle" pattern -- suspends the
+    *effect* of `required` without changing the org's own stated intent,
+    set/cleared together as one unit. Unlike OrganizationSSOConfig,
+    `override_active` is a distinct boolean (not merely `override_at is
+    not None`) -- the explicit shape this PR's own task spec requires.
+
+    `enabled_at`/`enabled_by_user_id` record the most recent time
+    `required` flipped False->True (via POST or PATCH) -- left
+    untouched by a later True->False flip, a permanent "when did this
+    org last turn MFA on" marker (see discovery doc §1 for why this
+    reading was chosen over clearing them on disable).
+
+    No relationship to MFADevice/MFARecoveryCode -- this table only
+    ever asks "does this org require MFA," never anything about a
+    specific user's enrollment state.
+    """
+    __tablename__ = "organization_mfa_policies"
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), unique=True, nullable=False)
+    required = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+
+    enabled_at = Column(DateTime, nullable=True)
+    enabled_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    override_active = Column(Boolean, nullable=False, default=False)
+    override_reason = Column(String(500), nullable=True)
+    override_at = Column(DateTime, nullable=True)
+    override_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)

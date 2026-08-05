@@ -11,9 +11,23 @@ from app.core.security import verify_password
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody, OAuthLinkConfirmRequest
 from app.services import oauth_service, org_service, sso_discovery_service
-from app.services.auth_service import generate_tokens_or_mfa_challenge
+from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
+
+
+def _issue_tokens_or_challenge(db: Session, user, auth_method: str, idp_org_id: int | None = None) -> dict:
+    """PR11.5.5: thin wrapper shared by every generate_tokens_or_mfa_challenge
+    call site in this file, translating MFAEnrollmentRequiredError to the
+    same 403 shape routes_auth.py's login() uses -- see
+    docs/pr11-mfa-org-policy-discovery.md SS4."""
+    try:
+        return generate_tokens_or_mfa_challenge(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+    except MFAEnrollmentRequiredError:
+        raise HTTPException(403, detail={
+            "error": "mfa_enrollment_required",
+            "message": "Your organization requires MFA enrollment",
+        })
 
 
 def _require_provider(provider: str) -> None:
@@ -69,7 +83,7 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
     if linked_user:
         # PR11.5.3: single shared MFA decision point, see
         # docs/pr11-mfa-login-challenge-discovery.md SS2.
-        result = generate_tokens_or_mfa_challenge(db, linked_user, auth_method="oauth")
+        result = _issue_tokens_or_challenge(db, linked_user, auth_method="oauth")
         if result["mfa_required"]:
             return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
         return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
@@ -82,7 +96,7 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
         return {"status": "link_required", "link_token": link_token, "provider": provider, "email": email}
 
     new_user = oauth_service.create_user_with_oauth(db, provider, provider_user_id, email)
-    result = generate_tokens_or_mfa_challenge(db, new_user, auth_method="oauth")
+    result = _issue_tokens_or_challenge(db, new_user, auth_method="oauth")
     if result["mfa_required"]:
         return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
     return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
@@ -166,7 +180,7 @@ def confirm_oauth_link(body: OAuthLinkConfirmRequest, db: Session = Depends(get_
         org_service.jit_provision_membership(db, idp_org_id, user.id)
 
     auth_method = "sso" if idp_org_id is not None else "oauth"
-    result = generate_tokens_or_mfa_challenge(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+    result = _issue_tokens_or_challenge(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
     if result["mfa_required"]:
         return {"mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
     return {"access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}

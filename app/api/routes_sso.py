@@ -10,13 +10,25 @@ from app.core.jwt import create_sso_state_token, decode_token
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody
 from app.services import org_oidc_service, org_service, org_sso_service, oauth_service, sso_discovery_service
-from app.services.auth_service import generate_tokens_or_mfa_challenge
+from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 # Reusing PR2's own PKCE helpers rather than re-implementing them --
 # they're pure functions with no shared state, and the task this PR
 # implements explicitly calls for reusing PR2's PKCE support as-is.
 from app.services.oauth_service import _code_challenge_s256, _generate_code_verifier
 
 router = APIRouter(prefix="/auth/sso", tags=["sso"])
+
+
+def _issue_tokens_or_challenge(db: Session, user, auth_method: str, idp_org_id: int | None = None) -> dict:
+    """PR11.5.5: same wrapper shape as routes_oauth.py's own -- see
+    docs/pr11-mfa-org-policy-discovery.md SS4."""
+    try:
+        return generate_tokens_or_mfa_challenge(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+    except MFAEnrollmentRequiredError:
+        raise HTTPException(403, detail={
+            "error": "mfa_enrollment_required",
+            "message": "Your organization requires MFA enrollment",
+        })
 
 
 # ---------------- DISCOVER ----------------
@@ -112,7 +124,7 @@ async def _complete_sso_flow(db: Session, org_slug: str, code: str, state: str) 
         # docs/pr11-mfa-login-challenge-discovery.md SS2. Applies uniformly
         # here too -- this platform's own MFA gate is independent of
         # whatever the enterprise IdP itself may already enforce.
-        result = generate_tokens_or_mfa_challenge(db, linked_user, auth_method="sso", idp_org_id=org.id)
+        result = _issue_tokens_or_challenge(db, linked_user, auth_method="sso", idp_org_id=org.id)
         if result["mfa_required"]:
             return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
         return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
@@ -131,7 +143,7 @@ async def _complete_sso_flow(db: Session, org_slug: str, code: str, state: str) 
 
     new_user = oauth_service.create_user_with_oauth(db, "oidc", sub, email, organization_sso_config_id=config.id)
     org_service.jit_provision_membership(db, org.id, new_user.id)
-    result = generate_tokens_or_mfa_challenge(db, new_user, auth_method="sso", idp_org_id=org.id)
+    result = _issue_tokens_or_challenge(db, new_user, auth_method="sso", idp_org_id=org.id)
     if result["mfa_required"]:
         return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
     return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}

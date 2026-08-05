@@ -22,6 +22,7 @@ from app.core import token_revocation
 from app.core.token_revocation import assert_token_usable
 from app.services.auth_service import (
     REFRESH_TOKEN_TTL_DAYS as _REFRESH_TOKEN_TTL_DAYS,
+    MFAEnrollmentRequiredError,
     authenticate_user,
     generate_tokens_or_mfa_challenge,
     revoke_token,
@@ -160,7 +161,15 @@ def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     # docs/pr11-mfa-login-challenge-discovery.md SS2. Non-MFA response
     # shape below is byte-identical to before this PR -- backward
     # compatible per that PR's own explicit requirement.
-    result = generate_tokens_or_mfa_challenge(db, user, auth_method="password")
+    # PR11.5.5: org-required MFA the user hasn't personally enrolled --
+    # same 403 shape the SSO-enforcement check above already uses.
+    try:
+        result = generate_tokens_or_mfa_challenge(db, user, auth_method="password")
+    except MFAEnrollmentRequiredError:
+        raise HTTPException(403, detail={
+            "error": "mfa_enrollment_required",
+            "message": "Your organization requires MFA enrollment",
+        })
     if result["mfa_required"]:
         JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="mfa_required").inc()
         return {

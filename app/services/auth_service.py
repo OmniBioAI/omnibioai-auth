@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
-from app.db.models import User, RefreshToken
+from app.db.models import OrganizationMFAPolicy, User, RefreshToken
 from app.core.security import verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
 from app.services import audit_service, org_service, permission_parity
@@ -176,6 +176,17 @@ def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | N
     return access, refresh
 
 
+class MFAEnrollmentRequiredError(Exception):
+    """PR11.5.5: raised by generate_tokens_or_mfa_challenge when the
+    user's organization requires MFA (OrganizationMFAPolicy.required,
+    no active override) but the user has not personally enrolled yet
+    (User.mfa_enabled is False). No challenge token is issued, no
+    tokens are issued -- routes catch this and return 403
+    {"error": "mfa_enrollment_required", ...}, mirroring the existing
+    "sso_required" 403 precedent in routes_auth.py::login. See
+    docs/pr11-mfa-org-policy-discovery.md SS4."""
+
+
 def generate_tokens_or_mfa_challenge(
     db, user, auth_method: str = "password", idp_org_id: int | None = None
 ) -> dict:
@@ -188,6 +199,7 @@ def generate_tokens_or_mfa_challenge(
     Returns one of two shapes:
       {"mfa_required": False, "access_token": ..., "refresh_token": ...}
       {"mfa_required": True, "challenge_token": ..., "methods": ["totp"]}
+    or raises MFAEnrollmentRequiredError (PR11.5.5, see above).
 
     Deliberately does NOT write last_login_at/authentication_method or
     emit any login-completion state when a challenge is issued -- the
@@ -197,18 +209,42 @@ def generate_tokens_or_mfa_challenge(
     verification -- the same, unchanged function either way, so a
     challenge-gated login and a direct one produce identical-shaped
     sessions.
+
+    PR11.5.5: org policy is looked up here directly against
+    OrganizationMFAPolicy (not via mfa_service.get_org_mfa_policy) --
+    mfa_service.py already imports generate_tokens from this module, so
+    importing back from mfa_service.py here would be circular. A
+    3-line query duplicated once is a smaller cost than that cycle. See
+    docs/pr11-mfa-org-policy-discovery.md SS3 for the full decision
+    table this logic implements -- personal MFA (user.mfa_enabled)
+    always wins regardless of org policy state; org policy only ever
+    matters in the `not user.mfa_enabled` branch.
     """
+    org_membership = org_service.resolve_primary_membership(db, user.id)
+    organization_id = org_membership.organization_id if org_membership else None
+
+    org_requires_mfa = False
+    if organization_id is not None:
+        policy = (
+            db.query(OrganizationMFAPolicy)
+            .filter(OrganizationMFAPolicy.organization_id == organization_id)
+            .first()
+        )
+        if policy is not None and policy.required and not policy.override_active:
+            org_requires_mfa = True
+
     if not user.mfa_enabled:
+        if org_requires_mfa:
+            raise MFAEnrollmentRequiredError()
         access, refresh = generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
         return {"mfa_required": False, "access_token": access, "refresh_token": refresh}
 
     challenge_token = create_mfa_challenge_token(user.id, auth_method=auth_method, idp_org_id=idp_org_id)
 
-    org_membership = org_service.resolve_primary_membership(db, user.id)
     audit_service.log_event(
         db, AuditEventType.MFA_CHALLENGE_REQUIRED,
         actor_user_id=user.id, target_user_id=user.id,
-        organization_id=org_membership.organization_id if org_membership else None,
+        organization_id=organization_id,
         resource_type="user", resource_id=user.id,
         metadata={"authentication_method": auth_method},
     )

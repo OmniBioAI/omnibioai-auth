@@ -32,8 +32,10 @@ OAUTH_CLIENTS_TABLES = {"oauth_clients"}
 ORG_SSO_TABLES = {"organization_sso_configs"}
 AUDIT_TABLES = {"audit_events"}  # PR9 (0011)
 MFA_TABLES = {"mfa_devices", "mfa_recovery_codes"}  # PR11.5.1 (0013)
+MFA_ORG_POLICY_TABLES = {"organization_mfa_policies"}  # PR11.5.5 (0014)
 ALL_TABLES = (
-    BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES | MFA_TABLES
+    BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
+    | MFA_TABLES | MFA_ORG_POLICY_TABLES
 )
 
 
@@ -122,6 +124,13 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
 
     mfa_recovery_code_columns = {c["name"] for c in inspector.get_columns("mfa_recovery_codes")}
     assert {"id", "user_id", "code_hash", "created_at", "used_at"} <= mfa_recovery_code_columns
+
+    org_mfa_policy_columns = {c["name"] for c in inspector.get_columns("organization_mfa_policies")}
+    assert {
+        "id", "organization_id", "required", "created_at", "updated_at",
+        "enabled_at", "enabled_by_user_id",
+        "override_active", "override_reason", "override_at", "override_by_user_id",
+    } <= org_mfa_policy_columns
 
 
 def test_sqlite_pre_existing_user_row_survives_0013_with_correct_mfa_defaults(sqlite_db_url):
@@ -307,7 +316,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0013_mfa_foundation"
+    assert recorded == "0014_organization_mfa_policy"
 
 
 # ---------------------------------------------------------------------------
