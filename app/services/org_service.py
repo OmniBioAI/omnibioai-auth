@@ -18,6 +18,17 @@ ORG_ADMIN_PERMISSIONS = [
 ]
 ORG_MEMBER_ROLE = "org_member"
 
+# PR13: default assignable roles matching the scenario matrix in this PR's
+# report -- Scientist can execute workflows/read datasets/use models but
+# not publish; Viewer can read but not execute/manage anything. Both
+# platform-wide (organization_id=None), same as org_admin/org_member
+# above -- any org can assign either to its own members, but only a
+# Platform Admin can edit/delete the role definitions themselves.
+SCIENTIST_ROLE = "scientist"
+SCIENTIST_PERMISSIONS = ["workflow.execute", "dataset.read", "model.use"]
+VIEWER_ROLE = "viewer"
+VIEWER_PERMISSIONS = ["dataset.read", "workflow.read"]
+
 
 def create_organization(db: Session, name: str, slug: str, creator: User) -> Organization:
     org = Organization(
@@ -81,6 +92,32 @@ def ensure_org_admin_permissions(db: Session) -> None:
     if set(ORG_ADMIN_PERMISSIONS) <= existing:
         return
     role_service.update_role_permissions(db, role, sorted(existing | set(ORG_ADMIN_PERMISSIONS)))
+
+
+def ensure_default_org_roles(db: Session) -> None:
+    """PR13: eagerly seeds scientist/viewer at every startup -- create if
+    missing, else top up any permission missing from the current set
+    (never remove, so an operator who deliberately edited either role via
+    the role CRUD endpoints keeps anything else they changed). Unlike
+    org_admin/org_member above, there is no natural request-time call site
+    that would create these lazily (org_admin is created on first
+    create_organization, org_member on first invite/JIT-provision) -- an
+    org admin needs to see scientist/viewer in the catalog to assign them
+    before any such trigger would fire, so this runs unconditionally at
+    startup instead, mirroring init_admin.py's ensure_platform_admin_role
+    pattern (create-or-top-up) rather than ensure_org_admin_permissions'
+    (top-up only, does nothing if the role doesn't exist yet -- correct
+    for org_admin, which assumes an org has already been created, but that
+    assumption doesn't hold for scientist/viewer).
+    """
+    for name, perms in ((SCIENTIST_ROLE, SCIENTIST_PERMISSIONS), (VIEWER_ROLE, VIEWER_PERMISSIONS)):
+        role = role_service.get_role_by_name(db, name)
+        if not role:
+            role_service.create_role(db, name, perms, description=f"Default {name} role")
+        else:
+            existing = {p.name for p in role.permissions}
+            if not set(perms) <= existing:
+                role_service.update_role_permissions(db, role, sorted(existing | set(perms)))
 
 
 ALLOWED_ORG_STATUSES = {"active", "suspended"}

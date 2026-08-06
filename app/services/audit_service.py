@@ -82,6 +82,14 @@ class AuditEventType:
     MFA_POLICY_DISABLED = "mfa_policy_disabled"
     MFA_POLICY_OVERRIDE_CREATED = "mfa_policy_override_created"
     MFA_POLICY_OVERRIDE_REMOVED = "mfa_policy_override_removed"
+    # PR13 (Dynamic Permission Assignment & Enterprise RBAC Activation).
+    # Emitted whenever role_service rejects an attempt to create/edit a
+    # custom org role with a GLOBAL-scope permission, or to assign a role
+    # carrying a GLOBAL-scope permission to an org member -- both are
+    # privilege-escalation attempts, not ordinary validation failures, so
+    # they get their own trail rather than just surfacing as a 400/403
+    # with nothing recorded server-side.
+    ROLE_ASSIGNMENT_DENIED = "role_assignment_denied"
 
 
 def log_event(

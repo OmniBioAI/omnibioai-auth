@@ -370,18 +370,24 @@ def _role_id_by_name(roles_list: list[dict], name: str) -> int:
     return next(r["id"] for r in roles_list if r["name"] == name)
 
 
-def test_list_org_roles_returns_global_catalog(client, org_owner_headers):
+def test_list_org_roles_returns_platform_wide_catalog(client, org_owner_headers):
+    """PR13: role catalog is no longer a single global namespace every org
+    draws from identically (Role.organization_id) -- this endpoint now
+    returns platform-wide roles (organization_id=None) plus this org's own
+    custom roles. org_admin/org_member/scientist/viewer are all
+    platform-wide, so they're still visible here unchanged; a *different*
+    org's custom role would not be (see test_org_scoped_roles.py)."""
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Roles Catalog Org", "slug": slug}, headers=org_owner_headers).json()["id"]
 
     resp = client.get(f"/orgs/{org_id}/roles", headers=org_owner_headers)
     assert resp.status_code == 200
     names = {r["name"] for r in resp.json()}
-    # Same global catalog every org draws from -- org_admin/org_member are
-    # guaranteed to exist by the time an org has been created at all.
     assert {"org_admin", "org_member"} <= names
     for r in resp.json():
-        assert set(r.keys()) == {"id", "name", "description", "permissions"}
+        assert set(r.keys()) == {"id", "name", "description", "permissions", "organization_id"}
+        if r["name"] in ("org_admin", "org_member"):
+            assert r["organization_id"] is None
 
 
 def test_get_member_roles_for_org_admin(client, org_owner_headers, org_owner):

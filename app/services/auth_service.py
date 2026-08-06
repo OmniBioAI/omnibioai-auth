@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from app.db.models import OrganizationMFAPolicy, User, RefreshToken
 from app.core.security import verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
-from app.services import audit_service, org_service, permission_parity
+from app.services import audit_service, org_service
 from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
@@ -61,16 +61,27 @@ def build_user_claims(
     and rotation) pass them through explicitly.
 
     Phase 1 PR3: payload gains org_id/org_role/auth_method/token_version=2,
-    all additive -- sub/email/roles/permissions are computed exactly as
-    before and never removed, so anything reading only those (existing
-    require_permission, existing /auth/validate consumers) is unaffected.
-    org_id/org_role reflect the user's resolved primary org membership
-    (None/[] if they don't have one yet -- a valid state, not an error, for
-    any account that predates the Default Org backfill). The parity check
-    below is observational only: it logs drift between the legacy global
-    permission set and the new org-scoped one, but `permissions` below
-    remains the global computation -- nothing about what's actually
-    enforced changes in this PR.
+    all additive -- sub/email/roles are computed exactly as before and
+    never removed, so anything reading only those (existing require_role,
+    existing /auth/validate consumers) is unaffected. org_id/org_role
+    reflect the user's resolved primary org membership (None/[] if they
+    don't have one yet -- a valid state, not an error, for any account
+    that predates the Default Org backfill).
+
+    PR13: `permissions` is now the union of the user's global-role
+    permissions and their primary org membership's role permissions, not
+    global-only as it was through PR12. This is the cutover
+    app/services/permission_parity.py's docstring described as pending
+    ("until PR4's cutover makes it load-bearing") -- that module existed
+    solely to log drift between these two sets ahead of this merge, has
+    nothing left to detect now that they're unioned by construction, and
+    is removed as part of this change (see its own removal in this PR).
+    Every existing GLOBAL-scope permission check (require_permission)
+    still works exactly as before for a user with no org membership;
+    for a user with one, they now also carry whatever ORG/BOTH-scope
+    permissions their org role(s) grant -- e.g. a user assigned the
+    org-scoped "scientist" role now has workflow.execute/dataset.read/
+    model.use in their JWT, which is the whole point of this PR.
 
     Phase 2 PR4: idp_org_id additionally records which org's enterprise IdP
     authenticated this specific login (None for every other auth_method).
@@ -94,14 +105,14 @@ def build_user_claims(
     so the claim is provably always True at every point it's actually
     built -- see docs/pr11-mfa-login-challenge-discovery.md SS6.
     """
-    permissions = sorted({p.name for r in user.roles for p in r.permissions})
+    global_permissions = {p.name for r in user.roles for p in r.permissions}
 
     org_membership = org_service.resolve_primary_membership(db, user.id)
     org_id = org_membership.organization_id if org_membership else None
     org_role = sorted(r.name for r in org_membership.roles) if org_membership else []
+    org_permissions = org_service.permissions_for_membership(org_membership) if org_membership else set()
 
-    if org_membership is not None:
-        permission_parity.check_and_log(user, permissions, org_membership)
+    permissions = sorted(global_permissions | org_permissions)
 
     return {
         "sub": str(user.id),

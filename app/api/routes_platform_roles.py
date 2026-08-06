@@ -27,7 +27,14 @@ from app.db.models import Role, User
 from app.db.session import get_db
 from app.rbac import MANAGE_ALL_ORGS, get_current_user, require_permission
 from app.schemas.permissions import RolePermissionOut
-from app.schemas.role_admin import RoleAssignRequest, RoleDetailOut, RoleSummary, UserRoleAssignment
+from app.schemas.role_admin import (
+    RoleAssignRequest,
+    RoleCreateRequest,
+    RoleDetailOut,
+    RolePermissionsUpdateRequest,
+    RoleSummary,
+    UserRoleAssignment,
+)
 from app.services import role_service
 
 logger = logging.getLogger("omnibioai.auth.platform_roles")
@@ -43,6 +50,7 @@ def _role_summary(role: Role) -> RoleSummary:
         name=role.name,
         description=role.description,
         permissions=sorted(p.name for p in role.permissions),
+        organization_id=role.organization_id,
     )
 
 
@@ -68,6 +76,7 @@ def _role_detail(role: Role) -> RoleDetailOut:
         name=role.name,
         description=role.description,
         permissions=[_permission_out_or_500(p.name) for p in sorted(role.permissions, key=lambda p: p.name)],
+        organization_id=role.organization_id,
     )
 
 
@@ -101,7 +110,10 @@ def _role_detail_lenient(role: Role) -> RoleDetailOut:
         )
         if out is not None
     ]
-    return RoleDetailOut(id=role.id, name=role.name, description=role.description, permissions=permissions)
+    return RoleDetailOut(
+        id=role.id, name=role.name, description=role.description,
+        permissions=permissions, organization_id=role.organization_id,
+    )
 
 
 def _user_role_assignments(user: User) -> list[UserRoleAssignment]:
@@ -143,6 +155,71 @@ def get_platform_role_detail(
     if not role:
         raise HTTPException(404, "Role not found")
     return _role_detail(role)
+
+
+# ---------------------------------------------------------------------------
+# PR13: platform-wide role catalog CRUD. Read-only above this point (list +
+# single-role detail) predates this PR; create/edit/delete of the catalog
+# itself never existed anywhere until now. Always operates at
+# organization_id=None -- a Platform Admin editing an org's own custom role
+# uses the /organizations/{organization_id}/roles/{role_id} surface instead
+# (routes_organization_roles.py), so every mutation has an unambiguous
+# organization_id in its audit trail rather than this endpoint silently
+# accepting either.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/roles", response_model=RoleDetailOut, status_code=201)
+def create_platform_role(
+    body: RoleCreateRequest,
+    db: Session = Depends(get_db),
+    caller=Depends(get_current_user),
+    _admin=Depends(_require_platform_admin),
+):
+    try:
+        role = role_service.create_role(
+            db, body.name, body.permissions, description=body.description,
+            actor_user_id=int(caller.get("sub")), organization_id=None,
+        )
+    except ValueError as e:
+        raise HTTPException(409 if "already taken" in str(e) else 400, str(e))
+    return _role_detail(role)
+
+
+@router.put("/roles/{role_id}", response_model=RoleDetailOut)
+def update_platform_role(
+    role_id: int,
+    body: RolePermissionsUpdateRequest,
+    db: Session = Depends(get_db),
+    caller=Depends(get_current_user),
+    _admin=Depends(_require_platform_admin),
+):
+    role = role_service.get_role(db, role_id)
+    if not role or role.organization_id is not None:
+        # An org-owned custom role is edited via the organizations/*
+        # surface, not this one -- see module docstring above.
+        raise HTTPException(404, "Role not found")
+    try:
+        role = role_service.update_role_permissions(
+            db, role, body.permissions, description=body.description, actor_user_id=int(caller.get("sub")),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _role_detail(role)
+
+
+@router.delete("/roles/{role_id}", status_code=204)
+def delete_platform_role(
+    role_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(_require_platform_admin),
+):
+    role = role_service.get_role(db, role_id)
+    if not role or role.organization_id is not None:
+        raise HTTPException(404, "Role not found")
+    if role_service.role_in_use(db, role_id):
+        raise HTTPException(409, "Role is currently assigned and cannot be deleted")
+    role_service.delete_role(db, role)
 
 
 @router.get("/users/{user_id}/roles", response_model=list[UserRoleAssignment])
