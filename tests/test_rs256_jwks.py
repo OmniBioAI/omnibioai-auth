@@ -89,7 +89,13 @@ def test_jwks_endpoint_key_actually_verifies_an_rs256_token(client, rs256_enable
     key = body["keys"][0]
     assert key["kid"] == jose_jwt.get_unverified_header(token)["kid"]
     # Round-trip: verify the token using only what the JWKS published.
-    decoded = jose_jwt.decode(token, PUBLIC_KEY_PEM, algorithms=["RS256"])
+    # PR12: every token now carries `aud` (settings.JWT_AUDIENCE) -- jose
+    # requires the verifier to pass `audience=` once that claim is present,
+    # same as any other external verifier relying solely on the published
+    # JWKS key would now need to.
+    decoded = jose_jwt.decode(
+        token, PUBLIC_KEY_PEM, algorithms=["RS256"], audience=settings.JWT_AUDIENCE
+    )
     assert decoded["sub"] == "42"
 
 

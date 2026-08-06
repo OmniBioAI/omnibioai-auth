@@ -34,6 +34,16 @@ class Settings:
     JWT_PRIVATE_KEY = os.getenv("JWT_PRIVATE_KEY", "")
     JWT_PUBLIC_KEY = os.getenv("JWT_PUBLIC_KEY", "")
 
+    # PR12: iss/aud claims identifying this service as the token issuer and
+    # the platform as the intended audience. Verified opportunistically (see
+    # core/jwt.py::decode_token) -- present-and-mismatched is always
+    # rejected, but a token that predates this claim entirely (issued
+    # before a rolling deploy of this change, or a synthetic test token)
+    # still validates, same migration-window philosophy as JWT_ALGORITHM
+    # above.
+    JWT_ISSUER = os.getenv("JWT_ISSUER", "omnibioai-auth")
+    JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "omnibioai-platform")
+
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 

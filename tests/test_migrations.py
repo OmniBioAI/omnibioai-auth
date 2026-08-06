@@ -316,7 +316,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0014_organization_mfa_policy"
+    assert recorded == "0015_refresh_token_length"
 
 
 # ---------------------------------------------------------------------------

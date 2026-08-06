@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from jose import jwt
+from jose.exceptions import JWTClaimsError
 from app.core.config import settings
 from app.core.rsa_keys import KID, PRIVATE_KEY_PEM, PUBLIC_KEY_PEM
 
@@ -12,7 +13,15 @@ def _sign(payload: dict) -> str:
     stamps a `kid` header so a verifier (this service or another one,
     eventually) knows which JWKS entry to check against. Defaults to the
     unchanged HS256 shared-secret path -- an operator has to opt in.
+
+    PR12: also stamps iss/aud (setdefault, so no existing caller's
+    explicit payload keys are ever overridden -- none currently set
+    either) on every token type issued below, verified opportunistically
+    by decode_token.
     """
+    payload = {**payload}
+    payload.setdefault("iss", settings.JWT_ISSUER)
+    payload.setdefault("aud", settings.JWT_AUDIENCE)
     if settings.JWT_ALGORITHM == "RS256":
         return jwt.encode(payload, PRIVATE_KEY_PEM, algorithm="RS256", headers={"kid": KID})
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
@@ -48,6 +57,15 @@ def decode_token(token: str):
     RS256 (PR15 Task 6/success criteria). A malformed token that can't even
     be parsed for its header falls through to the HS256 decode call so it
     raises the same JWTError shape callers already catch.
+
+    PR12: aud is passed to jose so a token carrying an `aud` that doesn't
+    match settings.JWT_AUDIENCE is rejected -- jose itself only enforces
+    this when the claim is present, so a token minted before this change
+    (no `aud` at all) still decodes. iss is checked the same
+    opportunistically-but-when-present way, but by hand: unlike `aud`,
+    jose's `issuer` kwarg requires the claim to exist at all once passed,
+    which would reject every pre-PR12 and synthetic-test token outright --
+    too strict for a rolling deploy / migration window.
     """
     try:
         alg = jwt.get_unverified_header(token).get("alg")
@@ -55,8 +73,15 @@ def decode_token(token: str):
         alg = None
 
     if alg == "RS256":
-        return jwt.decode(token, PUBLIC_KEY_PEM, algorithms=["RS256"])
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        claims = jwt.decode(token, PUBLIC_KEY_PEM, algorithms=["RS256"], audience=settings.JWT_AUDIENCE)
+    else:
+        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"], audience=settings.JWT_AUDIENCE)
+
+    issuer = claims.get("iss")
+    if issuer is not None and issuer != settings.JWT_ISSUER:
+        raise JWTClaimsError(f"Invalid issuer: {issuer!r}")
+
+    return claims
 
 
 def create_oauth_state_token(provider: str, code_verifier: str | None = None):
