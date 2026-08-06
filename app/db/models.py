@@ -102,14 +102,26 @@ class Role(Base):
     __tablename__ = "roles"
 
     id = Column(Integer, primary_key=True)
-    name = Column(String(100), unique=True)
+    # PR13: no longer globally unique at the DB level -- uniqueness is
+    # scope-aware (platform-wide names are reserved everywhere, a custom
+    # org role's name only has to be unique within its own org), and MySQL
+    # treats NULLs as distinct in a unique index so a DB-level composite
+    # constraint couldn't express that anyway. Enforced in role_service
+    # instead. See 0016_role_org_scope's migration docstring.
+    name = Column(String(100), index=True)
     # Phase 3 PR3B: nullable -- existing rows (and any role created via the
     # legacy create_role() call sites that don't pass one) simply have no
     # description until an operator sets one via the role CRUD endpoints.
     description = Column(String(500), nullable=True)
+    # PR13: NULL = platform-wide role (visible/assignable in every org,
+    # editable only by a Platform Admin). Non-NULL = a custom role owned by
+    # that organization, invisible to every other org. See
+    # 0016_role_org_scope's migration docstring.
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
 
     users = relationship("User", secondary=user_roles, back_populates="roles")
     permissions = relationship("Permission", secondary=role_permissions)
+    organization = relationship("Organization")
 
 
 class Permission(Base):

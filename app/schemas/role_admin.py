@@ -22,6 +22,8 @@ class RoleDetailOut(BaseModel):
     name: str
     description: str | None = None
     permissions: list[RolePermissionOut]
+    # PR13: None = platform-wide role, otherwise the owning org's id.
+    organization_id: int | None = None
 
 
 class RoleSummary(BaseModel):
@@ -29,10 +31,33 @@ class RoleSummary(BaseModel):
     name: str
     description: str | None = None
     permissions: list[str]
+    # PR13: None = platform-wide role, otherwise the owning org's id.
+    organization_id: int | None = None
 
 
 class RoleAssignRequest(BaseModel):
     role: str
+
+
+class RoleCreateRequest(BaseModel):
+    """PR13: body for POST /platform/roles and POST
+    /organizations/{organization_id}/roles. `organization_id` is never a
+    field here -- the route derives it (None for the platform surface, the
+    path parameter for the org surface), so a caller can never request a
+    role in a scope other than the one the URL/permission check already
+    authorized them for."""
+    name: str
+    permissions: list[str] = []
+    description: str | None = None
+
+
+class RolePermissionsUpdateRequest(BaseModel):
+    """PR13: body for PUT /platform/roles/{role_id} and PUT
+    /organizations/{organization_id}/roles/{role_id}. `description=None`
+    means "leave unchanged", matching role_service.update_role_permissions'
+    existing contract."""
+    permissions: list[str]
+    description: str | None = None
 
 
 class UserRoleAssignment(BaseModel):

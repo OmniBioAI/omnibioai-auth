@@ -63,7 +63,7 @@ def test_platform_admin_can_list_roles(client):
     names = {r["name"] for r in resp.json()}
     assert {"platform_admin", "admin", "user"} <= names
     for r in resp.json():
-        assert set(r.keys()) == {"id", "name", "description", "permissions"}
+        assert set(r.keys()) == {"id", "name", "description", "permissions", "organization_id"}
 
 
 def test_non_platform_admin_cannot_list_roles(client):

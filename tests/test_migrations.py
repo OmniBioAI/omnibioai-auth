@@ -103,7 +103,11 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     assert {"created_at", "status_changed_at", "status_changed_reason", "status_changed_by_user_id"} <= users_columns
 
     roles_columns = {c["name"] for c in inspector.get_columns("roles")}
-    assert "description" in roles_columns
+    assert {"description", "organization_id"} <= roles_columns
+    roles_uqs = inspector.get_unique_constraints("roles")
+    assert not any(uq["column_names"] == ["name"] for uq in roles_uqs), (
+        "roles.name's old global UNIQUE constraint should have been dropped by 0016"
+    )
 
     audit_event_columns = {c["name"] for c in inspector.get_columns("audit_events")}
     assert {
@@ -255,6 +259,45 @@ def test_sqlite_oauth_accounts_rows_survive_the_0004_constraint_widen(sqlite_db_
     assert row["organization_sso_config_id"] is None
 
 
+def test_sqlite_pre_existing_role_rows_survive_0016_as_platform_wide(sqlite_db_url):
+    """PR13's specific concern: a role row created before this migration
+    (no organization_id column existed yet) must come out the other side
+    with organization_id=NULL -- i.e. every pre-existing role is a
+    platform-wide role, with zero backfill required and no identity
+    change (same id, same name, same permissions)."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0015_refresh_token_length")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO roles (name, description) VALUES (:name, :description)"),
+                     {"name": "pre-pr13-role", "description": "existed before 0016"})
+
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT name, description, organization_id FROM roles WHERE name = :name"),
+            {"name": "pre-pr13-role"},
+        ).mappings().one()
+
+    assert row["description"] == "existed before 0016"
+    assert row["organization_id"] is None
+
+
+def test_sqlite_0016_downgrade_restores_global_unique_constraint(sqlite_db_url):
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0015_refresh_token_length")
+
+    engine = create_engine(sqlite_db_url)
+    inspector = inspect(engine)
+    roles_columns = {c["name"] for c in inspector.get_columns("roles")}
+    assert "organization_id" not in roles_columns
+    roles_uqs = inspector.get_unique_constraints("roles")
+    assert any(uq["column_names"] == ["name"] for uq in roles_uqs)
+
+
 def _load_revision_module(filename: str):
     """Loads an Alembic revision file directly by path (its filename starts
     with a digit, so it can't be a normal dotted import) so its upgrade()
@@ -316,7 +359,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0015_refresh_token_length"
+    assert recorded == "0016_role_org_scope"
 
 
 # ---------------------------------------------------------------------------

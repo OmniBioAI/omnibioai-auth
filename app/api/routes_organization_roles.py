@@ -27,17 +27,17 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.permission_names import REGISTRY
+from app.core.permission_names import REGISTRY, PermissionScope, filter_registry
 from app.db.models import OrganizationMembership
 from app.db.session import get_db
-from app.rbac import get_current_user, get_org_membership_or_platform_admin
+from app.rbac import MANAGE_ALL_ORGS, get_current_user, get_org_membership_or_platform_admin
 from app.schemas.organization_roles import (
     EffectivePermissionOut,
     OrganizationMemberDetailOut,
     OrganizationMemberRoleOut,
 )
 from app.schemas.permissions import RolePermissionOut
-from app.schemas.role_admin import RoleDetailOut
+from app.schemas.role_admin import RoleCreateRequest, RoleDetailOut, RolePermissionsUpdateRequest, RoleSummary
 from app.services import org_service, role_service
 
 logger = logging.getLogger("omnibioai.auth.organization_roles")
@@ -45,6 +45,18 @@ logger = logging.getLogger("omnibioai.auth.organization_roles")
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 MANAGE_ORG = "manage_org"
+
+
+def _caller_is_platform_admin(user: dict) -> bool:
+    """PR13: same check routes_orgs.py's update_org already uses for its
+    own platform-admin-only branch (status changes) -- the caller's own
+    global `permissions` JWT claim, never the org-scoped membership.roles
+    a request happens to resolve to (get_org_membership_or_platform_admin's
+    synthetic bypass membership would itself report manage_org, not
+    manage_all_orgs, so checking membership permissions here would not
+    distinguish a real org_admin from a platform admin acting via the
+    bypass)."""
+    return MANAGE_ALL_ORGS in (user.get("permissions") or [])
 
 
 def _require_org_manager(
@@ -101,6 +113,17 @@ def _role_detail(role) -> RoleDetailOut:
         name=role.name,
         description=role.description,
         permissions=[_permission_out_or_500(p.name) for p in sorted(role.permissions, key=lambda p: p.name)],
+        organization_id=role.organization_id,
+    )
+
+
+def _role_summary(role) -> RoleSummary:
+    return RoleSummary(
+        id=role.id,
+        name=role.name,
+        description=role.description,
+        permissions=sorted(p.name for p in role.permissions),
+        organization_id=role.organization_id,
     )
 
 
@@ -119,6 +142,98 @@ def _get_target_membership(db: Session, organization_id: int, user_id: int) -> O
     if not target:
         raise HTTPException(404, "User is not a member of this organization")
     return target
+
+
+# ---------------------------------------------------------------------------
+# 0. Role catalog (PR13): every role visible to this org (platform-wide +
+# this org's own custom roles), and CRUD for this org's own custom roles.
+# A platform-wide role is never created/edited/deleted from here -- that's
+# routes_platform_roles.py's job -- so every mutation here has an
+# unambiguous organization_id, and _require_org_manager's existing
+# manage_org-or-platform-admin gate is exactly the right authorization
+# (an Org Admin manages their own org's custom roles; a Platform Admin can
+# too, via the same synthetic-membership bypass every other route in this
+# file already relies on).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{organization_id}/roles", response_model=list[RoleSummary])
+def list_organization_roles(
+    organization_id: int,
+    db: Session = Depends(get_db),
+    caller_membership: OrganizationMembership = Depends(_require_org_manager),
+):
+    return [_role_summary(r) for r in role_service.list_roles_for_scope(db, organization_id)]
+
+
+@router.get("/{organization_id}/permissions", response_model=list[RolePermissionOut])
+def list_organization_permissions(
+    organization_id: int,
+    caller_membership: OrganizationMembership = Depends(_require_org_manager),
+):
+    """PR13: an Org Admin can't reach GET /platform/permissions (gated on
+    manage_all_orgs), so this exposes the same registry filtered to
+    ORG/BOTH scope -- excluding GLOBAL entries the org-scoped create/edit
+    guard (role_service._validate_org_scoped_permission_names) would
+    reject anyway, so the picker this backs never even offers one."""
+    org_scoped = [p for p in filter_registry() if p.scope in (PermissionScope.ORG, PermissionScope.BOTH)]
+    return [RolePermissionOut(**p.as_dict()) for p in org_scoped]
+
+
+@router.post("/{organization_id}/roles", response_model=RoleDetailOut, status_code=201)
+def create_organization_role(
+    organization_id: int,
+    body: RoleCreateRequest,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+    caller_membership: OrganizationMembership = Depends(_require_org_manager),
+):
+    try:
+        role = role_service.create_role(
+            db, body.name, body.permissions, description=body.description,
+            actor_user_id=int(user.get("sub")), organization_id=organization_id,
+        )
+    except ValueError as e:
+        raise HTTPException(409 if "already taken" in str(e) else 400, str(e))
+    return _role_detail(role)
+
+
+@router.put("/{organization_id}/roles/{role_id}", response_model=RoleDetailOut)
+def update_organization_role(
+    organization_id: int,
+    role_id: int,
+    body: RolePermissionsUpdateRequest,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+    caller_membership: OrganizationMembership = Depends(_require_org_manager),
+):
+    role = role_service.get_role(db, role_id)
+    if not role or role.organization_id != organization_id:
+        # A platform-wide role, or another org's custom role -- neither is
+        # editable from this org's surface.
+        raise HTTPException(404, "Role not found")
+    try:
+        role = role_service.update_role_permissions(
+            db, role, body.permissions, description=body.description, actor_user_id=int(user.get("sub")),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _role_detail(role)
+
+
+@router.delete("/{organization_id}/roles/{role_id}", status_code=204)
+def delete_organization_role(
+    organization_id: int,
+    role_id: int,
+    db: Session = Depends(get_db),
+    caller_membership: OrganizationMembership = Depends(_require_org_manager),
+):
+    role = role_service.get_role(db, role_id)
+    if not role or role.organization_id != organization_id:
+        raise HTTPException(404, "Role not found")
+    if role_service.role_in_use(db, role_id):
+        raise HTTPException(409, "Role is currently assigned and cannot be deleted")
+    role_service.delete_role(db, role)
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +281,12 @@ def assign_organization_member_roles(
         raise HTTPException(400, "Duplicate role name in request")
 
     try:
-        new_roles = role_service.resolve_roles(db, body.roles)
+        new_roles = role_service.resolve_roles_for_org(
+            db, body.roles, organization_id, _caller_is_platform_admin(user),
+            actor_user_id=int(user.get("sub")), target_user_id=target.user_id,
+        )
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(403 if "Platform Admin" in str(e) else 400, str(e))
     # Every permission on every resolved Role is already registry-valid --
     # role_service.create_role/update_role_permissions (PR4) reject an
     # unregistered permission name at role-creation time, so a Role that

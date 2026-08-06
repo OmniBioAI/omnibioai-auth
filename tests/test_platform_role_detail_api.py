@@ -163,7 +163,7 @@ def test_list_roles_default_response_unchanged(client):
     resp = client.get("/platform/roles", headers=admin["headers"])
     assert resp.status_code == 200
     for row in resp.json():
-        assert set(row.keys()) == {"id", "name", "description", "permissions"}
+        assert set(row.keys()) == {"id", "name", "description", "permissions", "organization_id"}
         assert all(isinstance(p, str) for p in row["permissions"])
 
 
@@ -184,7 +184,7 @@ def test_list_roles_expand_permissions_true_returns_full_metadata(client, admin_
     resp = client.get("/platform/roles", params={"expand_permissions": "true"}, headers=admin["headers"])
     assert resp.status_code == 200
     row = next(r for r in resp.json() if r["name"] == name)
-    assert set(row.keys()) == {"id", "name", "description", "permissions"}
+    assert set(row.keys()) == {"id", "name", "description", "permissions", "organization_id"}
     assert row["permissions"] == [
         {
             "name": "dataset.read",

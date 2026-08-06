@@ -145,10 +145,14 @@ def update_member_roles(
     if not target:
         raise HTTPException(404, "User is not a member of this organization")
 
+    is_platform_admin = MANAGE_ALL_ORGS in (user.get("permissions") or [])
     try:
-        new_roles = role_service.resolve_roles(db, body.roles)
+        new_roles = role_service.resolve_roles_for_org(
+            db, body.roles, org_id, is_platform_admin,
+            actor_user_id=int(user.get("sub")), target_user_id=target.user_id,
+        )
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(403 if "Platform Admin" in str(e) else 400, str(e))
 
     # Self-escalation guard, mirroring routes_roles.py's existing pattern:
     # acting on your own org membership can only ever be neutral-or-narrowing
@@ -187,14 +191,17 @@ def list_org_roles(
     db: Session = Depends(get_db),
     caller_membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_ORG)),
 ):
-    # Role/Permission remain a single global catalog shared across every
-    # organization (see db/models.py's own comment on membership_roles) --
-    # this returns the same catalog every org draws from, not an org-
-    # specific subset. No such subset concept exists in this schema, and
-    # this PR does not invent one ("do not redesign RBAC").
+    # PR13: every platform-wide role plus this org's own custom roles --
+    # NOT role_service.list_roles(db) (every role in the system). Role
+    # catalog is no longer a single global namespace (Role.organization_id,
+    # 0016_role_org_scope) -- returning every role here would leak every
+    # other org's private custom roles to this org's own manager.
     return [
-        RoleSummary(id=r.id, name=r.name, description=r.description, permissions=sorted(p.name for p in r.permissions))
-        for r in role_service.list_roles(db)
+        RoleSummary(
+            id=r.id, name=r.name, description=r.description,
+            permissions=sorted(p.name for p in r.permissions), organization_id=r.organization_id,
+        )
+        for r in role_service.list_roles_for_scope(db, org_id)
     ]
 
 
@@ -226,9 +233,14 @@ def assign_member_role(
     if not target:
         raise HTTPException(404, "User is not a member of this organization")
 
-    role = role_service.get_role_by_name(db, body.role)
-    if not role:
-        raise HTTPException(400, f"Unknown role: {body.role!r}")
+    is_platform_admin = MANAGE_ALL_ORGS in (user.get("permissions") or [])
+    try:
+        role = role_service.resolve_roles_for_org(
+            db, [body.role], org_id, is_platform_admin,
+            actor_user_id=int(user.get("sub")), target_user_id=target.user_id,
+        )[0]
+    except ValueError as e:
+        raise HTTPException(403 if "Platform Admin" in str(e) else 400, str(e))
 
     # Self-escalation guard, mirroring update_member_roles' own pattern
     # above: granting yourself an org role that adds a permission you
