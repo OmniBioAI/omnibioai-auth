@@ -67,7 +67,9 @@ def test_jwt_validation_succeeds_on_protected_route(client):
     resp = client.get("/me", headers={"Authorization": f"Bearer {token}"})
 
     assert resp.status_code == 200
-    assert resp.json()["email"] == creds["email"]
+    # GET /me returns IdentityOut: {user: CurrentUserOut, global_roles, ...} --
+    # email is nested under "user", not top-level.
+    assert resp.json()["user"]["email"] == creds["email"]
 
 
 # ---------------------------------------------------------------------------
