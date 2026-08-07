@@ -439,3 +439,45 @@ def test_mysql_downgrade_base_reverses_cleanly(mysql_db_url):
 
     remaining = ALL_TABLES & actual_tables
     assert not remaining, f"Tables survived downgrade to base: {remaining}"
+
+
+def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url):
+    """MySQL-specific regression for the 2026-08-06 incident: a real
+    deployment's database was found stamped at 0015_refresh_token_length
+    with `0016_role_org_scope` never applied, crash-looping the service
+    against `roles.organization_id`. This is the dialect that actually
+    happened against (SQLite's equivalent above didn't reproduce it --
+    MySQL is where `batch_alter_table`'s FK/index drop ordering, called
+    out in the migration's own downgrade() docstring, actually matters).
+    Confirms 0016 applies cleanly on top of 0015 with a real pre-existing
+    role row present, and that row survives as organization_id=NULL --
+    exactly what was verified against the affected deployment's data
+    (254 users, 4 roles, all preserved) after remediation."""
+    cfg = _alembic_config(mysql_db_url)
+    command.upgrade(cfg, "0015_refresh_token_length")
+
+    engine = create_engine(mysql_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO roles (name, description) VALUES (:name, :description)"),
+            {"name": "pre-pr13-role", "description": "existed before 0016"},
+        )
+
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    roles_columns = {c["name"] for c in inspector.get_columns("roles")}
+    assert "organization_id" in roles_columns
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT name, description, organization_id FROM roles WHERE name = :name"),
+            {"name": "pre-pr13-role"},
+        ).mappings().one()
+
+    assert row["description"] == "existed before 0016"
+    assert row["organization_id"] is None
+
+    with engine.connect() as conn:
+        recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert recorded == "0016_role_org_scope"

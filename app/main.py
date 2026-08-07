@@ -29,6 +29,7 @@ from app.api.routes_org_mfa import router as org_mfa_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
+from app.db.schema_guard import assert_schema_matches_models
 from app.db.init_admin import create_admin, ensure_default_organization, ensure_platform_admin_role
 from app.services.org_service import ensure_default_org_roles, ensure_org_admin_permissions
 from app.services.role_service import assert_no_unregistered_permissions
@@ -49,6 +50,13 @@ app.add_middleware(
 )
 
 Base.metadata.create_all(bind=engine)
+
+# create_all() above only ever creates tables that don't exist yet -- it
+# never alters an existing table, so a database that's behind on Alembic
+# migrations (see docs/MIGRATIONS.md) sails through it unnoticed and then
+# crashes on whatever bootstrap query below happens to touch the missing
+# column first. Catch that here, once, with an actionable message instead.
+assert_schema_matches_models(engine, Base.metadata)
 
 # bootstrap admin
 db = SessionLocal()

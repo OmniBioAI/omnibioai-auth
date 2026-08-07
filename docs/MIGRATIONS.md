@@ -4,15 +4,81 @@ This service used to create its schema purely via `Base.metadata.create_all(bind
 at startup (`app/main.py`), with no versioned migration history. Alembic is now
 initialized (see `alembic/`), but `create_all()` has **not** been removed from
 `app/main.py` yet — that removal is deliberately deferred to a later, separate
-change once Alembic has proven itself in real deployments. Until then, the two
-mechanisms coexist without conflict because they manage disjoint sets of tables:
-`create_all()` only ever touches tables backed by an ORM class registered on
-`app.db.base.Base` (the original 10 auth tables), and the new multi-tenant
-tables added by this migration are **not** backed by any ORM class yet (that
-comes in a later PR) — so `create_all()` cannot create, alter, or otherwise
-touch them. Only `alembic upgrade head` manages the new tables.
+change once Alembic has proven itself in real deployments (see "Known risk:
+create_all() vs. Alembic drift" below — this is not a free lunch).
+
+> **Note (2026-08-06):** the paragraph that used to be here claimed
+> `create_all()` and Alembic "manage disjoint sets of tables" because the
+> newer multi-tenant/org/audit/MFA tables were "not backed by any ORM class
+> yet". That's no longer true and hasn't been for a while — nearly every
+> table this service owns (`organizations`, `teams`, `api_keys`,
+> `oauth_clients`, `organization_sso_configs`, `audit_events`,
+> `mfa_devices`, `mfa_recovery_codes`, `organization_mfa_policies`, ...) is
+> now backed by an ORM class in `app/db/models.py`, registered on the same
+> `Base.metadata` `create_all()` walks at every startup. See the section
+> below for what that actually means in practice.
+
+## Known risk: `create_all()` vs. Alembic drift
+
+`create_all()` only ever issues `CREATE TABLE IF NOT EXISTS` — for any
+table that already exists, it does **nothing**, including when the ORM's
+Python-side `Column` definitions have gained a new column since the table
+was created. Only `alembic upgrade head` actually alters an existing
+table.
+
+This is exactly what caused a production crash-loop on 2026-08-06:
+`alembic/versions/0016_role_org_scope.py` added `roles.organization_id` to
+the `Role` ORM class and a matching migration, but the migration was never
+run against the deployed database. `create_all()` ran at every startup and
+silently did nothing (the `roles` table already existed), so the missing
+column went unnoticed until `create_admin()`'s bootstrap code issued the
+first query that referenced it, which crashed with a raw
+`pymysql.err.OperationalError (1054, "Unknown column 'roles.organization_id'
+in 'field list'")` deep inside SQLAlchemy — an opaque failure with no
+indication of what to actually do about it, repeating on every container
+restart.
+
+**Fix applied for this incident:** `alembic upgrade head` was run directly
+against the affected database (`0015_refresh_token_length` →
+`0016_role_org_scope`), per the procedure this document already
+prescribed — the gap was that nothing enforced it actually happening
+before the container was (re)started.
+
+**Structural fix (`app/db/schema_guard.py`):** `app/main.py` now calls
+`assert_schema_matches_models(engine, Base.metadata)` immediately after
+`create_all()` and before any bootstrap query runs. It diffs every
+already-existing table's live columns against what the ORM currently
+declares and refuses to start — with a message naming the missing
+columns and pointing at `alembic upgrade head` — if any are missing,
+rather than letting bootstrap crash on whichever query happens to touch
+the gap first. It does not run migrations itself and does not consult
+Alembic's own bookkeeping table; it only checks "does the live schema
+already satisfy what the code needs". This is a diagnostic/fail-fast net,
+not a substitute for actually running migrations before deploying —
+`create_all()` is still not removed, and its removal is still deferred
+(see the note above) since a straightforward removal would leave any
+environment that has never run Alembic at all with zero tables at
+startup instead of a clear error.
+
+Historically, the two mechanisms mostly coexisted without conflict
+because they manage overlapping but not-identical concerns:
+`create_all()` only ever touches tables backed by an ORM class registered
+on `app.db.base.Base`, and can create a brand-new such table from scratch
+(matching *today's* model definition, columns included) if the migration
+that's supposed to create it hasn't run yet. What it cannot do — ever —
+is bring an *existing* table's columns up to date, which is the specific
+gap `schema_guard.py` now catches instead of letting it crash bootstrap.
 
 ## Revision history
+
+**This table is only maintained through `0010_role_description`.** Revisions
+`0011` through `0016` (audit events, MFA foundation/recovery/org-policy,
+refresh token length, `roles.organization_id` — see "Known risk" above) all
+exist and are all purely additive in the same spirit as the rows below; run
+`alembic history --verbose` against `alembic/` for the authoritative,
+current list rather than trusting this table to be exhaustive. An
+out-of-date table like this one is itself a symptom of the drift risk
+described above — treat it as a caveat, not a promise.
 
 | Revision | What it does | How to apply it |
 |---|---|---|
