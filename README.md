@@ -53,6 +53,70 @@ flush any cached token state immediately.
 | `GET`  | `/health` | Liveness check — returns `{"status": "ok"}` |
 | `GET`  | `/metrics` | Prometheus metrics (jwt_auth_total counter) |
 
+This is the core identity/session surface. The service also registers 17
+more routers covering organization management, platform administration,
+MFA, and service credentials — grouped below rather than flattened into
+one table, since each group has its own permission model.
+
+### Organizations & Teams
+
+| Router | Prefix | Covers | Gate |
+|---|---|---|---|
+| `routes_orgs.py` | `/orgs` | Create/list/get/update an org, invite a member, list/assign/revoke a member's org-scoped roles | `manage_org` (org-scoped) or `platform_admin` |
+| `routes_teams.py` | `/orgs/{org_id}/teams` | Create/list teams, manage team membership, delete a team | `manage_teams` (org-scoped) or `platform_admin` |
+| `routes_organization_roles.py` | `/organizations/{organization_id}` | Org-scoped custom role CRUD (`/roles`), org permission catalog (`/permissions`), member role assignment (`/members/{user_id}/roles`) — PR13's dynamic RBAC activation | `manage_org` (org-scoped) or `platform_admin` |
+
+### Platform Administration
+
+Everything under `/platform/*` requires the `manage_all_orgs` permission
+(the `platform_admin` role's defining grant) — this is the backend
+`omnibioai-control-center`'s Admin Console proxies to for its
+Organizations/Users/Roles/Audit Logs pages.
+
+| Router | Prefix | Covers |
+|---|---|---|
+| `routes_platform_admin.py` | `/platform/orgs` | Cross-tenant org listing/detail |
+| `routes_platform_users.py` | `/platform/users` | Cross-tenant user listing/detail/update, remote MFA reset |
+| `routes_platform_roles.py` | `/platform/roles` | Platform-wide role catalog CRUD, user↔role assignment |
+| `routes_platform_permissions.py` | `/platform/permissions` | Permission Registry listing + usage stats |
+| `routes_platform_audit.py` | `/platform/audit-events` | Cross-tenant audit event stream |
+
+### Roles (legacy global surface)
+
+`routes_roles.py` (`/roles`, `/users/{user_id}/roles`) — the original,
+pre-PR13 global role CRUD API, gated by `manage_roles`. Distinct from
+both the platform-wide catalog (`/platform/roles`, above) and org-scoped
+custom roles (`/organizations/{id}/roles`, above); all three currently
+coexist. `app/rbac.py` is what actually enforces a role's permissions at
+request time regardless of which of the three surfaces created it.
+
+### MFA (Multi-Factor Authentication)
+
+| Router | Prefix | Covers | Gate |
+|---|---|---|---|
+| `routes_mfa.py` | `/users/me/mfa` | TOTP enroll/verify, device list/remove, recovery-code generate/list/regenerate, login challenge | Authenticated self-service (own account only) |
+| `routes_org_mfa.py` | `/orgs/{org_id}/mfa-policy` | Per-org MFA requirement CRUD + platform-admin override | `manage_sso` (org-scoped) for the policy itself; `override_mfa_policy` for the override endpoints |
+
+Full design trail: `docs/pr11-mfa-database-foundation-discovery.md`,
+`pr11-totp-enrollment-discovery.md`, `pr11-mfa-login-challenge-discovery.md`,
+`pr11-mfa-org-policy-discovery.md`, `pr11-mfa-recovery-codes-discovery.md`.
+
+### API Keys & Service Credentials
+
+| Router | Prefix | Covers | Gate |
+|---|---|---|---|
+| `routes_apikeys.py` | `/orgs/{org_id}/api-keys` | Create/list/revoke an org's API keys | `manage_api_keys` (org-scoped) or `platform_admin` |
+| `routes_oauth_clients.py` | `/orgs/{org_id}/oauth-clients` | Create/list/revoke an org's `client_credentials` OAuth clients | `manage_oauth_clients` (org-scoped) or `platform_admin` |
+| `routes_service_identity.py` | `/service/me`, `/platform/services/{client_id}` | A service-identity token's own claims; platform-admin lookup of a registered service client | `require_service_identity()` / `manage_all_orgs` |
+
+### Config, License & Identity
+
+| Router | Prefix | Covers | Gate |
+|---|---|---|---|
+| `routes_config.py` | `/auth/config` (`GET`/`PUT`) | Platform-wide global config (LLM/cloud credentials) — the exact endpoint Control Center's Admin Console Settings page reads | `manage_config` |
+| `routes_license.py` | `/license` | Validate/pull-token/generate/status/revoke | `manage_licenses` |
+| `routes_identity.py` | `/me`, `/platform/users/{user_id}/identity` | The caller's own resolved identity; platform-admin lookup of another user's | self / `manage_all_orgs` |
+
 ### Login
 
 ```http
@@ -304,6 +368,31 @@ from a role name (e.g. omnibioai-control-center, omnibioai-security-audit)
 check for the specific seeded role name on the JWT instead (`admin`,
 `platform_admin`) — see each service's own README.
 
+### Beyond the 5 seeded roles: three role-CRUD surfaces
+
+The table above is the seeded baseline, not the whole story — **PR13**
+("dynamic permission assignment and enterprise RBAC activation," `main`'s
+tip commit) activated org-scoped custom roles on top of it. Three separate
+role-management APIs currently coexist (see
+[Roles & Permissions](#roles-legacy-global-surface) /
+[Organizations & Teams](#organizations--teams) above for their endpoints):
+
+1. **`/roles`** (`routes_roles.py`) — the original global role catalog, `manage_roles`-gated.
+2. **`/platform/roles`** (`routes_platform_roles.py`) — the platform-wide catalog surfaced to `omnibioai-control-center`'s Admin Console, `manage_all_orgs`-gated.
+3. **`/organizations/{id}/roles`** (`routes_organization_roles.py`) — org-scoped custom roles an `org_admin` (or platform admin) can define per-organization, on top of the seeded `org_admin`/`org_member` baseline.
+
+`app/rbac.py`'s enforcement doesn't care which of the three created a
+role — a role's `permissions` array on the JWT is checked the same way
+regardless of origin. `assert_no_unregistered_permissions` (`app/main.py`
+startup, `app/services/role_service.py`) fails startup loud if any
+`Permission` row in the database has drifted out of sync with
+`app/core/permission_names.py`'s registry — the single source of truth
+for every permission name across all three surfaces. See
+`test_pr13_role_catalog_crud.py`, `test_pr13_role_org_scope.py`, and
+`test_pr13_escalation_guards.py` for the guarantees this activation adds
+(an org admin cannot escalate a custom role beyond what the assigning
+admin's own permissions already allow).
+
 ---
 
 ## Running in the Stack
@@ -349,27 +438,83 @@ before it starts. An admin user is bootstrapped automatically on first startup.
 
 ```
 app/
-├── main.py                  # FastAPI entrypoint, admin bootstrap, /metrics, /health
-├── rbac.py                  # Role + permission dependency helpers
+├── main.py                  # FastAPI entrypoint — registers all 23 routers, admin
+│                             # bootstrap, Permission Registry drift check at startup,
+│                             # /metrics, /health
+├── rbac.py                  # Role + permission dependency helpers (require_permission,
+│                             # require_org_permission_or_platform_admin, ...)
 ├── api/
-│   ├── routes_auth.py       # Auth endpoints + Redis blacklist logic
-│   └── deps.py              # Shared FastAPI dependencies
+│   ├── routes_auth.py            # /auth/register, /login, /refresh, /logout, /validate
+│   ├── routes_oauth.py           # /auth/{provider}/login, /callback, /link/confirm
+│   ├── routes_oauth_token.py     # /oauth/token (client_credentials grant)
+│   ├── routes_sso.py             # /auth/sso/discover, /{org_slug}/login, /{org_slug}/callback
+│   ├── routes_org_sso.py         # /orgs/{org_id}/sso config CRUD + override
+│   ├── routes_jwks.py            # /.well-known/jwks.json
+│   ├── routes_orgs.py            # /orgs — org CRUD, invite, member roles
+│   ├── routes_teams.py           # /orgs/{org_id}/teams
+│   ├── routes_organization_roles.py  # /organizations/{id}/roles, /permissions, /members
+│   ├── routes_roles.py           # /roles — legacy global role catalog
+│   ├── routes_mfa.py             # /users/me/mfa — TOTP, devices, recovery codes, challenge
+│   ├── routes_org_mfa.py         # /orgs/{org_id}/mfa-policy
+│   ├── routes_apikeys.py         # /orgs/{org_id}/api-keys
+│   ├── routes_oauth_clients.py   # /orgs/{org_id}/oauth-clients
+│   ├── routes_service_identity.py # /service/me, /platform/services/{client_id}
+│   ├── routes_config.py          # /auth/config
+│   ├── routes_license.py         # /license/*
+│   ├── routes_identity.py        # /me, /platform/users/{id}/identity
+│   ├── routes_platform_admin.py       # /platform/orgs
+│   ├── routes_platform_users.py       # /platform/users
+│   ├── routes_platform_roles.py       # /platform/roles
+│   ├── routes_platform_permissions.py # /platform/permissions
+│   ├── routes_platform_audit.py       # /platform/audit-events
+│   ├── deps.py               # Shared FastAPI dependencies
+│   └── services/
+│       └── token_service.py  # Shared token-issuance helper used by multiple routers
 ├── core/
-│   ├── config.py            # Settings from environment
-│   ├── jwt.py               # Token creation and decoding
-│   └── security.py          # Password hashing
+│   ├── config.py             # Settings from environment
+│   ├── jwt.py                 # Token creation, decoding, dual HS256/RS256 dispatch
+│   ├── security.py           # Password hashing
+│   ├── crypto.py             # Low-level crypto helpers
+│   ├── oauth_providers.py    # Google/GitHub/Microsoft provider config
+│   ├── permission_names.py   # Permission Registry — single source of truth for every
+│   │                          # permission name (PR4)
+│   ├── rsa_keys.py           # RS256 keypair loading / ephemeral dev-key generation
+│   └── token_revocation.py   # Redis jti-blacklist + refresh-token-family revocation
 ├── db/
-│   ├── models.py            # User, RefreshToken, RevokedToken models
-│   ├── session.py           # SQLAlchemy engine + session factory
-│   ├── base.py              # Declarative base
-│   └── init_admin.py        # Admin user bootstrap
+│   ├── models.py              # User, RefreshToken, RevokedToken, Org, Role, ... models
+│   ├── session.py             # SQLAlchemy engine + session factory
+│   ├── base.py                 # Declarative base
+│   ├── init_admin.py           # Admin user bootstrap
+│   └── schema_guard.py         # Startup schema-verification guard (main's latest
+│                                # commit — see "fix(auth): add schema guard and
+│                                # startup regression tests")
 ├── services/
-│   ├── auth_service.py      # authenticate, generate_tokens, revoke_token
-│   ├── user_service.py      # User CRUD helpers
-│   └── service_tokens.py    # Service-to-service token helpers
+│   ├── auth_service.py        # authenticate, generate_tokens, revoke_token
+│   ├── user_service.py        # User CRUD helpers
+│   ├── user_admin_service.py  # Platform-admin user management
+│   ├── service_tokens.py      # Service-to-service token helpers
+│   ├── service_identity.py    # Service-identity resolution
+│   ├── org_service.py         # Organization CRUD
+│   ├── team_service.py        # Team CRUD/membership
+│   ├── role_service.py        # Role CRUD across all 3 role surfaces + registry drift check
+│   ├── org_sso_service.py     # Org SSO config CRUD
+│   ├── org_oidc_service.py    # Enterprise OIDC login flow
+│   ├── sso_discovery_service.py # Domain → org SSO lookup
+│   ├── mfa_service.py         # TOTP/recovery-code logic
+│   ├── apikey_service.py      # API key issuance/revocation
+│   ├── oauth_client_service.py # OAuth client_credentials client management
+│   ├── oauth_service.py       # OAuth 2.1/PKCE provider login flow
+│   ├── platform_admin_service.py # Cross-tenant platform-admin queries
+│   ├── audit_service.py       # Audit event recording/query
+│   ├── config_service.py      # Global config get/set
+│   ├── identity_service.py    # Identity resolution
+│   └── license_service.py     # License validate/generate/status/revoke
 └── schemas/
-    ├── auth.py              # LoginRequest, RefreshRequest, LogoutRequest
-    └── user.py              # User response schemas
+    ├── auth.py, user.py, orgs.py, teams.py, roles.py, organization_roles.py,
+    ├── mfa.py, org_mfa.py, apikeys.py, oauth.py, oauth_client.py,
+    ├── service_identity.py, config.py, license.py, identity.py,
+    └── permissions.py, platform_admin.py, role_admin.py, user_admin.py, org_sso.py
+        # Pydantic request/response models, one module per feature area above
 ```
 
 ---
@@ -380,5 +525,29 @@ app/
 pytest tests/
 ```
 
-Coverage targets: auth flows (`test_auth.py`), RBAC (`test_rbac.py`),
-security primitives (`test_security.py`), health check (`test_health.py`).
+**701 tests** across 52 files (`pytest --collect-only`). Core coverage —
+auth flows (`test_auth.py`), RBAC (`test_rbac.py`), security primitives
+(`test_security.py`), health check (`test_health.py`) — plus dedicated
+suites per feature area:
+
+| Area | Files |
+|---|---|
+| MFA | `test_mfa.py`, `test_mfa_login_challenge.py`, `test_mfa_org_policy.py`, `test_mfa_recovery_codes.py` |
+| SSO / Enterprise OIDC | `test_sso_login.py`, `test_sso_enforcement.py`, `test_org_sso.py`, `test_pkce.py` |
+| OAuth | `test_oauth.py`, `test_oauth_clients.py`, `test_oauth_token.py` |
+| Organizations, teams, roles | `test_orgs.py`, `test_teams.py`, `test_roles.py`, `test_organization_role_assignment_api.py` |
+| PR13 (dynamic RBAC activation) | `test_pr13_role_catalog_crud.py`, `test_pr13_role_org_scope.py`, `test_pr13_escalation_guards.py`, `test_pr13_jwt_permission_merge.py` |
+| Platform administration | `test_platform_admin.py`, `test_platform_admin_api.py`, `test_platform_users_api.py`, `test_platform_roles_api.py`, `test_platform_role_detail_api.py`, `test_platform_permissions_api.py` |
+| Audit | `test_audit_ledger.py`, `test_pr11_identity_audit.py` |
+| JWT / tokens | `test_jwt_iss_aud.py`, `test_jwt_org_context.py`, `test_rs256_jwks.py`, `test_refresh_rotation.py`, `test_token_revocation.py`, `test_session_cookie.py` |
+| API keys / service identity | `test_apikeys.py`, `test_service_identity_api.py` |
+| License | `test_license.py`, `test_legacy_license_import.py` |
+| Config | `test_config.py` |
+| Authorization hardening | `test_idor_org_scoping.py`, `test_permission_registry.py`, `test_registry_drift_detection.py`, `test_route_authorization_coverage.py` |
+| Schema / startup / migrations | `test_schema_guard.py`, `test_startup_smoke.py`, `test_migrations.py`, `test_admin_bootstrap_schema_regression.py`, `test_backfill_default_org.py` |
+| Identity | `test_identity_api.py` |
+| PR12 (enterprise auth flow) | `test_pr12_auth_flow.py` |
+
+MFA design trail and other feature-specific audits live in `docs/`
+(`pr11-mfa-*.md`); deployment and migration procedure in
+`docs/DEPLOYMENT_CHECKLIST.md` and `docs/MIGRATIONS.md`.
