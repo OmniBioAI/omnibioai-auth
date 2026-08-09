@@ -10,14 +10,19 @@ class RefreshToken(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    # PR12: widened from 500 -- adding iss/aud claims (core/jwt.py::_sign)
-    # pushed a real token past 500 chars (~524 for a plain no-org user;
-    # an org-scoped user with org_role/permissions is longer still),
-    # causing a real "Data too long for column" failure on login against
-    # MySQL. 767 is the largest VARCHAR that keeps this column's UNIQUE
-    # index under InnoDB's 3072-byte max key length at 4 bytes/char
-    # (utf8mb4): 767 * 4 = 3068.
-    token = Column(String(767), unique=True, index=True)
+    # 0017: no longer indexed, and no longer length-capped for indexing
+    # purposes -- see that migration's docstring. This had already been
+    # widened once before (PR12, 500 -> 767) for the same underlying
+    # reason: any VARCHAR cap on an indexed copy of the raw JWT eventually
+    # gets exceeded again as claims grow (more roles -> a longer
+    # `permissions` list). Kept as TEXT for reference only; every lookup
+    # now goes through token_hash below instead.
+    token = Column(Text)
+    # SHA-256 hex digest of `token` (fixed-width, 64 hex chars) -- what
+    # every lookup (app/services/auth_service.py's revoke_token/
+    # rotate_refresh_token) filters on instead of the raw token, so this
+    # column's index is unaffected by however long the JWT itself grows.
+    token_hash = Column(String(64), unique=True, index=True)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime)

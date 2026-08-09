@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timedelta
 from app.db.models import OrganizationMFAPolicy, User, RefreshToken
@@ -7,6 +8,14 @@ from app.services import audit_service, org_service
 from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
+
+
+def _hash_refresh_token(token: str) -> str:
+    """0017: every RefreshToken row is now looked up by this hash, not
+    the raw `token` column -- see that migration's docstring. Same
+    hash-the-secret-for-lookup convention as apikey_service._hash_key /
+    oauth_client_service._hash_secret."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _log_login_failure(db, email: str, user: User | None, reason: str) -> None:
@@ -176,6 +185,7 @@ def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | N
     db_token = RefreshToken(
         user_id=user.id,
         token=refresh,
+        token_hash=_hash_refresh_token(refresh),
         revoked=False,
         family_id=str(uuid.uuid4()),
         expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS),
@@ -264,7 +274,7 @@ def generate_tokens_or_mfa_challenge(
 
 
 def revoke_token(db, token):
-    db_token = db.query(RefreshToken).filter(RefreshToken.token == token).first()
+    db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_refresh_token(token)).first()
     if db_token:
         db_token.revoked = True
         db.commit()
@@ -302,7 +312,7 @@ def rotate_refresh_token(db, presented_token: str):
     a token that was already rotated once (in which case, as a side
     effect, the whole family is revoked; see `_revoke_family`).
     """
-    db_token = db.query(RefreshToken).filter(RefreshToken.token == presented_token).first()
+    db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_refresh_token(presented_token)).first()
     if not db_token:
         return None
 
@@ -351,6 +361,7 @@ def rotate_refresh_token(db, presented_token: str):
         RefreshToken(
             user_id=user.id,
             token=new_refresh,
+            token_hash=_hash_refresh_token(new_refresh),
             revoked=False,
             family_id=family_id,
             expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS),

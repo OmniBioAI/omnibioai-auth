@@ -279,7 +279,10 @@ _register(
         action="execute",
         scope=PermissionScope.BOTH,
         category=PermissionCategory.WORKFLOW,
-        description="Reserved -- not yet enforced by any route.",
+        description=(
+            "Start or cancel a tool-execution run, and validate a run "
+            "request before submission (omnibioai-tes)."
+        ),
         legacy=False,
     )
 )
@@ -328,6 +331,34 @@ _register(
         description=(
             "Create/update/delete workflow bundle definitions; "
             "administrative lifecycle operations (omnibioai-workflow-bundles)."
+        ),
+        legacy=False,
+    )
+)
+
+# omnibioai-tes's own execution runs (submit/status/logs/results/cancel)
+# are a distinct resource from the workflow-bundles catalog above -- a
+# run's an execution record, not a bundle definition -- so this gets its
+# own `runs` resource rather than overloading `workflow.read`, whose
+# description already specifically means the bundle catalog. Split from
+# workflow.execute (which continues to gate submit/validate/cancel) for
+# the same "reading vs. doing" reason workflow.read/execute/publish/
+# manage were already split from each other above: viewing a run's
+# status/logs/results is a fundamentally lower-privilege action than
+# starting or cancelling one, and gating both identically (routes_runs.py
+# did, until this PR) meant no role could see run history without also
+# being able to submit/cancel runs.
+_register(
+    PermissionDef(
+        name="runs.read",
+        resource="runs",
+        action="read",
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.WORKFLOW,
+        description=(
+            "List and view tool-execution run status, logs, and results "
+            "(omnibioai-tes). Does not grant starting or cancelling a run "
+            "-- see workflow.execute."
         ),
         legacy=False,
     )
