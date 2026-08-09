@@ -359,7 +359,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0016_role_org_scope"
+    assert recorded == "0017_refresh_token_hash"
 
 
 # ---------------------------------------------------------------------------
@@ -480,4 +480,4 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0016_role_org_scope"
+    assert recorded == "0017_refresh_token_hash"

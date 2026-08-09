@@ -15,6 +15,25 @@ from app.services.audit_service import AuditEventType
 ORG_ADMIN_ROLE = "org_admin"
 ORG_ADMIN_PERMISSIONS = [
     "manage_org", "manage_teams", "manage_api_keys", "manage_oauth_clients", "manage_sso",
+    # Org admins previously had no visibility into their own org's
+    # workflow-bundles catalog at all -- workflow.read/manage lived only
+    # on scientist/viewer (added for the omnibioai-workflow-bundles IAM
+    # integration, see permission_names.py), so an org_admin needed a
+    # second role grant just to see it. workflow.read/manage fit
+    # org_admin's existing "administer this org's resources" character
+    # (same shape as manage_teams/manage_api_keys/manage_sso above);
+    # workflow.execute/workflow.publish deliberately stay scientist-only
+    # -- running/publishing a workflow is a distinct operator capability,
+    # not an org-administration one.
+    "workflow.read", "workflow.manage",
+    # Same reasoning as workflow.read/manage above, for TES's own
+    # execution-run history (a distinct resource from the workflow-bundles
+    # catalog, see permission_names.py's runs.read) -- org_admin can see
+    # its org's runs without also being able to submit/cancel them
+    # (workflow.execute, deliberately not added here for the same reason
+    # workflow.execute itself isn't: that's an operator capability, not
+    # an org-administration one).
+    "runs.read",
 ]
 ORG_MEMBER_ROLE = "org_member"
 

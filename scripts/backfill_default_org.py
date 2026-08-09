@@ -17,8 +17,28 @@ Guarantees:
   error) none are -- see main()'s rollback-and-re-raise.
 - Idempotent / safe to re-run: a user who already has a Default Org
   membership is skipped, not duplicated. If an existing membership's
-  permissions have drifted from their current global permissions, that's
-  reported as a mismatch rather than silently overwritten.
+  permissions have drifted from what a fresh backfill would produce
+  today, that's reported as a mismatch rather than silently overwritten.
+
+Global-"admin" special case: a user holding the platform-wide "admin"
+role (init_admin.py's bootstrap role -- manage_roles/manage_licenses/
+manage_config/platform.*, meant for platform-console duties) also gets
+the org-scoped "org_admin" role (manage_org/etc., see org_service.py) on
+their Default Org membership, in addition to their global-role copy.
+Without this, the bootstrap admin's own org membership carries none of
+org_admin's permissions (manage_org in particular), so
+admin@omnibioai-shaped accounts get 403'd by every org-scoped
+permission check (e.g. GET /organizations/{id}/roles) despite being the
+platform's own bootstrap operator -- this was observed directly against
+a real deployment, not theoretical. Deliberately narrow to the "admin"
+role specifically, not applied to every user: this script's core
+contract for everyone else stays a byte-for-byte permission-preserving
+copy (see the mismatch check in `backfill` below) -- broadening this to
+"give every backfilled user org_admin" would silently hand
+manage_org/manage_teams/manage_api_keys/manage_oauth_clients/manage_sso
+to plain "user"/"scientist"/"viewer" accounts that never had anything
+resembling org-admin capability, which is a privilege escalation this
+script must never cause as a side effect.
 
 Usage:
     python scripts/backfill_default_org.py            # apply
@@ -40,7 +60,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.models import Organization, OrganizationMembership, User
 from app.db.session import SessionLocal
-from app.services import role_service
+from app.services import org_service, role_service
+
+# The platform-wide bootstrap role (see init_admin.py's create_admin) --
+# a user holding this globally also gets org_admin on their Default Org
+# membership below. Compared by name, not imported as a constant: the
+# "admin" role isn't org_service's to own (it's init_admin.py's), and
+# role_service has no existing ADMIN_ROLE-style constant for it either.
+_GLOBAL_ADMIN_ROLE_NAME = "admin"
 
 
 def _get_default_org(db) -> Organization:
@@ -73,16 +100,23 @@ def backfill(db, verify_only: bool = False) -> dict:
             .first()
         )
         global_perms = role_service.permissions_for_roles(user.roles)
+        is_global_admin = any(r.name == _GLOBAL_ADMIN_ROLE_NAME for r in user.roles)
+        # What this script would produce for this user today: the plain
+        # global-role copy for everyone, plus org_admin's permission set
+        # for a global-admin user (see module docstring). Compared
+        # against, not just global_perms, so a legitimate org_admin
+        # top-up isn't itself reported as drift.
+        expected_perms = global_perms | (set(org_service.ORG_ADMIN_PERMISSIONS) if is_global_admin else set())
 
         if existing:
             already_present += 1
             org_perms = role_service.permissions_for_roles(existing.roles)
-            if org_perms != global_perms:
+            if org_perms != expected_perms:
                 mismatches.append(
                     {
                         "user_id": user.id,
                         "reason": "existing_default_org_membership_diverged",
-                        "global": sorted(global_perms),
+                        "global": sorted(expected_perms),
                         "org": sorted(org_perms),
                     }
                 )
@@ -101,8 +135,14 @@ def backfill(db, verify_only: bool = False) -> dict:
         # org_admin/org_member catalog entry (that convention is for
         # brand-new orgs created via the API, see org_service.py). This is
         # a byte-for-byte permission-preserving copy, which is exactly why
-        # a mismatch after this runs would mean the script itself is wrong.
-        membership.roles = list(user.roles)
+        # a mismatch after this runs would mean the script itself is wrong
+        # -- except for the global-admin top-up immediately below, which
+        # is accounted for in expected_perms above, not a silent
+        # exception to that invariant.
+        roles = list(user.roles)
+        if is_global_admin:
+            roles.append(role_service.get_or_create_role(db, org_service.ORG_ADMIN_ROLE, org_service.ORG_ADMIN_PERMISSIONS))
+        membership.roles = roles
         db.add(membership)
         backfilled += 1
 
