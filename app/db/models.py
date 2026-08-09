@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Table, UniqueConstraint
+from sqlalchemy import Column, Integer, String, ForeignKey, Table, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 from datetime import datetime
@@ -634,3 +634,88 @@ class OrganizationMFAPolicy(Base):
     override_reason = Column(String(500), nullable=True)
     override_at = Column(DateTime, nullable=True)
     override_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class Interaction(Base):
+    """PR-B2 (Interactions Foundation): durable ledger of meaningful
+    platform/business activity -- "what did the user/service do"
+    (RAG query, workflow submission, tool execution, ...), as opposed to
+    AuditEvent's "what security/audit-relevant thing happened"
+    (login/role/permission/MFA/SSO changes) or UserSession's "what login
+    lineage is currently active." All three stay separate tables by
+    design -- see docs/pr-b2-interactions-foundation-discovery.md.
+
+    interaction_id is the canonical external identity (uuid4, minted once
+    at creation by interaction_service.build_interaction_event -- never
+    regenerated on retry/redelivery), analogous to AuditEvent's own
+    identity being its surrogate `id`, but exposed/stable pre-persistence
+    so a Redis-published copy of the same logical event carries the same
+    identity as its DB row. UNIQUE + indexed for the idempotent-insert
+    pattern interaction_service.create_interaction uses (IntegrityError
+    on a duplicate interaction_id is caught and treated as success, the
+    same convention omnibioai-security-audit's consumers/sink.py::
+    Sink.write already established for its own event_id).
+
+    organization_id/user_id/session_id/trace_id are deliberately plain
+    columns, NOT foreign keys -- mirrors AuditEvent's own reasoning
+    exactly (see that class's docstring above): a durable ledger row must
+    keep its historical identifiers even if the referenced organization/
+    user/session is later deleted, unlike UserSession.organization_id
+    (a real FK) which has no such historical-preservation requirement.
+    session_id stores the same session_id value UserSession.session_id
+    does (a family_id uuid4 string, see UserSession's own docstring) --
+    not a FK to sessions.id (a different, surrogate column) or
+    sessions.session_id (would reintroduce the exact cross-table
+    lifecycle coupling this design avoids). Nullable: many legitimate
+    service/system interactions have no authenticated session at all.
+
+    created_at uses this schema's universal naive-UTC convention
+    (datetime.utcnow(), matching RefreshToken/User/Organization/
+    UserSession/AuditEvent with zero exceptions anywhere in this file) --
+    not a timezone-aware column, which would be the only one in the
+    entire schema.
+
+    event_metadata mirrors AuditEvent.event_metadata's exact naming
+    workaround: the Python attribute can't be called `metadata` (reserved
+    by SQLAlchemy's declarative Base), but the actual database column is
+    still literally named `metadata`. Must never contain token/secret-
+    shaped values -- see interaction_service.py's redaction discussion.
+    """
+    __tablename__ = "interactions"
+    __table_args__ = (
+        # Org-scoped listing, newest first -- the primary anticipated
+        # query shape (a future org-scoped Control Center view, PR-B5+).
+        Index("ix_interactions_org_id_created", "organization_id", "created_at"),
+        # "My interactions" / "this session's interactions" -- self-service
+        # equivalents of UserSession's own ix_sessions_user_id_status /
+        # ix_sessions_org_id_status_created shape.
+        Index("ix_interactions_user_id_created", "user_id", "created_at"),
+        Index("ix_interactions_session_id_created", "session_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    interaction_id = Column(String(36), unique=True, nullable=False, index=True)
+
+    organization_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, nullable=True)
+    session_id = Column(String(36), nullable=True)
+    # Single-column, not paired with created_at -- a trace lookup is an
+    # exact cross-service correlation match ("show me everything under
+    # this trace_id"), not a date-range scan, unlike the three above.
+    trace_id = Column(String(255), nullable=True, index=True)
+
+    service = Column(String(100), nullable=False)
+    interaction_type = Column(String(100), nullable=False)
+    action = Column(String(255), nullable=False)
+
+    resource_type = Column(String(100), nullable=True)
+    resource_id = Column(String(255), nullable=True)
+
+    status = Column(String(50), nullable=True)
+    decision = Column(String(50), nullable=True)
+
+    # Python attribute can't be named `metadata` -- see AuditEvent's own
+    # identical comment above. DB column is still literally `metadata`.
+    event_metadata = Column("metadata", JSON, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

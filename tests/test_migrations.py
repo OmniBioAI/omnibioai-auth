@@ -34,9 +34,10 @@ AUDIT_TABLES = {"audit_events"}  # PR9 (0011)
 MFA_TABLES = {"mfa_devices", "mfa_recovery_codes"}  # PR11.5.1 (0013)
 MFA_ORG_POLICY_TABLES = {"organization_mfa_policies"}  # PR11.5.5 (0014)
 SESSION_TABLES = {"sessions"}  # Phase 4 PR-A (0018)
+INTERACTION_TABLES = {"interactions"}  # PR-B2 (0019)
 ALL_TABLES = (
     BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
-    | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES
+    | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES | INTERACTION_TABLES
 )
 
 
@@ -149,6 +150,29 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
         set(idx["column_names"]) == {"session_id"} and idx.get("unique")
         for idx in session_indexes
     ) or any(set(uq["column_names"]) == {"session_id"} for uq in session_uqs)
+
+    interaction_columns = {c["name"] for c in inspector.get_columns("interactions")}
+    assert {
+        "id", "interaction_id", "organization_id", "user_id", "session_id", "trace_id",
+        "service", "interaction_type", "action", "resource_type", "resource_id",
+        "status", "decision", "metadata", "created_at",
+    } <= interaction_columns
+    interaction_uqs = inspector.get_unique_constraints("interactions")
+    interaction_indexes = inspector.get_indexes("interactions")
+    assert any(
+        set(idx["column_names"]) == {"interaction_id"} and idx.get("unique")
+        for idx in interaction_indexes
+    ) or any(set(uq["column_names"]) == {"interaction_id"} for uq in interaction_uqs)
+    assert any(
+        set(idx["column_names"]) == {"organization_id", "created_at"} for idx in interaction_indexes
+    )
+    assert any(
+        set(idx["column_names"]) == {"user_id", "created_at"} for idx in interaction_indexes
+    )
+    assert any(
+        set(idx["column_names"]) == {"session_id", "created_at"} for idx in interaction_indexes
+    )
+    assert any(set(idx["column_names"]) == {"trace_id"} for idx in interaction_indexes)
 
 
 def test_sqlite_pre_existing_user_row_survives_0013_with_correct_mfa_defaults(sqlite_db_url):
@@ -373,7 +397,57 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0018_session_foundation"
+    assert recorded == "0019_interactions"
+
+
+def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
+    """PR-B2's specific concern: 0019 creates a new table only -- it must
+    not touch any existing table. A session row created under 0018 (pre-
+    0019) must come out the other side of `upgrade head` completely
+    unchanged, and the interactions table must exist and be empty."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0018_session_foundation")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO users (email, hashed_password, status) VALUES (:e, :h, :s)"),
+                     {"e": "pre-b2@omnibioai.test", "h": "not-a-real-hash", "s": "active"})
+        conn.execute(
+            text(
+                "INSERT INTO sessions (session_id, user_id, mfa_verified, status, "
+                "created_at, last_activity_at, expires_at) "
+                "VALUES (:sid, 1, 1, 'active', :now, :now, :exp)"
+            ),
+            {"sid": "pre-b2-session", "now": "2026-08-09 00:00:00", "exp": "2026-08-16 00:00:00"},
+        )
+
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT session_id, status FROM sessions WHERE session_id = :sid"),
+            {"sid": "pre-b2-session"},
+        ).mappings().one()
+        interaction_count = conn.execute(text("SELECT COUNT(*) FROM interactions")).scalar()
+
+    assert row["session_id"] == "pre-b2-session"
+    assert row["status"] == "active"
+    assert interaction_count == 0
+
+
+def test_sqlite_0019_downgrade_drops_only_interactions(sqlite_db_url):
+    """Downgrading past 0019 must remove interactions and leave every
+    other table (in particular sessions, the immediately preceding
+    migration) intact."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0018_session_foundation")
+
+    engine = create_engine(sqlite_db_url)
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    assert "interactions" not in tables
+    assert "sessions" in tables
 
 
 # ---------------------------------------------------------------------------
@@ -494,4 +568,36 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0018_session_foundation"
+    assert recorded == "0019_interactions"
+
+
+def test_mysql_interaction_id_unique_constraint_enforced(mysql_db_url):
+    """PR-B2 Section 24's explicit requirement: confirm interaction_id
+    UNIQUE actually works against real MySQL, not merely SQLite (whose
+    constraint-enforcement semantics can differ)."""
+    cfg = _alembic_config(mysql_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(mysql_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO interactions "
+                "(interaction_id, organization_id, service, interaction_type, action, created_at) "
+                "VALUES (:iid, 1, 'rag', 'query', 'search', :now)"
+            ),
+            {"iid": "mysql-unique-test-1", "now": "2026-08-09 00:00:00"},
+        )
+
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO interactions "
+                    "(interaction_id, organization_id, service, interaction_type, action, created_at) "
+                    "VALUES (:iid, 2, 'rag', 'query', 'search-again', :now)"
+                ),
+                {"iid": "mysql-unique-test-1", "now": "2026-08-09 00:00:01"},
+            )
