@@ -19,6 +19,7 @@ FUTURE_NAMES = {
     "workflow.read",
     "workflow.publish",
     "workflow.manage",
+    "runs.read",
     "model.use",
     "dataset.read",
     "usage.read",
@@ -91,12 +92,13 @@ def test_response_contains_all_registered_permissions(client):
     names = {p["name"] for p in resp.json()}
     assert names == set(REGISTRY.keys())
     assert len(resp.json()) == len(REGISTRY)
-    # 13 legacy (5 platform + 3 PR3D + 5 org) + 8 future enterprise entries
-    # + 3 omnibioai-workflow-bundles entries (workflow.read/publish/manage,
-    # added alongside the pre-existing workflow.execute).
+    # 13 legacy (5 platform + 3 PR3D + 5 org) + 7 future enterprise entries
+    # + 3 omnibioai-workflow-bundles entries (workflow.read/publish/manage)
+    # + 2 omnibioai-tes entries (workflow.execute, now consumed by that
+    # repo instead of sitting unenforced, + runs.read).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 24
+    assert len(REGISTRY) == 25
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -215,7 +217,7 @@ def test_filter_combines_category_and_scope(client):
     )
     assert resp.status_code == 200
     assert {p["name"] for p in resp.json()} == {
-        "workflow.execute", "workflow.read", "workflow.publish", "workflow.manage",
+        "workflow.execute", "workflow.read", "workflow.publish", "workflow.manage", "runs.read",
     }
 
 

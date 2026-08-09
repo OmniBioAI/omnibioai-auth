@@ -37,7 +37,6 @@ LEGACY_NAMES = {
 }
 
 FUTURE_NAMES = {
-    "workflow.execute": PermissionCategory.WORKFLOW,
     "model.use": PermissionCategory.MODEL,
     "dataset.read": PermissionCategory.DATASET,
     "usage.read": PermissionCategory.BILLING,
@@ -56,6 +55,18 @@ WORKFLOW_BUNDLES_NAMES = {
     "workflow.read": PermissionCategory.WORKFLOW,
     "workflow.publish": PermissionCategory.WORKFLOW,
     "workflow.manage": PermissionCategory.WORKFLOW,
+}
+
+# omnibioai-tes IAM integration: same "real, immediately-enforced" shape as
+# WORKFLOW_BUNDLES_NAMES above, not FUTURE_NAMES -- workflow.execute (which
+# used to be an unenforced placeholder, hence its old home in FUTURE_NAMES)
+# now gates omnibioai-tes's submit/validate/cancel routes, and runs.read is
+# a new addition gating that repo's read-only run history/status/logs/
+# results endpoints. Neither carries the "Reserved -- not yet enforced"
+# description any more.
+TES_NAMES = {
+    "workflow.execute": PermissionCategory.WORKFLOW,
+    "runs.read": PermissionCategory.WORKFLOW,
 }
 
 GLOBAL_LEGACY_NAMES = {
@@ -155,6 +166,31 @@ def test_workflow_bundles_names_are_not_marked_reserved():
         assert "not yet enforced" not in REGISTRY[name].description.lower()
 
 
+# ── omnibioai-tes permissions ────────────────────────────────────────────────
+
+def test_all_tes_names_are_known_not_legacy_scope_both():
+    for name, category in TES_NAMES.items():
+        assert is_known_permission(name), f"{name} missing from registry"
+        entry = REGISTRY[name]
+        assert entry.legacy is False
+        assert entry.scope == PermissionScope.BOTH
+        assert entry.category == category
+        assert entry.deprecated is False
+
+
+def test_all_tes_names_pass_format_validation():
+    for name in TES_NAMES:
+        assert is_valid_permission_format(name), name
+
+
+def test_tes_names_are_not_marked_reserved():
+    # Real, immediately-enforced permissions (omnibioai-tes), same shape as
+    # WORKFLOW_BUNDLES_NAMES above -- must not carry the FUTURE_NAMES
+    # "Reserved -- not yet enforced" description.
+    for name in TES_NAMES:
+        assert "not yet enforced" not in REGISTRY[name].description.lower()
+
+
 # ── Registry-wide invariant ──────────────────────────────────────────────────
 
 def test_every_non_legacy_entry_satisfies_permission_format():
@@ -168,6 +204,7 @@ def test_every_non_legacy_entry_satisfies_permission_format():
 def test_registry_contains_exactly_the_expected_names():
     assert set(REGISTRY.keys()) == (
         LEGACY_NAMES | set(FUTURE_NAMES.keys()) | set(WORKFLOW_BUNDLES_NAMES.keys())
+        | set(TES_NAMES.keys())
     )
 
 
@@ -292,7 +329,9 @@ def test_registry_stats_totals_match_registry_size():
     assert stats["total_permissions"] == len(REGISTRY)
     assert stats["legacy_permissions"] + stats["future_permissions"] == len(REGISTRY)
     assert stats["legacy_permissions"] == len(LEGACY_NAMES)
-    assert stats["future_permissions"] == len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES)
+    assert stats["future_permissions"] == (
+        len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
+    )
 
 
 def test_registry_stats_deprecated_count_is_zero_today():
@@ -304,7 +343,9 @@ def test_registry_stats_by_scope_sums_to_total():
     assert sum(stats["by_scope"].values()) == stats["total_permissions"]
     assert stats["by_scope"]["org"] == 5
     assert stats["by_scope"]["global"] == 8
-    assert stats["by_scope"]["both"] == 11
+    # 11 pre-runs.read + 1 (runs.read, added by the omnibioai-tes IAM
+    # integration -- see TES_NAMES above).
+    assert stats["by_scope"]["both"] == 12
 
 
 def test_registry_stats_by_category_sums_to_total():
