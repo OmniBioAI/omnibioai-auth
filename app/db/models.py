@@ -514,6 +514,82 @@ class MFARecoveryCode(Base):
     user = relationship("User")
 
 
+class UserSession(Base):
+    """Phase 4 PR-A (Session Foundation): the queryable, administrable
+    shadow of one refresh-token *family* -- not a new authentication
+    mechanism, not a session store the auth flow depends on to function.
+    See docs/session-foundation-discovery.md for the full design.
+
+    `session_id` deliberately stores the *same* string every
+    `RefreshToken` row descended from one login already shares in its own
+    `family_id` column (see that column's own comment above), rather than
+    minting and tracking a second, independent identifier that could ever
+    drift out of sync with it. `family_id` already survives every
+    rotation -- see `auth_service.rotate_refresh_token` -- which is
+    exactly the "stable identity across refresh" a session needs, so this
+    table reuses it outright instead of duplicating it under a different
+    name. There is intentionally no `refresh_token_family_id` column
+    separate from `session_id`: they are the same value by construction,
+    and storing it twice would only create a second copy that could go
+    stale.
+
+    Named `UserSession` (table `sessions`), not `Session` -- `Session` is
+    already the name every file in this codebase imports for
+    `sqlalchemy.orm.Session` (`db: Session = Depends(get_db)`); reusing it
+    here would shadow that import in any module that needed both.
+
+    No raw refresh token or any other secret is ever stored on this row --
+    `session_id` is an opaque, non-secret family identifier (a `uuid4`),
+    not a bearer credential; possessing it grants nothing on its own (see
+    app/rbac.py -- every session route the API exposes still requires a
+    valid, unrevoked access token to even reach this table, scoped to
+    that caller's own `user_id`).
+
+    `organization_id`/`org_role`/`auth_method`/`mfa_verified` are point-in-
+    time snapshots of what `build_user_claims` resolved at *login* time --
+    not live pointers -- so a session created while a user held a given
+    org role keeps showing that role even if it's later changed, matching
+    how the JWT itself already behaves for the lifetime of one access
+    token. This is display/audit information only; every real
+    authorization decision anywhere in this service still comes from the
+    JWT/DB checks that already exist (`get_current_user`, `rbac.py`),
+    completely unchanged by this table's existence.
+
+    `status`/`expires_at` mirror the owning refresh-token family's own
+    revoked/expiry state as of the last time this row was written (login,
+    each rotation, or an explicit revoke) -- not a live join. EXPIRED is
+    deliberately never written by a background sweep (no scheduler exists
+    in this repo); see app/services/session_service.py's
+    `effective_status` for how a merely-timed-out session is recognized
+    at read time without one.
+    """
+
+    __tablename__ = "sessions"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String(36), unique=True, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    org_role = Column(JSON, nullable=True)
+    auth_method = Column(String(20), nullable=True)
+    mfa_verified = Column(Boolean, nullable=False, default=True)
+    status = Column(String(20), nullable=False, default="active")  # active | expired | revoked
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_activity_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_reason = Column(String(255), nullable=True)
+    # Best-effort operational metadata for the session owner's own "is
+    # this me?" review (see routes_sessions.py) -- read directly from the
+    # request at login (request.client.host / the User-Agent header), no
+    # trusted-proxy header parsing (no X-Forwarded-For convention exists
+    # anywhere else in this codebase either; inventing one here is out of
+    # scope for this change). Never logged -- see auth_service/
+    # session_service for where these are written.
+    client_ip = Column(String(64), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+
+
 class OrganizationMFAPolicy(Base):
     """PR11.5.5: org-level MFA requirement, deliberately a sibling table
     to Organization -- not columns on it -- mirroring

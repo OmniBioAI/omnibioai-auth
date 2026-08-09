@@ -133,7 +133,7 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 
 # ---------------- LOGIN ----------------
 @router.post("/login")
-def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(req: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     # Phase 2 PR5: checked before any credential verification at all --
     # authenticate_user (the only caller of verify_password) is never
     # reached for an org that enforces SSO, not just short-circuited
@@ -163,8 +163,17 @@ def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     # compatible per that PR's own explicit requirement.
     # PR11.5.5: org-required MFA the user hasn't personally enrolled --
     # same 403 shape the SSO-enforcement check above already uses.
+    # Phase 4 PR-A: best-effort client metadata for the new session row --
+    # never logged, never returned in this endpoint's own response (see
+    # app/services/session_service.py). `request.client` is None in some
+    # test-client/ASGI-transport configurations, hence the guard.
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+
     try:
-        result = generate_tokens_or_mfa_challenge(db, user, auth_method="password")
+        result = generate_tokens_or_mfa_challenge(
+            db, user, auth_method="password", client_ip=client_ip, user_agent=user_agent,
+        )
     except MFAEnrollmentRequiredError:
         raise HTTPException(403, detail={
             "error": "mfa_enrollment_required",

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from app.db.models import OrganizationMFAPolicy, User, RefreshToken
 from app.core.security import verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
-from app.services import audit_service, org_service
+from app.services import audit_service, org_service, session_service
 from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
@@ -154,7 +154,14 @@ def _persisted_auth_method(auth_method: str) -> str:
     return _PERSISTED_AUTH_METHODS.get(auth_method, "unknown")
 
 
-def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | None = None):
+def generate_tokens(
+    db,
+    user,
+    auth_method: str = "password",
+    idp_org_id: int | None = None,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
+):
     """`auth_method` records which flow issued this token ("password" |
     "oauth" | "license" | "sso") -- purely informational, not used for any
     authorization decision. Claims themselves come from `build_user_claims`
@@ -169,6 +176,14 @@ def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | N
     routes_license.py. Deliberately not in `build_user_claims`, which
     `rotate_refresh_token` also calls on every token refresh -- a refresh
     continues an existing session, it must not look like a new login.
+
+    Phase 4 PR-A: also the single place a `UserSession` row is created,
+    for the identical reason -- every login flow already funnels through
+    here. `client_ip`/`user_agent` are optional and default to None so
+    every existing caller (routes_oauth.py/routes_sso.py/routes_license.py/
+    mfa_service.py, none of which pass them today) is completely
+    unaffected; only routes_auth.py's password login currently supplies
+    them. See app/services/session_service.py.
     """
     user.last_login_at = datetime.utcnow()
     user.authentication_method = _persisted_auth_method(auth_method)
@@ -182,16 +197,33 @@ def generate_tokens(db, user, auth_method: str = "password", idp_org_id: int | N
     # this refresh token stays in the same family, so a reuse-of-rotated
     # token can revoke exactly the tokens descended from this one login,
     # not every session this user has ever had.
+    family_id = str(uuid.uuid4())
+    expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+
     db_token = RefreshToken(
         user_id=user.id,
         token=refresh,
         token_hash=_hash_refresh_token(refresh),
         revoked=False,
-        family_id=str(uuid.uuid4()),
-        expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS),
+        family_id=family_id,
+        expires_at=expires_at,
     )
 
     db.add(db_token)
+
+    session_service.create(
+        db,
+        session_id=family_id,
+        user_id=user.id,
+        organization_id=payload.get("org_id"),
+        org_role=payload.get("org_role"),
+        auth_method=auth_method,
+        mfa_verified=payload.get("mfa_verified", True),
+        expires_at=expires_at,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
+
     db.commit()
 
     return access, refresh
@@ -209,13 +241,27 @@ class MFAEnrollmentRequiredError(Exception):
 
 
 def generate_tokens_or_mfa_challenge(
-    db, user, auth_method: str = "password", idp_org_id: int | None = None
+    db,
+    user,
+    auth_method: str = "password",
+    idp_org_id: int | None = None,
+    client_ip: str | None = None,
+    user_agent: str | None = None,
 ) -> dict:
     """PR11.5.3: the single shared MFA decision point every login flow
     (password/oauth/sso/license -- all seven generate_tokens call sites,
     see docs/pr11-mfa-login-challenge-discovery.md SS1-SS2) calls instead
     of generate_tokens directly. Exists so the `if user.mfa_enabled`
     branch lives in exactly one place, never duplicated per route.
+
+    Phase 4 PR-A: `client_ip`/`user_agent` are passed straight through to
+    `generate_tokens` on the no-MFA path only -- optional, default None,
+    so only routes_auth.py's password login (the one caller that
+    currently supplies them) is affected. The MFA-challenge branch below
+    never reaches `generate_tokens` at all (no tokens exist yet), so a
+    challenge-then-verify login's session is created later, from
+    mfa_service.verify_mfa_challenge's own call to `generate_tokens`
+    (without client metadata, for now -- see that module).
 
     Returns one of two shapes:
       {"mfa_required": False, "access_token": ..., "refresh_token": ...}
@@ -257,7 +303,10 @@ def generate_tokens_or_mfa_challenge(
     if not user.mfa_enabled:
         if org_requires_mfa:
             raise MFAEnrollmentRequiredError()
-        access, refresh = generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+        access, refresh = generate_tokens(
+            db, user, auth_method=auth_method, idp_org_id=idp_org_id,
+            client_ip=client_ip, user_agent=user_agent,
+        )
         return {"mfa_required": False, "access_token": access, "refresh_token": refresh}
 
     challenge_token = create_mfa_challenge_token(user.id, auth_method=auth_method, idp_org_id=idp_org_id)
@@ -277,7 +326,42 @@ def revoke_token(db, token):
     db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_refresh_token(token)).first()
     if db_token:
         db_token.revoked = True
+        # Phase 4 PR-A: additive -- only writes the UserSession row for
+        # this family, does not change what happens to `db_token` itself
+        # (still exactly the single-row revoke this function has always
+        # done; see its own module-level precedent notes in
+        # app/db/models.py's RefreshToken/UserSession comments for why
+        # revoking the one currently-live row is equivalent to revoking
+        # the session).
+        session_service.revoke(db, db_token.family_id, session_service.REASON_USER_LOGOUT)
         db.commit()
+
+
+def revoke_session(db, session_id: str) -> bool:
+    """Phase 4 PR-A: explicit, API-triggered revocation of one session by
+    id (== the refresh-token family_id) -- distinct from `revoke_token`
+    above (logout; revokes only the single currently-live token row) and
+    from `_revoke_family`'s automatic reuse-detection response. Unlike
+    plain logout, this revokes *every* row in the family via the same
+    `_revoke_family` reuse-detection uses, not just the current one --
+    deliberately more thorough, since this is a new capability (killing a
+    session an admin or the user themselves identified out-of-band, not
+    the token currently in hand) rather than a continuation of the
+    existing logout code path.
+
+    Returns True if a session with this id exists (whether or not it was
+    already revoked -- both are treated as success by the caller, same
+    "already gone is fine" idempotency as revoke_token). `_revoke_family`
+    commits its own change immediately (existing behavior, unchanged
+    here); the session-row mutation that follows still needs the caller
+    (routes_sessions.py) to commit once more to persist.
+    """
+    session = session_service.get_by_family_id(db, session_id)
+    if session is None:
+        return False
+    _revoke_family(db, session_id)
+    session_service.revoke(db, session_id, session_service.REASON_USER_REVOKED)
+    return True
 
 
 def _revoke_family(db, family_id: str | None) -> None:
@@ -308,9 +392,17 @@ def rotate_refresh_token(db, presented_token: str):
 
     Returns `(new_access_token, new_refresh_token)` on success, or `None`
     if the token is unknown, already revoked, expired, belongs to a
-    no-longer-active user, or -- the new case PR0.2 adds -- is a replay of
-    a token that was already rotated once (in which case, as a side
-    effect, the whole family is revoked; see `_revoke_family`).
+    no-longer-active user, -- the case PR0.2 adds -- is a replay of a
+    token that was already rotated once (in which case, as a side effect,
+    the whole family is revoked; see `_revoke_family`), or -- Phase 4
+    PR-A adds -- belongs to a session that was independently revoked or
+    has itself expired (see `session_service.is_usable`). This last check
+    is defense in depth: today, the only way to reach it is a session
+    revoked via the new `revoke_session`/`POST /sessions/{id}/revoke`
+    path, which already revokes the entire RefreshToken family too (so
+    `db_token.revoked` above would already have caught it) -- this guard
+    exists so that guarantee holds even if a future revocation path ever
+    updates the session without also updating every RefreshToken row.
     """
     db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_refresh_token(presented_token)).first()
     if not db_token:
@@ -324,12 +416,18 @@ def rotate_refresh_token(db, presented_token: str):
         # since a live descendant token (family_id's newest row) may
         # already be in an attacker's hands.
         _revoke_family(db, db_token.family_id)
+        session_service.revoke(db, db_token.family_id, session_service.REASON_REUSE_DETECTED)
+        db.commit()
         return None
 
     if db_token.revoked:
         return None
 
     if db_token.expires_at < datetime.utcnow():
+        return None
+
+    session = session_service.get_by_family_id(db, db_token.family_id)
+    if not session_service.is_usable(session):
         return None
 
     user = db.query(User).filter(User.id == db_token.user_id).first()
@@ -357,6 +455,8 @@ def rotate_refresh_token(db, presented_token: str):
     family_id = db_token.family_id or str(uuid.uuid4())
     db_token.family_id = family_id
 
+    new_expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
+
     db.add(
         RefreshToken(
             user_id=user.id,
@@ -364,9 +464,33 @@ def rotate_refresh_token(db, presented_token: str):
             token_hash=_hash_refresh_token(new_refresh),
             revoked=False,
             family_id=family_id,
-            expires_at=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS),
+            expires_at=new_expires_at,
         )
     )
+
+    # Phase 4 PR-A: keep the session's activity/expiry in sync with the
+    # token just issued. `session` is None in exactly two cases: a
+    # pre-PR-A token being rotated for the first time since this feature
+    # shipped (family_id may also have just been freshly assigned, two
+    # lines above), or one whose family_id was backfilled on some earlier
+    # rotation before this feature existed -- either way, create the
+    # session row now rather than leaving it permanently missing, the
+    # same "backfill on first rotation" treatment family_id itself
+    # already gets a few lines up.
+    if session is not None:
+        session_service.touch(db, family_id, new_expires_at)
+    else:
+        session_service.create(
+            db,
+            session_id=family_id,
+            user_id=user.id,
+            organization_id=fresh_claims.get("org_id"),
+            org_role=fresh_claims.get("org_role"),
+            auth_method=auth_method,
+            mfa_verified=fresh_claims.get("mfa_verified", True),
+            expires_at=new_expires_at,
+        )
+
     db.commit()
 
     return new_access, new_refresh
