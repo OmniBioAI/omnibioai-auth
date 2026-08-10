@@ -253,6 +253,19 @@ team_memberships = Table(
     Base.metadata,
     Column("team_id", Integer, ForeignKey("teams.id"), primary_key=True),
     Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),
+    # Team Management v0.8.0 Step 1 (0020_team_member_roles): the three
+    # columns below are new. `role` is intentionally a plain, app-checked
+    # string ("admin" | "member" | "viewer") -- not routed through the
+    # Role/Permission machinery `membership_roles` above uses -- per this
+    # feature's decision to keep team RBAC lightweight. `default="member"`/
+    # `default=datetime.utcnow` are Python-side conveniences for inserts
+    # that go through the ORM without setting them explicitly (e.g. the
+    # pre-existing `Team.members = [...]` full-replace path below); the
+    # migration's `server_default='member'` is what actually backfills
+    # pre-existing rows at the DB level.
+    Column("role", String(20), nullable=False, default="member"),
+    Column("invited_by_user_id", Integer, ForeignKey("users.id"), nullable=True),
+    Column("joined_at", DateTime, nullable=True, default=datetime.utcnow),
 )
 
 
@@ -286,9 +299,47 @@ class Team(Base):
     id = Column(Integer, primary_key=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     name = Column(String(255), nullable=False)
+    # Team Management v0.8.0 Step 1 (0020_team_member_roles).
+    description = Column(String(1000), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    members = relationship("User", secondary=team_memberships)
+    # team_memberships now carries a second FK to users.id
+    # (invited_by_user_id, added alongside role/joined_at below) --
+    # explicit primaryjoin/secondaryjoin (lambdas: evaluated lazily at
+    # mapper-configure time, once both Team and User are fully defined
+    # module globals) keep this relationship resolving through user_id
+    # only, exactly as it did before that column existed.
+    members = relationship(
+        "User",
+        secondary=team_memberships,
+        primaryjoin=lambda: Team.id == team_memberships.c.team_id,
+        secondaryjoin=lambda: User.id == team_memberships.c.user_id,
+    )
+
+
+class TeamMember(Base):
+    """Association-object mapping onto the exact same physical table as
+    `team_memberships` above (`Team.members`'s `secondary=`) -- not a
+    second table. `Team.members` and the pre-existing full-replace
+    `set_team_members`/`PUT .../members` path keep writing through the
+    plain `secondary=` relationship, completely untouched by this class;
+    `TeamMember` exists so the new per-member invite/role/remove/leave
+    endpoints (Team Management v0.8.0 Step 2+) can read and write `role`,
+    `invited_by_user_id`, and `joined_at`, which a bare `secondary=`
+    relationship has no access to. Both paths issue ordinary INSERT/
+    UPDATE/DELETE against the same `team_memberships` rows; they are
+    never both touched for the same row within a single request, so there
+    is no unit-of-work conflict between the two mappings of this table.
+    """
+
+    __table__ = team_memberships
+
+    team = relationship("Team", viewonly=True)
+    user = relationship("User", foreign_keys=[team_memberships.c.user_id], viewonly=True)
+    invited_by = relationship(
+        "User", foreign_keys=[team_memberships.c.invited_by_user_id], viewonly=True
+    )
 
 
 class OrganizationMembership(Base):
