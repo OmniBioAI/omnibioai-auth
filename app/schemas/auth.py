@@ -23,3 +23,17 @@ class RefreshRequest(BaseModel):
 class LogoutRequest(BaseModel):
     refresh_token: str
     access_token: str | None = None
+
+
+class SwitchTeamRequest(BaseModel):
+    # `team_id` is required (unlike RefreshRequest.refresh_token's
+    # optional-with-cookie-fallback shape above) precisely so it can be
+    # sent as an explicit `null` for "switch back to the personal
+    # workspace" -- omitting the field entirely would be ambiguous with
+    # "no opinion, leave my current workspace alone", which is what plain
+    # POST /auth/refresh already means (see auth_service.rotate_refresh_
+    # token's `_UNSET` sentinel). This endpoint has no such "no opinion"
+    # case; every call is an explicit switch.
+    team_id: int | None
+    # Same cookie-fallback convention as RefreshRequest.refresh_token.
+    refresh_token: str | None = None

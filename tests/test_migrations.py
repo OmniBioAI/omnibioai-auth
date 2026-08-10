@@ -174,6 +174,12 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     )
     assert any(set(idx["column_names"]) == {"trace_id"} for idx in interaction_indexes)
 
+    teams_columns = {c["name"] for c in inspector.get_columns("teams")}
+    assert {"description", "created_by_user_id"} <= teams_columns
+
+    team_membership_columns = {c["name"] for c in inspector.get_columns("team_memberships")}
+    assert {"role", "invited_by_user_id", "joined_at"} <= team_membership_columns
+
 
 def test_sqlite_pre_existing_user_row_survives_0013_with_correct_mfa_defaults(sqlite_db_url):
     """PR11.5.1's specific concern: a user row created *before* this
@@ -397,7 +403,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0019_interactions"
+    assert recorded == "0020_team_member_roles"
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -448,6 +454,92 @@ def test_sqlite_0019_downgrade_drops_only_interactions(sqlite_db_url):
     tables = set(inspector.get_table_names())
     assert "interactions" not in tables
     assert "sessions" in tables
+
+
+def test_sqlite_0020_pre_existing_team_membership_row_backfills_member_role(sqlite_db_url):
+    """Team Management v0.8.0 Step 1's specific concern: a team_memberships
+    row created before this migration (no role/invited_by_user_id/
+    joined_at columns existed yet) must come out the other side with
+    role='member' -- never 'admin' -- and both new nullable columns NULL.
+    No pre-existing member's privilege silently increases as a side
+    effect of adding the role column."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0019_interactions")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (email, hashed_password, status) VALUES (:e, :h, :s)"),
+            {"e": "pre-0020@omnibioai.test", "h": "not-a-real-hash", "s": "active"},
+        )
+        conn.execute(
+            text("INSERT INTO organizations (slug, name) VALUES (:slug, :name)"),
+            {"slug": "pre-0020-org", "name": "Pre 0020 Org"},
+        )
+        conn.execute(
+            text("INSERT INTO teams (organization_id, name) VALUES (1, :name)"),
+            {"name": "Pre-existing Team"},
+        )
+        conn.execute(text("INSERT INTO team_memberships (team_id, user_id) VALUES (1, 1)"))
+
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT role, invited_by_user_id, joined_at FROM team_memberships WHERE team_id=1 AND user_id=1")
+        ).mappings().one()
+        team_row = conn.execute(
+            text("SELECT description, created_by_user_id FROM teams WHERE id=1")
+        ).mappings().one()
+
+    assert row["role"] == "member"
+    assert row["invited_by_user_id"] is None
+    assert row["joined_at"] is None
+    assert team_row["description"] is None
+    assert team_row["created_by_user_id"] is None
+
+
+def test_sqlite_0020_downgrade_drops_only_the_new_columns(sqlite_db_url):
+    """Downgrading past 0020 must remove exactly the columns it added
+    (teams.description/created_by_user_id,
+    team_memberships.role/invited_by_user_id/joined_at) and leave both
+    tables -- and every row in them -- otherwise intact."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (email, hashed_password, status) VALUES (:e, :h, :s)"),
+            {"e": "post-0020@omnibioai.test", "h": "not-a-real-hash", "s": "active"},
+        )
+        conn.execute(
+            text("INSERT INTO organizations (slug, name) VALUES (:slug, :name)"),
+            {"slug": "post-0020-org", "name": "Post 0020 Org"},
+        )
+        conn.execute(
+            text("INSERT INTO teams (organization_id, name, description) VALUES (1, :name, :d)"),
+            {"name": "Surviving Team", "d": "will be dropped, not the row"},
+        )
+        conn.execute(
+            text("INSERT INTO team_memberships (team_id, user_id, role) VALUES (1, 1, 'admin')")
+        )
+
+    command.downgrade(cfg, "0019_interactions")
+
+    inspector = inspect(engine)
+    teams_columns = {c["name"] for c in inspector.get_columns("teams")}
+    team_membership_columns = {c["name"] for c in inspector.get_columns("team_memberships")}
+    assert not {"description", "created_by_user_id"} & teams_columns
+    assert not {"role", "invited_by_user_id", "joined_at"} & team_membership_columns
+
+    with engine.connect() as conn:
+        team_count = conn.execute(text("SELECT COUNT(*) FROM teams WHERE name='Surviving Team'")).scalar()
+        membership_count = conn.execute(
+            text("SELECT COUNT(*) FROM team_memberships WHERE team_id=1 AND user_id=1")
+        ).scalar()
+    assert team_count == 1
+    assert membership_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +660,50 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0019_interactions"
+    assert recorded == "0020_team_member_roles"
+
+
+def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):
+    """Dialect-specific regression coverage, same reasoning as
+    test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide above:
+    adding a NOT NULL column with a server_default to an existing,
+    composite-primary-key table (team_memberships has no surrogate id,
+    unlike roles) via batch_alter_table is exactly the kind of DDL SQLite
+    alone can mask. Confirms a pre-existing membership row backfills to
+    role='member' against real MySQL, not just SQLite."""
+    cfg = _alembic_config(mysql_db_url)
+    command.upgrade(cfg, "0019_interactions")
+
+    engine = create_engine(mysql_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO users (email, hashed_password, status) VALUES (:e, :h, :s)"),
+            {"e": "pre-0020-mysql@omnibioai.test", "h": "not-a-real-hash", "s": "active"},
+        )
+        conn.execute(
+            text("INSERT INTO organizations (slug, name) VALUES (:slug, :name)"),
+            {"slug": "pre-0020-mysql-org", "name": "Pre 0020 MySQL Org"},
+        )
+        conn.execute(
+            text("INSERT INTO teams (organization_id, name) VALUES (1, :name)"),
+            {"name": "Pre-existing MySQL Team"},
+        )
+        conn.execute(text("INSERT INTO team_memberships (team_id, user_id) VALUES (1, 1)"))
+
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    team_membership_columns = {c["name"] for c in inspector.get_columns("team_memberships")}
+    assert {"role", "invited_by_user_id", "joined_at"} <= team_membership_columns
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT role, invited_by_user_id, joined_at FROM team_memberships WHERE team_id=1 AND user_id=1")
+        ).mappings().one()
+
+    assert row["role"] == "member"
+    assert row["invited_by_user_id"] is None
+    assert row["joined_at"] is None
 
 
 def test_mysql_interaction_id_unique_constraint_enforced(mysql_db_url):
