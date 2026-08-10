@@ -14,8 +14,8 @@ JWT_AUTH_TOTAL = Counter(
 )
 
 from app.db.session import get_db
-from app.db.models import User
-from app.schemas.auth import LoginRequest, RefreshRequest, LogoutRequest
+from app.db.models import Team, User
+from app.schemas.auth import LoginRequest, RefreshRequest, LogoutRequest, SwitchTeamRequest
 from app.core.security import hash_password
 from app.core.jwt import decode_token
 from app.core import token_revocation
@@ -29,7 +29,7 @@ from app.services.auth_service import (
     rotate_refresh_token,
 )
 from app.services.role_service import assign_default_role
-from app.services import org_service, sso_discovery_service
+from app.services import org_service, sso_discovery_service, team_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -227,6 +227,59 @@ def refresh(req: RefreshRequest, request: Request, response: Response, db: Sessi
     }
 
 
+# ---------------- SWITCH TEAM ----------------
+# Multi-user Workspaces (Studio v0.8.0), Mode B: the "switch workspace"
+# action. Reuses rotate_refresh_token wholesale for the actual token
+# reissue -- same rotation/reuse-detection/session-usability machinery
+# /auth/refresh already has, just with an explicit team_id instead of
+# carrying the presented token's own forward. What's new here is purely
+# the pre-check: an invalid explicit switch request (team doesn't exist,
+# belongs to a different org, or the caller isn't a member) fails loudly
+# with 403/404 -- unlike rotate_refresh_token's own defense-in-depth
+# fallback (team_service.resolve_team_claim silently degrading to the
+# personal workspace), which is correct for the *implicit* carry-forward
+# on a plain refresh but would be a silent, confusing failure for a user
+# who just explicitly clicked a team in the workspace switcher.
+@router.post("/switch-team")
+def switch_team(req: SwitchTeamRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    presented_token = req.refresh_token or request.cookies.get(SESSION_COOKIE_NAME)
+    if not presented_token:
+        raise HTTPException(401, "Invalid refresh token")
+
+    try:
+        old_claims = decode_token(presented_token)
+    except Exception:
+        raise HTTPException(401, "Invalid refresh token")
+
+    user_id = int(old_claims.get("sub", 0))
+
+    if req.team_id is not None:
+        team = db.query(Team).filter(Team.id == req.team_id).first()
+        if not team:
+            raise HTTPException(404, "Team not found")
+
+        # Organization membership and team membership are checked
+        # separately and both must hold -- neither substitutes for the
+        # other, same posture team_service.resolve_team_claim documents.
+        org_id = old_claims.get("org_id")
+        if org_id is None or team.organization_id != org_id:
+            raise HTTPException(403, "Team does not belong to your organization")
+
+        if not team_service.get_team_member(db, req.team_id, user_id):
+            raise HTTPException(403, "Not a member of this team")
+
+    result = rotate_refresh_token(db, presented_token, team_id=req.team_id)
+    if not result:
+        raise HTTPException(401, "Invalid refresh token")
+
+    new_access, new_refresh = result
+    _set_session_cookie(response, new_refresh)
+    return {
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+    }
+
+
 # ---------------- LOGOUT ----------------
 @router.post("/logout")
 def logout(req: LogoutRequest, response: Response, db: Session = Depends(get_db)):
@@ -278,6 +331,13 @@ def validate_token(req: dict, db: Session = Depends(get_db)):
             # should for a genuinely pre-org-context token, not an error.
             "org_id": payload.get("org_id"),
             "org_role": payload.get("org_role", []),
+            # Multi-user Workspaces (Studio v0.8.0), Mode B -- additive,
+            # same graceful-default reasoning as org_id/org_role above. A
+            # token minted before this change, or one where team_id
+            # resolved to None (personal workspace, or a team claim that
+            # no longer validated), both correctly fall back to None here.
+            "team_id": payload.get("team_id"),
+            "team_role": payload.get("team_role"),
             "auth_method": payload.get("auth_method"),
             # Phase 2 PR4 -- additive, same graceful-default reasoning as
             # the rest of this block. None for every token minted before

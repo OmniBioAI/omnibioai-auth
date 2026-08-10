@@ -212,3 +212,52 @@ def leave_team(db: Session, member: TeamMember) -> None:
         )
     db.delete(member)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Team Management v0.8.0 Step 3 (Multi-user Workspaces, Mode B): team_id as
+# a JWT claim. Called from auth_service.build_user_claims on every login/
+# refresh, not just from routes_teams.py's own handlers.
+# ---------------------------------------------------------------------------
+
+
+def resolve_team_claim(
+    db: Session, organization_id: int | None, team_id: int | None, user_id: int
+) -> tuple[int | None, str | None]:
+    """Validates a requested `team_id` for inclusion in a token's
+    `team_id`/`team_role` claims. Mirrors org_service.resolve_primary_
+    membership's "None is a valid, well-defined state" posture -- returns
+    (None, None) rather than raising for every case that shouldn't
+    produce a claim, since this runs on every login/refresh (including
+    the plain /auth/refresh carry-forward path, not just an explicit
+    workspace switch), where a stale or no-longer-valid team_id must
+    silently degrade to the personal workspace rather than fail the
+    whole token operation. A caller that needs a loud error for an
+    invalid *explicit* switch request (POST /auth/switch-team) does its
+    own pre-check before ever reaching this function -- see that route.
+
+    Two independent lookups, deliberately not folded into one: `team.
+    organization_id == organization_id` (the team belongs to the org
+    this token's own org_id claim already resolved) and a live
+    `TeamMember` row for (team_id, user_id) (the user is currently a
+    member of that specific team). Organization membership and team
+    membership stay separate authorization checks here -- neither
+    substitutes for the other, matching how routes_teams.py's handlers
+    already treat them as two distinct gates.
+
+    `team_role` is returned as the plain TeamMember.role string (not a
+    list like `org_role`) -- team RBAC is intentionally lightweight, one
+    role per membership, per TEAM_ROLES above.
+    """
+    if team_id is None or organization_id is None:
+        return None, None
+
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team or team.organization_id != organization_id:
+        return None, None
+
+    member = get_team_member(db, team_id, user_id)
+    if not member:
+        return None, None
+
+    return team_id, member.role

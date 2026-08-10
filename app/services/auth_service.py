@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from app.db.models import OrganizationMFAPolicy, User, RefreshToken
 from app.core.security import verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
-from app.services import audit_service, org_service, session_service
+from app.services import audit_service, org_service, session_service, team_service
 from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
@@ -54,7 +54,8 @@ def authenticate_user(db, email, password):
 
 
 def build_user_claims(
-    db, user, auth_method: str = "password", idp_org_id: int | None = None
+    db, user, auth_method: str = "password", idp_org_id: int | None = None,
+    requested_team_id: int | None = None,
 ) -> dict:
     """The single source of truth for what goes into a token's payload --
     shared by `generate_tokens` (login/OAuth/SSO/license) and PR0.2's
@@ -113,6 +114,20 @@ def build_user_claims(
     which this function runs for a user who still owes a second factor,
     so the claim is provably always True at every point it's actually
     built -- see docs/pr11-mfa-login-challenge-discovery.md SS6.
+
+    Team Management v0.8.0 Step 3 (Multi-user Workspaces, Mode B):
+    `requested_team_id` is the caller's *candidate* active workspace --
+    from `generate_tokens` this is whatever a fresh login should start in
+    (None, i.e. the personal workspace, unless a future caller decides
+    otherwise), from `rotate_refresh_token` it's whatever team_id the
+    presented token already carried (plain /auth/refresh) or an explicit
+    override (POST /auth/switch-team). Either way it's re-validated fresh
+    against the database on every call via team_service.resolve_team_claim
+    -- never trusted as-is -- the same "recompute, don't replay" posture
+    org_id/org_role/permissions above already have. A candidate that no
+    longer resolves (team deleted, membership revoked since the token was
+    issued) silently degrades to (None, None) rather than failing the
+    token operation, matching org_id's own "None is a valid state" design.
     """
     global_permissions = {p.name for r in user.roles for p in r.permissions}
 
@@ -120,6 +135,8 @@ def build_user_claims(
     org_id = org_membership.organization_id if org_membership else None
     org_role = sorted(r.name for r in org_membership.roles) if org_membership else []
     org_permissions = org_service.permissions_for_membership(org_membership) if org_membership else set()
+
+    team_id, team_role = team_service.resolve_team_claim(db, org_id, requested_team_id, user.id)
 
     permissions = sorted(global_permissions | org_permissions)
 
@@ -130,6 +147,8 @@ def build_user_claims(
         "permissions": permissions,
         "org_id": org_id,
         "org_role": org_role,
+        "team_id": team_id,
+        "team_role": team_role,
         "auth_method": auth_method,
         "idp_org_id": idp_org_id,
         "token_version": 2,
@@ -383,7 +402,16 @@ def _revoke_family(db, family_id: str | None) -> None:
     db.commit()
 
 
-def rotate_refresh_token(db, presented_token: str):
+# Sentinel distinguishing "caller didn't pass team_id at all" (plain
+# /auth/refresh -- carry the presented token's own team_id forward
+# unchanged) from "caller explicitly passed team_id=None" (POST /auth/
+# switch-team back to the personal workspace -- a real, meaningful
+# request, not "no opinion"). Module-level singleton, not a mutable
+# default argument, so identity comparison (`is _UNSET`) is safe.
+_UNSET = object()
+
+
+def rotate_refresh_token(db, presented_token: str, team_id=_UNSET):
     """Validates `presented_token` exactly as the old `validate_refresh_token`
     did, then additionally rotates it: the presented row is marked revoked
     + rotated_at, a new row is created in the same family, and the
@@ -403,6 +431,16 @@ def rotate_refresh_token(db, presented_token: str):
     `db_token.revoked` above would already have caught it) -- this guard
     exists so that guarantee holds even if a future revocation path ever
     updates the session without also updating every RefreshToken row.
+
+    Team Management v0.8.0 Step 3: `team_id` lets a caller either leave
+    the presented token's active workspace untouched (default -- every
+    existing caller, i.e. plain /auth/refresh, is unaffected and the
+    selected team survives the refresh) or explicitly switch it (POST
+    /auth/switch-team passes its own validated `team_id`, including
+    `None` for "back to personal"). Either way the candidate still goes
+    through `build_user_claims` -> `team_service.resolve_team_claim`'s
+    fresh re-validation below, not trusted as-is -- see that function's
+    docstring.
     """
     db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_refresh_token(presented_token)).first()
     if not db_token:
@@ -440,8 +478,12 @@ def rotate_refresh_token(db, presented_token: str):
         old_claims = {}
     auth_method = old_claims.get("auth_method") or "password"
     idp_org_id = old_claims.get("idp_org_id")
+    requested_team_id = old_claims.get("team_id") if team_id is _UNSET else team_id
 
-    fresh_claims = build_user_claims(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+    fresh_claims = build_user_claims(
+        db, user, auth_method=auth_method, idp_org_id=idp_org_id,
+        requested_team_id=requested_team_id,
+    )
     new_access = create_access_token(fresh_claims)
     new_refresh = create_refresh_token(fresh_claims)
 

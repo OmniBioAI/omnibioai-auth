@@ -320,3 +320,68 @@ def test_get_team_member_returns_none_when_absent(db):
     stranger = _user(db, "stranger@omnibioai.test")
 
     assert team_service.get_team_member(db, team.id, stranger.id) is None
+
+
+# ── resolve_team_claim (Team Management v0.8.0 Step 3: JWT team_id) ─────────
+
+
+def test_resolve_team_claim_returns_none_none_for_no_requested_team(db):
+    org = _org(db)
+    user = _user(db, "user@omnibioai.test")
+
+    assert team_service.resolve_team_claim(db, org.id, None, user.id) == (None, None)
+
+
+def test_resolve_team_claim_returns_none_none_when_org_id_is_none(db):
+    """A user with no org membership can't have a team claim either --
+    teams are always org-scoped."""
+    org = _org(db)
+    user = _user(db, "user@omnibioai.test")
+    team = team_service.create_team(db, org.id, "Team")
+
+    assert team_service.resolve_team_claim(db, None, team.id, user.id) == (None, None)
+
+
+def test_resolve_team_claim_returns_id_and_role_for_active_member(db):
+    org = _org(db)
+    inviter = _user(db, "inviter@omnibioai.test")
+    member_user = _user(db, "member@omnibioai.test")
+    _join_org(db, org, member_user)
+    team = team_service.create_team(db, org.id, "Team")
+    team_service.invite_to_team(db, team, org.id, member_user.email, inviter, role="viewer")
+
+    resolved_id, resolved_role = team_service.resolve_team_claim(db, org.id, team.id, member_user.id)
+
+    assert resolved_id == team.id
+    assert resolved_role == "viewer"
+
+
+def test_resolve_team_claim_degrades_silently_for_non_member(db):
+    org = _org(db)
+    user = _user(db, "user@omnibioai.test")
+    team = team_service.create_team(db, org.id, "Team")
+
+    assert team_service.resolve_team_claim(db, org.id, team.id, user.id) == (None, None)
+
+
+def test_resolve_team_claim_degrades_silently_for_wrong_org(db):
+    """The team belongs to a different org than the one the caller's own
+    org_id claim already resolved -- must not leak across orgs even if
+    the user happens to also be a member of the team by user_id alone."""
+    org_a = _org(db, slug="org-a")
+    org_b = _org(db, slug="org-b")
+    inviter = _user(db, "inviter@omnibioai.test")
+    member_user = _user(db, "member@omnibioai.test")
+    _join_org(db, org_a, member_user)
+    team_in_a = team_service.create_team(db, org_a.id, "Team A")
+    team_service.invite_to_team(db, team_in_a, org_a.id, member_user.email, inviter, role="admin")
+
+    # Caller's resolved org_id is org_b, not org_a.
+    assert team_service.resolve_team_claim(db, org_b.id, team_in_a.id, member_user.id) == (None, None)
+
+
+def test_resolve_team_claim_degrades_silently_for_unknown_team(db):
+    org = _org(db)
+    user = _user(db, "user@omnibioai.test")
+
+    assert team_service.resolve_team_claim(db, org.id, 999999, user.id) == (None, None)
