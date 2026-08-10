@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from app.core.jwt import decode_token
 from app.core.token_revocation import assert_token_usable
 from app.db.session import get_db
-from app.db.models import Organization, OrganizationMembership
-from app.services import org_service, role_service
+from app.db.models import Organization, OrganizationMembership, Team
+from app.services import org_service, role_service, team_service
 
 security = HTTPBearer()
 
@@ -213,6 +213,72 @@ def require_org_permission_or_platform_admin(permission: str):
         if permission not in perms:
             raise HTTPException(403, "Forbidden")
         return membership
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
+# Team-scoped authorization (Team Management v0.8.0 Step 4). Centralizes
+# the "org manage_teams overrides team-level restrictions, otherwise the
+# caller must be this specific team's own admin" check that Step 3
+# originally wrote inline, identically, in four separate route handlers
+# (rename, invite, role-change, remove-member) -- one shared dependency
+# now, not four copies.
+#
+# Deliberately narrower in scope than get_org_membership_or_platform_admin/
+# require_org_permission_or_platform_admin above: those two answer "can
+# this caller act on this *organization* at all", which every team route
+# still needs first (an org non-member must 404, never learn a team_id
+# exists -- the existing anti-enumeration behavior, unchanged here) and
+# which this function nests as its own first dependency rather than
+# duplicating. This one adds the second, team-specific question on top:
+# "given they belong to the org, can they manage *this team*".
+#
+# The effective team role is read fresh from TeamMember on every call via
+# team_service.get_team_member -- never from the JWT's own team_role
+# claim (see auth_service.build_user_claims / team_service.
+# resolve_team_claim), which is resolved once at token issuance and can
+# go stale for up to that access token's remaining lifetime if the
+# caller's real TeamMember row changes afterward (promoted, demoted, or
+# removed entirely). A demoted-since-login admin must lose access on
+# their very next request, not merely their next token refresh -- this
+# is the one place that guarantee is enforced.
+# ---------------------------------------------------------------------------
+
+
+def require_team_manage_permission(permission: str):
+    """Returns the resolved Team on success, so a route depending on this
+    gets it for free instead of a second team_service.get_team lookup.
+    Raises 404 ("Team not found") if the team doesn't exist in this org --
+    same anti-enumeration posture as get_org_membership's own 404 for a
+    non-member org_id, not a 403 that would confirm the team's existence
+    to someone with no rights over it. Raises 403 if the caller holds
+    neither `permission` at the org level nor an admin TeamMember row for
+    this specific team.
+
+    `org_id`/`team_id` are resolved from the request path automatically
+    by FastAPI's dependency injection, matching whatever path parameter
+    names the calling route declares -- same convention get_org_membership
+    already documents for `org_id` alone.
+    """
+    def wrapper(
+        org_id: int,
+        team_id: int,
+        db: Session = Depends(get_db),
+        user: dict = Depends(get_current_user),
+        membership: OrganizationMembership = Depends(get_org_membership_or_platform_admin),
+    ) -> Team:
+        team = team_service.get_team(db, org_id, team_id)
+        if not team:
+            raise HTTPException(404, "Team not found")
+
+        perms = {p.name for role in membership.roles for p in role.permissions}
+        if permission in perms:
+            return team
+
+        caller_member = team_service.get_team_member(db, team_id, int(user["sub"]))
+        if not caller_member or caller_member.role != "admin":
+            raise HTTPException(403, "Forbidden")
+        return team
     return wrapper
 
 
