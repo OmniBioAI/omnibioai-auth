@@ -27,6 +27,7 @@ from app.api.routes_jwks import router as jwks_router
 from app.api.routes_mfa import router as mfa_router
 from app.api.routes_org_mfa import router as org_mfa_router
 from app.api.routes_sessions import router as sessions_router
+from app.api.routes_platform_interactions import router as platform_interactions_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
@@ -96,6 +97,7 @@ app.include_router(jwks_router)
 app.include_router(mfa_router)
 app.include_router(org_mfa_router)
 app.include_router(sessions_router)
+app.include_router(platform_interactions_router)
 
 
 @app.get("/metrics")
