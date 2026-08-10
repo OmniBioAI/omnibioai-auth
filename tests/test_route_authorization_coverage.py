@@ -118,8 +118,22 @@ def test_org_scoped_route_inventory_matches_expected_count():
     MANAGE_ALL_ORGS), the same global-permission break-glass shape the SSO
     override routes already use) -- see
     docs/pr11-mfa-org-policy-discovery.md SS9.
+
+    30 -> 37 as of Team Management v0.8.0 Step 3/6 (commit 5378a2d, "add
+    per-member route endpoints"): the 7 new per-member endpoints under
+    `/orgs/{org_id}/teams/{team_id}/...` -- GET/PATCH {team_id}, GET
+    {team_id}/members, POST {team_id}/invite, PUT {team_id}/members/
+    {user_id}/role, DELETE {team_id}/members/{user_id}, POST {team_id}/
+    leave. (POST/GET /teams and PUT/DELETE {team_id} predate this and
+    were already counted in the prior 30.) Every one of the 7 uses
+    get_org_membership_or_platform_admin (GET endpoints, or as the base
+    membership check the mutating ones inline-verify manage_teams/team-
+    admin on top of) -- test_every_org_scoped_route_has_a_real_
+    authorization_dependency above already passes for all of them; this
+    is purely the count catching up to routes that were already
+    correctly protected when they shipped.
     """
-    assert len(list(_org_scoped_routes())) == 30
+    assert len(list(_org_scoped_routes())) == 37
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
