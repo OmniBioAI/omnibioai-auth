@@ -3,9 +3,20 @@ from sqlalchemy.orm import Session
 
 from app.db.models import OrganizationMembership, Team, User
 from app.db.session import get_db
-from app.rbac import get_current_user, get_org_membership_or_platform_admin, require_org_permission_or_platform_admin
+from app.rbac import (
+    get_current_user,
+    get_org_membership_or_platform_admin,
+    require_org_permission_or_platform_admin,
+    require_team_manage_permission,
+)
 from app.schemas.teams import (
-    TeamCreate, TeamInvite, TeamMemberOut, TeamMemberRoleUpdate, TeamMembersUpdate, TeamOut, TeamUpdate,
+    TeamCreate,
+    TeamInvite,
+    TeamMemberOut,
+    TeamMemberRoleUpdate,
+    TeamMembersUpdate,
+    TeamOut,
+    TeamUpdate,
 )
 from app.services import team_service
 
@@ -34,22 +45,22 @@ def _team_member_out(member) -> TeamMemberOut:
     )
 
 
-def _has_manage_teams(membership: OrganizationMembership) -> bool:
-    return MANAGE_TEAMS in {p.name for role in membership.roles for p in role.permissions}
-
-
 # ---------------------------------------------------------------------------
-# Step 3: permission checks are written directly in each route handler
-# below -- decision was to check role directly in route handlers rather
-# than build a require_permission-style dependency for it. _has_manage_teams
-# above is a tiny, non-authorizing lookup helper (reads a set of names off
-# an already-resolved membership), not the "team-role permission helper"
-# Step 4 adds -- it's what Step 4 will use to replace the repeated
-# if not _has_manage_teams(...): <team-admin fallback>: raise 403 shape
-# every mutating per-member handler below carries. Decision: org
-# manage_teams always overrides team roles (an org admin manages every
-# team in the org regardless of their own team-level role, or lack of
-# one); a team admin manages only members + rename on their own team.
+# Step 4: the "org manage_teams overrides team-level restrictions,
+# otherwise the caller must be this specific team's own admin" check --
+# Step 3 originally wrote this inline, identically, in each of
+# rename_team/invite_team_member/update_team_member_role/remove_team_member
+# below -- now lives in one place, app.rbac.require_team_manage_permission,
+# used by all four as a FastAPI dependency. See that function's own
+# docstring for the full reasoning (in particular: why it re-reads
+# TeamMember on every call rather than trusting the JWT's team_role
+# claim). GET endpoints below (detail, members list) only ever needed
+# bare org membership -- no team-admin-or-manage_teams branching existed
+# there to centralize. POST .../leave, PUT .../members (full-replace),
+# and DELETE /{team_id} are unchanged for the same reason: leave has an
+# intentionally different (member-of-this-team-at-all) check, and
+# full-replace/delete are intentionally org-manage_teams-only, with no
+# team-admin bypass, both preserved exactly as before.
 # ---------------------------------------------------------------------------
 
 
@@ -94,18 +105,8 @@ def rename_team(
     team_id: int,
     body: TeamUpdate,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-    membership: OrganizationMembership = Depends(get_org_membership_or_platform_admin),
+    team: Team = Depends(require_team_manage_permission(MANAGE_TEAMS)),
 ):
-    team = team_service.get_team(db, org_id, team_id)
-    if not team:
-        raise HTTPException(404, "Team not found")
-
-    if not _has_manage_teams(membership):
-        caller_member = team_service.get_team_member(db, team_id, int(user["sub"]))
-        if not caller_member or caller_member.role != "admin":
-            raise HTTPException(403, "Forbidden")
-
     team = team_service.update_team(db, team, name=body.name, description=body.description)
     return _team_out(team)
 
@@ -130,17 +131,8 @@ def invite_team_member(
     body: TeamInvite,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
-    membership: OrganizationMembership = Depends(get_org_membership_or_platform_admin),
+    team: Team = Depends(require_team_manage_permission(MANAGE_TEAMS)),
 ):
-    team = team_service.get_team(db, org_id, team_id)
-    if not team:
-        raise HTTPException(404, "Team not found")
-
-    if not _has_manage_teams(membership):
-        caller_member = team_service.get_team_member(db, team_id, int(user["sub"]))
-        if not caller_member or caller_member.role != "admin":
-            raise HTTPException(403, "Forbidden")
-
     inviter = db.query(User).filter(User.id == int(user["sub"])).first()
     try:
         member = team_service.invite_to_team(db, team, org_id, body.email, inviter, role=body.role)
@@ -158,18 +150,8 @@ def update_team_member_role(
     user_id: int,
     body: TeamMemberRoleUpdate,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-    membership: OrganizationMembership = Depends(get_org_membership_or_platform_admin),
+    team: Team = Depends(require_team_manage_permission(MANAGE_TEAMS)),
 ):
-    team = team_service.get_team(db, org_id, team_id)
-    if not team:
-        raise HTTPException(404, "Team not found")
-
-    if not _has_manage_teams(membership):
-        caller_member = team_service.get_team_member(db, team_id, int(user["sub"]))
-        if not caller_member or caller_member.role != "admin":
-            raise HTTPException(403, "Forbidden")
-
     target = team_service.get_team_member(db, team_id, user_id)
     if not target:
         raise HTTPException(404, "Team member not found")
@@ -187,18 +169,8 @@ def remove_team_member(
     team_id: int,
     user_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-    membership: OrganizationMembership = Depends(get_org_membership_or_platform_admin),
+    team: Team = Depends(require_team_manage_permission(MANAGE_TEAMS)),
 ):
-    team = team_service.get_team(db, org_id, team_id)
-    if not team:
-        raise HTTPException(404, "Team not found")
-
-    if not _has_manage_teams(membership):
-        caller_member = team_service.get_team_member(db, team_id, int(user["sub"]))
-        if not caller_member or caller_member.role != "admin":
-            raise HTTPException(403, "Forbidden")
-
     target = team_service.get_team_member(db, team_id, user_id)
     if not target:
         raise HTTPException(404, "Team member not found")
