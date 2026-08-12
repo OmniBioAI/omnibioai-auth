@@ -171,6 +171,46 @@ class Settings:
     # is degraded-mode-only, not the steady-state mechanism.
     RATE_LIMIT_FALLBACK_MAX_KEYS = int(os.getenv("RATE_LIMIT_FALLBACK_MAX_KEYS", 10000))
 
+    # HIPAA Phase 1 PR2: local-password security policy
+    # (app/core/password_policy.py). Applies only to POST /auth/register --
+    # the only user-facing local-password-creation endpoint this service
+    # has (see that module's docstring for the full discovery). Length is
+    # the primary lever, not character-class rules -- see PR2's own
+    # security-policy discussion for why complexity requirements are
+    # deliberately not implemented.
+    PASSWORD_MIN_LENGTH = int(os.getenv("PASSWORD_MIN_LENGTH", 12))
+    # Generous, not a real strength constraint -- exists only to reject a
+    # pathological input (e.g. someone submitting megabytes of text) before
+    # it reaches bcrypt/the compromised-password check at all. Comfortably
+    # above any real passphrase; not the reason long passwords are safe now
+    # (see security.py's bcrypt_sha256 switch for that).
+    PASSWORD_MAX_LENGTH = int(os.getenv("PASSWORD_MAX_LENGTH", 128))
+
+    # Compromised-password checking (app/core/compromised_password.py) --
+    # the Have I Been Pwned "Pwned Passwords" k-anonymity API. Only a
+    # 5-character SHA-1 prefix of the password ever leaves this service;
+    # see that module's docstring for the full privacy mechanism.
+    PASSWORD_COMPROMISE_CHECK_ENABLED = os.getenv("PASSWORD_COMPROMISE_CHECK_ENABLED", "true").lower() == "true"
+    PASSWORD_COMPROMISE_CHECK_TIMEOUT_SECONDS = float(
+        os.getenv("PASSWORD_COMPROMISE_CHECK_TIMEOUT_SECONDS", 3.0)
+    )
+    # Deliberately NOT the default "reject registration until we can prove
+    # it's clean" -- registration is a low-frequency, non-critical-path
+    # operation for THIS service, but making it hard-dependent on a third
+    # party's uptime introduces a new single point of failure for a brand
+    # new user's very first interaction with the product, which this PR's
+    # own guidance ("do not make password creation dependent on an
+    # unreliable external service without an explicit policy") reads as
+    # something to avoid defaulting into. The local length/blocklist
+    # checks above always run regardless of this setting or provider
+    # health -- this only controls the network-dependent check specifically.
+    # An operator who prefers strict fail-closed behavior can set this true;
+    # every skipped check is still counted in the
+    # password_compromise_check_errors_total metric either way, never silent.
+    PASSWORD_COMPROMISE_CHECK_FAIL_CLOSED = (
+        os.getenv("PASSWORD_COMPROMISE_CHECK_FAIL_CLOSED", "false").lower() == "true"
+    )
+
     @property
     def DATABASE_URL(self):
         return (

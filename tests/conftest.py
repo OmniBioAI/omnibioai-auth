@@ -79,9 +79,25 @@ def client(setup_db):
     import fakeredis
     fake_redis = fakeredis.FakeStrictRedis(decode_responses=True)
 
+    # HIPAA Phase 1 PR2 (password_policy/compromised_password): every
+    # pre-existing test that registers a user (52+ call sites across the
+    # suite, all using one of two literal passwords -- see
+    # tests/test_password_policy.py's own docstring) must keep working
+    # without a real network call to the live Pwned Passwords API, and
+    # deterministically -- a real query for e.g. "Password123!" could
+    # plausibly return a real hit and start failing unrelated tests.
+    # Default: provider reachable, password not found (the common case).
+    # Individual tests override this mock's return value to exercise the
+    # compromised/outage/malformed-response paths explicitly.
+    from unittest.mock import MagicMock
+    fake_hibp_response = MagicMock()
+    fake_hibp_response.raise_for_status.return_value = None
+    fake_hibp_response.text = ""
+
     with patch("app.api.routes_auth._pub") as mock_pub, \
          patch("app.core.token_revocation._blacklist") as mock_bl, \
-         patch("app.core.rate_limit._redis", fake_redis):
+         patch("app.core.rate_limit._redis", fake_redis), \
+         patch("app.core.compromised_password.httpx.get", return_value=fake_hibp_response):
         mock_pub.publish.return_value = None
         mock_bl.setex.side_effect = _setex
         mock_bl.exists.side_effect = _exists

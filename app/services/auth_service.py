@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta
 from app.db.models import OrganizationMFAPolicy, User, RefreshToken
-from app.core.security import verify_password
+from app.core.security import hash_password, needs_rehash, verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
 from app.services import audit_service, login_throttle_service, org_service, session_service, team_service
 from app.services.audit_service import AuditEventType
@@ -64,6 +64,18 @@ def authenticate_user(db, email, password, client_ip: str | None = None):
         _log_login_failure(db, email, user, "invalid_password")
         login_throttle_service.record_failure(db, email, client_ip)
         return None
+
+    # HIPAA Phase 1 PR2: opportunistic upgrade of a pre-PR2 plain-bcrypt
+    # hash to bcrypt_sha256 (see security.py's pwd_context docstring) --
+    # only reachable here, the moment the plaintext password is already
+    # in hand from a *successful* verification, never eagerly and never
+    # for a hash that already uses the current scheme (needs_rehash is
+    # False for those). This is how "existing passwords continue to
+    # function until changed/reset" (PR2's own requirement) becomes
+    # "...and are transparently migrated the next time their owner logs
+    # in" without a forced mass reset.
+    if needs_rehash(user.hashed_password):
+        user.hashed_password = hash_password(password)
 
     login_throttle_service.record_success(email, client_ip)
     audit_service.log_event(
