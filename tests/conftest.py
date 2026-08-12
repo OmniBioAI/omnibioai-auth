@@ -68,14 +68,53 @@ def client(setup_db):
     def _exists(key):
         return 1 if key in _blacklisted else 0
 
+    # HIPAA Phase 1 PR1 (login_throttle_service/rate_limit): a real
+    # fakeredis instance, not a hand-mocked stub, so the atomic Lua
+    # scripts in app/core/rate_limit.py get real coverage (INCR/EXPIRE/
+    # SET-with-TTL semantics matter for this feature, unlike the simple
+    # setex/exists calls _blacklisted above stands in for). Patched at
+    # session scope, same as _pub/_blacklist above, since app.main (and
+    # therefore app.core.rate_limit's module-level `_redis`) is only
+    # imported once per test session.
+    import fakeredis
+    fake_redis = fakeredis.FakeStrictRedis(decode_responses=True)
+
     with patch("app.api.routes_auth._pub") as mock_pub, \
-         patch("app.core.token_revocation._blacklist") as mock_bl:
+         patch("app.core.token_revocation._blacklist") as mock_bl, \
+         patch("app.core.rate_limit._redis", fake_redis):
         mock_pub.publish.return_value = None
         mock_bl.setex.side_effect = _setex
         mock_bl.exists.side_effect = _exists
         with TestClient(app) as c:
             yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_state(client):
+    """Every test in this session shares one `client`/TestClient, which
+    means one source IP (starlette's TestClient default) for the entire
+    run. Without a reset, login-throttling state from one test (this
+    PR's own tests deliberately drive accounts/IPs into lockout) would
+    leak into the next. Runs before AND after every test, not just
+    before -- a test that raises partway through a throttle scenario
+    must not poison whatever runs next either. Autouse so this applies
+    uniformly, without every existing (pre-this-PR) test file needing to
+    know this fixture exists.
+    """
+    import app.core.rate_limit as rate_limit_module
+
+    def _reset():
+        try:
+            rate_limit_module._redis.flushdb()
+        except Exception:
+            pass
+        rate_limit_module._fallback._counters.clear()
+        rate_limit_module._fallback._locks.clear()
+
+    _reset()
+    yield
+    _reset()
 
 
 @pytest.fixture
