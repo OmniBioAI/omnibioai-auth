@@ -1,7 +1,8 @@
 import hashlib
 import uuid
 from datetime import datetime, timedelta
-from app.db.models import OrganizationMFAPolicy, User, RefreshToken
+from app.db.models import OrganizationMFAPolicy, User, RefreshToken, UserSession
+from app.core.config import settings
 from app.core.security import hash_password, needs_rehash, verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
 from app.services import audit_service, login_throttle_service, org_service, session_service, team_service
@@ -24,6 +25,25 @@ def _log_login_failure(db, email: str, user: User | None, reason: str) -> None:
         actor_user_id=user.id if user else None, target_user_id=user.id if user else None,
         resource_type="user", resource_id=user.id if user else None,
         metadata={"email": email, "reason": reason},
+    )
+
+
+def _log_session_revoked(db, user_id: int, session_id: str | None, reason: str, actor_user_id: int | None = None) -> None:
+    """HIPAA Phase 1 PR3: the single place SESSION_REVOKED is emitted
+    from -- see that event type's own docstring in audit_service.py for
+    why session-lifecycle auditing didn't exist at all before this PR,
+    and why this is one event type with `reason` in metadata rather than
+    a family of new event-type constants. `actor_user_id` defaults to
+    the affected user themselves (self-service logout/revoke -- the
+    common case); callers acting on someone else's session (account
+    disable, a future admin-revoke) pass the real actor explicitly.
+    """
+    audit_service.log_event(
+        db, AuditEventType.SESSION_REVOKED,
+        actor_user_id=actor_user_id if actor_user_id is not None else user_id,
+        target_user_id=user_id,
+        resource_type="session", resource_id=session_id,
+        metadata={"reason": reason},
     )
 
 
@@ -212,6 +232,56 @@ def _persisted_auth_method(auth_method: str) -> str:
     return _PERSISTED_AUTH_METHODS.get(auth_method, "unknown")
 
 
+def _evict_oldest_sessions_over_limit(db, user_id: int) -> None:
+    """HIPAA Phase 1 PR3: enforces SESSION_MAX_CONCURRENT. Called from
+    `generate_tokens` after the new RefreshToken row is flushed but
+    before the new UserSession row is created, so the count evaluated
+    here never includes the login currently in progress.
+
+    Locks the user's own session rows (`with_for_update`) for the rest
+    of this transaction -- the same transaction `generate_tokens`
+    commits at the end of -- so two concurrent logins for the same user
+    can't both read "N-1 active, room for one more" and both proceed,
+    landing at N+1. A no-op on SQLite (used in tests): SQLite has no
+    row-level locking, only whole-database write locking, so this
+    degrades to "correct but coarser-grained" there rather than raising
+    -- the real guarantee this exists for only matters under concurrent
+    load, which the production database (MySQL/InnoDB) provides.
+
+    The failure mode of a race slipping through here is bounded and
+    non-security-critical -- occasionally one session over the
+    configured limit, not an authentication bypass -- unlike PR1's
+    login-rate-limit counters, which is why this uses ordinary
+    transactional row locking rather than PR1's atomic-Redis-script
+    approach: the two problems have different severity profiles.
+    """
+    candidates = (
+        db.query(UserSession)
+        .filter(UserSession.user_id == user_id, UserSession.status == session_service.STATUS_ACTIVE)
+        .with_for_update()
+        .order_by(UserSession.created_at.asc())
+        .all()
+    )
+    # Effective-active only -- a persisted "active" row that's actually
+    # idle/absolute-expired already doesn't count against the limit (it
+    # isn't a real usable session anymore, even though nothing has
+    # written REVOKED to it yet -- it will, the next time anyone tries
+    # to refresh it, via rotate_refresh_token's own check).
+    effectively_active = [
+        s for s in candidates if session_service.effective_status(s) == session_service.STATUS_ACTIVE
+    ]
+
+    # +1: leaves room for the session this login is about to create.
+    excess = len(effectively_active) - settings.SESSION_MAX_CONCURRENT + 1
+    if excess <= 0:
+        return
+
+    for session in effectively_active[:excess]:
+        _revoke_family(db, session.session_id)
+        session_service.revoke(db, session.session_id, session_service.REASON_CONCURRENT_LIMIT)
+        _log_session_revoked(db, user_id, session.session_id, session_service.REASON_CONCURRENT_LIMIT)
+
+
 def generate_tokens(
     db,
     user,
@@ -268,6 +338,15 @@ def generate_tokens(
     )
 
     db.add(db_token)
+
+    # HIPAA Phase 1 PR3: enforce SESSION_MAX_CONCURRENT before the new
+    # session row exists, so the count evaluated here never includes it.
+    # `db.flush()` first so `db_token` above is visible to any query in
+    # this same transaction (not required for the session-count query
+    # itself, which only reads UserSession, but keeps this call site
+    # consistent regardless of ordering changes later).
+    db.flush()
+    _evict_oldest_sessions_over_limit(db, user.id)
 
     session_service.create(
         db,
@@ -392,6 +471,7 @@ def revoke_token(db, token):
         # revoking the one currently-live row is equivalent to revoking
         # the session).
         session_service.revoke(db, db_token.family_id, session_service.REASON_USER_LOGOUT)
+        _log_session_revoked(db, db_token.user_id, db_token.family_id, session_service.REASON_USER_LOGOUT)
         db.commit()
 
 
@@ -419,6 +499,7 @@ def revoke_session(db, session_id: str) -> bool:
         return False
     _revoke_family(db, session_id)
     session_service.revoke(db, session_id, session_service.REASON_USER_REVOKED)
+    _log_session_revoked(db, session.user_id, session_id, session_service.REASON_USER_REVOKED)
     return True
 
 
@@ -439,6 +520,47 @@ def _revoke_family(db, family_id: str | None) -> None:
         {"revoked": True}
     )
     db.commit()
+
+
+def revoke_all_sessions_for_user(db, user_id: int, reason: str, actor_user_id: int | None = None) -> int:
+    """HIPAA Phase 1 PR3: called from user_admin_service.set_user_status
+    on the active-\\>suspended transition -- see that function's own
+    updated docstring for the gap this closes. `assert_token_usable`
+    already live-checks `User.status` on every access-token use, and
+    `rotate_refresh_token` already checks it too, so a suspended user's
+    *next* authenticated request was already rejected before this PR --
+    what was missing is that nothing ever marked the underlying
+    RefreshToken/UserSession rows revoked, so **re-enabling the account
+    silently made those old tokens valid again**. This function is what
+    makes the revocation real and permanent rather than a live status
+    check that a later re-enable quietly undoes.
+
+    Every non-revoked session belonging to the user is revoked here --
+    not just ones the read-time `effective_status()` would currently
+    call "active" (an idle/absolute-expired-but-not-yet-touched session
+    still has persisted status="active" until something writes to it;
+    this is that something, for every one of them, in one pass).
+
+    Returns the number of sessions actually revoked (0 is a normal,
+    expected result for a user with no other active sessions -- not an
+    error). Same never-raise posture as the rest of this module's
+    session-revocation helpers: called from an admin route where the
+    real mutation (the status flip) has already succeeded, so a problem
+    revoking a session must not turn that into a failed request.
+    """
+    sessions = (
+        db.query(UserSession)
+        .filter(UserSession.user_id == user_id, UserSession.status != session_service.STATUS_REVOKED)
+        .all()
+    )
+    revoked_count = 0
+    for session in sessions:
+        _revoke_family(db, session.session_id)
+        session_service.revoke(db, session.session_id, reason)
+        _log_session_revoked(db, user_id, session.session_id, reason, actor_user_id=actor_user_id)
+        revoked_count += 1
+    db.commit()
+    return revoked_count
 
 
 # Sentinel distinguishing "caller didn't pass team_id at all" (plain
@@ -494,6 +616,7 @@ def rotate_refresh_token(db, presented_token: str, team_id=_UNSET):
         # already be in an attacker's hands.
         _revoke_family(db, db_token.family_id)
         session_service.revoke(db, db_token.family_id, session_service.REASON_REUSE_DETECTED)
+        _log_session_revoked(db, db_token.user_id, db_token.family_id, session_service.REASON_REUSE_DETECTED)
         db.commit()
         return None
 
@@ -505,6 +628,29 @@ def rotate_refresh_token(db, presented_token: str, team_id=_UNSET):
 
     session = session_service.get_by_family_id(db, db_token.family_id)
     if not session_service.is_usable(session):
+        return None
+
+    # HIPAA Phase 1 PR3: the fix for the "expires_at slides forward on
+    # every rotation, so a continuously-refreshed session never actually
+    # expires" gap identified in the Phase 1 security review -- verified
+    # live before this PR (new_expires_at below was always `utcnow() +
+    # REFRESH_TOKEN_TTL_DAYS`, so `db_token.expires_at` above never had a
+    # chance to catch a session that kept getting refreshed). Checked
+    # against `session.created_at`/`last_activity_at`, which this PR is
+    # the first thing to ever enforce policy against -- see
+    # session_service.check_timeout_policy's own docstring for exactly
+    # what each of the two limits means and why absolute is checked
+    # first. On violation, explicitly revoke (not just reject) so the
+    # session-list API reports it accurately and a repeat presentation
+    # of the same token doesn't need to re-derive the same conclusion --
+    # and so there's a real mutation to hang the audit event off, the
+    # same reasoning every other revocation path in this module follows.
+    timeout_reason = session_service.check_timeout_policy(session)
+    if timeout_reason is not None:
+        _revoke_family(db, db_token.family_id)
+        session_service.revoke(db, db_token.family_id, timeout_reason)
+        _log_session_revoked(db, db_token.user_id, db_token.family_id, timeout_reason)
+        db.commit()
         return None
 
     user = db.query(User).filter(User.id == db_token.user_id).first()

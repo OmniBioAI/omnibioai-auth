@@ -106,6 +106,19 @@ class AuditEventType:
     # lockout is already active, to avoid audit-log amplification during
     # a sustained attack. See app/services/login_throttle_service.py.
     AUTH_RATE_LIMIT_TRIGGERED = "auth_rate_limit_triggered"
+    # HIPAA Phase 1 PR3 (Session Security Hardening). Discovery for this
+    # PR found ZERO session-lifecycle events existed before it -- not
+    # even for logout or manual self-service revocation. One event type,
+    # not one per cause, mirroring LOGIN_FAILURE's own established
+    # convention of a fixed `reason` value in metadata rather than a
+    # family of near-duplicate event-type constants -- see
+    # app/services/session_service.py's REASON_* constants for the full,
+    # single vocabulary (existing: user_logout/user_revoked/
+    # reuse_detected; new: idle_timeout/absolute_timeout/
+    # concurrent_session_limit/account_disabled). See
+    # app/services/auth_service.py's `_log_session_revoked` for the one
+    # place this is emitted from.
+    SESSION_REVOKED = "session_revoked"
 
 
 def log_event(

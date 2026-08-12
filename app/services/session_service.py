@@ -16,22 +16,37 @@ See app/db/models.py::UserSession's own docstring for why `session_id`
 *is* the refresh-token family_id rather than a second, separate
 identifier.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
+from app.core.config import settings
 from app.db.models import UserSession
 
 STATUS_ACTIVE = "active"
 STATUS_EXPIRED = "expired"
 STATUS_REVOKED = "revoked"
+# HIPAA Phase 1 PR3: two new *read-time-only* statuses, exactly the same
+# "never persisted by a background sweep, computed in effective_status"
+# treatment STATUS_EXPIRED already gets (see that function's own
+# docstring) -- there is still no scheduler in this repo. Distinct from
+# STATUS_EXPIRED so a Sessions UI can tell "this session's own token
+# simply aged out" apart from "this session hit the idle/absolute
+# security policy" without guessing from revoked_reason.
+STATUS_IDLE_EXPIRED = "idle_expired"
+STATUS_ABSOLUTE_EXPIRED = "absolute_expired"
 
 # Fixed, small vocabulary for UserSession.revoked_reason -- a plain string
 # column (matching ApiKey.revoked_reason / LicenseKey.revoked_reason's own
-# free-text convention elsewhere in this schema), kept to these three
-# values by convention so a future Control Center Sessions view can render
-# a stable, known set of reasons rather than arbitrary free text.
+# free-text convention elsewhere in this schema), kept to these by
+# convention so a future Control Center Sessions view can render a
+# stable, known set of reasons rather than arbitrary free text.
 REASON_USER_LOGOUT = "user_logout"
 REASON_USER_REVOKED = "user_revoked"
 REASON_REUSE_DETECTED = "reuse_detected"
+# HIPAA Phase 1 PR3 additions.
+REASON_IDLE_TIMEOUT = "idle_timeout"
+REASON_ABSOLUTE_TIMEOUT = "absolute_timeout"
+REASON_CONCURRENT_LIMIT = "concurrent_session_limit"
+REASON_ACCOUNT_DISABLED = "account_disabled"
 
 _MAX_USER_AGENT_LEN = 255
 
@@ -107,6 +122,41 @@ def is_usable(session: UserSession | None) -> bool:
     return not (session.expires_at is not None and session.expires_at < datetime.utcnow())
 
 
+def check_timeout_policy(session: UserSession | None) -> str | None:
+    """HIPAA Phase 1 PR3: the actual fix for the "sliding expires_at
+    means a continuously-refreshed session never expires" gap -- see
+    this module's REASON_IDLE_TIMEOUT/REASON_ABSOLUTE_TIMEOUT and
+    config.py's SESSION_IDLE_TIMEOUT_SECONDS/SESSION_ABSOLUTE_TIMEOUT_
+    SECONDS. Returns the violated reason string, or None if the session
+    is within policy.
+
+    Deliberately separate from `is_usable` above (revoked/hard-expiry --
+    unchanged, still the primary defense-in-depth guard) rather than
+    folded into it: `is_usable` answers "is this session dead," this
+    answers "should this session be allowed to continue," a distinction
+    `rotate_refresh_token` needs to know about (to attribute the correct
+    revoked_reason and audit event) when it decides to reject and revoke.
+
+    `session is None` returns None (no violation) for the identical
+    reason `is_usable` returns True for it -- a pre-Phase-4-PR-A refresh
+    token with no session row yet must not be rejected by a policy that
+    has nothing to check it against; it gets a session row backfilled on
+    its next rotation, same as today.
+
+    Absolute is checked before idle so a session that has blown both
+    limits is attributed to the harder ceiling, not whichever happened
+    to be computed first.
+    """
+    if session is None:
+        return None
+    now = datetime.utcnow()
+    if session.created_at + timedelta(seconds=settings.SESSION_ABSOLUTE_TIMEOUT_SECONDS) < now:
+        return REASON_ABSOLUTE_TIMEOUT
+    if session.last_activity_at + timedelta(seconds=settings.SESSION_IDLE_TIMEOUT_SECONDS) < now:
+        return REASON_IDLE_TIMEOUT
+    return None
+
+
 def touch(db, family_id: str | None, expires_at: datetime) -> None:
     """Called on every successful refresh -- records the activity and
     slides `expires_at` forward to match the just-issued refresh token's
@@ -145,15 +195,29 @@ def revoke(db, family_id: str | None, reason: str) -> None:
 
 
 def effective_status(session: UserSession) -> str:
-    """Read-time status: overlays a lazily-computed EXPIRED on top of the
-    persisted active/revoked value, since EXPIRED is never itself
-    persisted by a background sweep (no scheduler exists in this repo --
-    see the module docstring). Used by the read API (routes_sessions.py)
-    so a caller never sees "active" for a session that has simply aged
-    past its own `expires_at` without yet being touched or revoked.
+    """Read-time status: overlays lazily-computed EXPIRED/IDLE_EXPIRED/
+    ABSOLUTE_EXPIRED on top of the persisted active/revoked value, since
+    none of the three are themselves persisted by a background sweep (no
+    scheduler exists in this repo -- see the module docstring). Used by
+    the read API (routes_sessions.py) so a caller never sees "active"
+    for a session that has simply aged past its own `expires_at`, its
+    idle-timeout window, or its absolute lifetime, without yet having
+    been touched or explicitly revoked.
+
+    HIPAA Phase 1 PR3: checked in the same priority order
+    check_timeout_policy uses (absolute before idle, both before the
+    older, coarser `expires_at` check) -- a session already past its
+    absolute deadline is reported as such even if, e.g., `expires_at`
+    hadn't yet caught up (it always should in practice; this is
+    defense-in-depth ordering, not a case expected to occur).
     """
     if session.status == STATUS_REVOKED:
         return STATUS_REVOKED
+    timeout_reason = check_timeout_policy(session)
+    if timeout_reason == REASON_ABSOLUTE_TIMEOUT:
+        return STATUS_ABSOLUTE_EXPIRED
+    if timeout_reason == REASON_IDLE_TIMEOUT:
+        return STATUS_IDLE_EXPIRED
     if session.expires_at is not None and session.expires_at < datetime.utcnow():
         return STATUS_EXPIRED
     return STATUS_ACTIVE
