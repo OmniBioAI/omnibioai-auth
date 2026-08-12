@@ -18,6 +18,7 @@ from app.db.session import get_db
 from app.db.models import Team, User
 from app.schemas.auth import LoginRequest, RefreshRequest, LogoutRequest, SwitchTeamRequest
 from app.core.security import hash_password
+from app.core.password_policy import PasswordPolicyError, validate_new_password
 from app.core.jwt import decode_token
 from app.core import token_revocation
 from app.core.token_revocation import assert_token_usable
@@ -119,6 +120,18 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == req.email).first()
     if existing:
         raise HTTPException(400, "User already exists")
+
+    # HIPAA Phase 1 PR2: the only local-password-creation endpoint this
+    # service has -- see app/core/password_policy.py's module docstring
+    # for why this is the one and only call site. Checked before the
+    # password is hashed/stored; `PasswordPolicyError.__str__` is always
+    # the same generic message regardless of which specific rule failed
+    # (length/common-password/compromised), by design -- see that
+    # exception's own docstring.
+    try:
+        validate_new_password(req.password, email=req.email)
+    except PasswordPolicyError as e:
+        raise HTTPException(400, str(e))
 
     user = User(
         email=req.email,
