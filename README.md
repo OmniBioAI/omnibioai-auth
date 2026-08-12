@@ -47,7 +47,8 @@ flush any cached token state immediately.
 | `GET`  | `/auth/sso/discover?email=` | Domain-based lookup: does this email's org enforce Enterprise OIDC? |
 | `GET`  | `/auth/sso/{org_slug}/login` | Redirect to the organization's configured Enterprise OIDC IdP |
 | `GET`/`POST` | `/auth/sso/{org_slug}/callback` | Complete an Enterprise OIDC login for that organization |
-| `GET`  | `/auth/saml/{org_slug}/metadata` | This SP's SAML 2.0 metadata for that organization (entity ID, ACS URL, NameID format) — no login/ACS endpoint exists yet |
+| `GET`  | `/auth/saml/{org_slug}/metadata` | This SP's SAML 2.0 metadata for that organization (entity ID, ACS URL, NameID format) |
+| `GET`  | `/auth/saml/{org_slug}/login` | SP-initiated SAML login: redirects to the organization's configured IdP with a SAMLRequest + signed RelayState — no ACS endpoint exists yet |
 | `POST` | `/oauth/token` | `client_credentials` grant — issues a service-identity access token |
 | `GET`/`POST`/`DELETE` | `/orgs/{org_id}/oauth-clients` | Manage an organization's `client_credentials` clients |
 | `GET`  | `/.well-known/jwks.json` | RS256 public-key set (JWKS), for future RS256 verifiers |
@@ -215,13 +216,17 @@ Enterprise OIDC becomes the only way in.
 
 A second enterprise SSO protocol, additive to — not a replacement for —
 Enterprise OIDC above; `OrganizationSAMLConfig` (its own table, not a
-generalization of `OrganizationSSOConfig`) is the eventual per-org IdP
-registration. So far only `GET /auth/saml/{org_slug}/metadata` exists:
-this SP's own metadata (entity ID, ACS URL, NameID format) for that
-org, independent of whether the org has configured a SAML IdP yet —
-that document is what an org admin hands to their IdP administrator
-*before* any config can be created. No login, ACS, assertion validation,
-or SLO endpoint exists yet.
+generalization of `OrganizationSSOConfig`) is the per-org IdP
+registration. `GET /auth/saml/{org_slug}/metadata` is this SP's own
+metadata (entity ID, ACS URL, NameID format) for that org, independent
+of whether the org has configured a SAML IdP yet — that document is what
+an org admin hands to their IdP administrator *before* any config can be
+created. `GET /auth/saml/{org_slug}/login` is the SP-initiated login
+redirect: 404 unless the org has an `active` `OrganizationSAMLConfig`,
+then redirects to that IdP's `sso_url` with a SAMLRequest and a signed,
+opaque RelayState binding the resolved `organization_id`/
+`organization_saml_config_id` server-side. No ACS, assertion validation,
+identity linking, CRUD API, admin UI, or SLO endpoint exists yet.
 
 ### Organization-aware authentication
 
@@ -462,7 +467,7 @@ app/
 │   ├── routes_oauth_token.py     # /oauth/token (client_credentials grant)
 │   ├── routes_sso.py             # /auth/sso/discover, /{org_slug}/login, /{org_slug}/callback
 │   ├── routes_org_sso.py         # /orgs/{org_id}/sso config CRUD + override
-│   ├── routes_saml.py            # /auth/saml/{org_slug}/metadata -- SP metadata only, no login/ACS yet
+│   ├── routes_saml.py            # /auth/saml/{org_slug}/metadata, /login -- no ACS yet
 │   ├── routes_jwks.py            # /.well-known/jwks.json
 │   ├── routes_orgs.py            # /orgs — org CRUD, invite, member roles
 │   ├── routes_teams.py           # /orgs/{org_id}/teams

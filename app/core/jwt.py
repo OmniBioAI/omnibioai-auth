@@ -141,6 +141,40 @@ def create_sso_state_token(
     )
 
 
+def create_saml_relay_state_token(organization_id: int, organization_saml_config_id: int):
+    """SAML SSO PR4: signed, opaque RelayState for the SP-initiated SAML
+    login flow (/auth/saml/{org_slug}/login). Structural analog of
+    create_sso_state_token's role for OIDC SSO's `state` parameter --
+    same "no server-side session, verified purely by signature + expiry"
+    design -- but a distinct token type ("saml_relay_state", not
+    "sso_state"), for the identical reason create_sso_state_token's own
+    docstring gives for why it isn't "oauth_state": a token minted here
+    must never be replayable against the existing OIDC
+    /auth/sso/{org_slug}/callback route, or vice versa, even though both
+    carry an organization_id.
+
+    No code_verifier/nonce -- SAML's SP-initiated AuthnRequest has no
+    PKCE or OIDC-nonce equivalent at this stage (PR4 does not sign the
+    AuthnRequest). organization_saml_config_id is the SAML equivalent of
+    create_sso_state_token's organization_sso_config_id: which IdP config
+    this login attempt is for, bound server-side at /login time from the
+    already-resolved Organization/OrganizationSAMLConfig rows -- never
+    from anything client-supplied -- so a future ACS handler can verify
+    the callback's RelayState commits to the same organization/config
+    this login actually started with, instead of trusting org_slug (or
+    any other client-supplied value) a second time at that point.
+    """
+    return _sign(
+        {
+            "type": "saml_relay_state",
+            "organization_id": organization_id,
+            "organization_saml_config_id": organization_saml_config_id,
+            "exp": datetime.utcnow() + timedelta(minutes=10),
+            "jti": str(uuid.uuid4()),
+        }
+    )
+
+
 def create_service_access_token(data: dict, expires_minutes: int):
     """Phase 2 PR1: issues a client_credentials-grant access token (RFC 6749
     SS4.4) -- a service identity, not a user. Deliberately does not go
