@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from app.db.models import OrganizationMFAPolicy, User, RefreshToken
 from app.core.security import verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
-from app.services import audit_service, org_service, session_service, team_service
+from app.services import audit_service, login_throttle_service, org_service, session_service, team_service
 from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
@@ -27,25 +27,45 @@ def _log_login_failure(db, email: str, user: User | None, reason: str) -> None:
     )
 
 
-def authenticate_user(db, email, password):
+def authenticate_user(db, email, password, client_ip: str | None = None):
     """PR9: emits exactly one login_success/login_failure audit event per
     call, on every return path -- password-based login only
     (/auth/login); OAuth/SSO logins have their own distinct flows and are
-    not in this change's scope."""
+    not in this change's scope.
+
+    HIPAA Phase 1 PR1: also the single place `login_throttle_service`'s
+    record_failure/record_success are called from, for the identical
+    reason build_user_claims/generate_tokens above already funnel every
+    login flow through one place each -- every one of this function's
+    three failure branches and its one success path is a real password
+    attempt, so hooking here (rather than in routes_auth.py) keeps
+    throttling behavior identical regardless of *why* verification
+    failed, which is exactly what the enumeration-resistance requirement
+    needs: an unknown email, a password-less OAuth-only account, and a
+    genuinely wrong password all record an identical failure to the
+    throttle layer. `client_ip` is optional/defaults to None so any other
+    caller of this function is unaffected -- today there are none besides
+    routes_auth.py's /auth/login, but this keeps the signature backward
+    compatible regardless.
+    """
     user = db.query(User).filter(User.email == email).first()
 
     if not user or user.status != "active":
         _log_login_failure(db, email, user, "unknown_user_or_inactive")
+        login_throttle_service.record_failure(db, email, client_ip)
         return None
 
     if not user.hashed_password:
         _log_login_failure(db, email, user, "no_password_set")
+        login_throttle_service.record_failure(db, email, client_ip)
         return None  # OAuth-only account — no password set
 
     if not verify_password(password, user.hashed_password):
         _log_login_failure(db, email, user, "invalid_password")
+        login_throttle_service.record_failure(db, email, client_ip)
         return None
 
+    login_throttle_service.record_success(email, client_ip)
     audit_service.log_event(
         db, AuditEventType.LOGIN_SUCCESS, actor_user_id=user.id, target_user_id=user.id,
         resource_type="user", resource_id=user.id, metadata={"email": email},

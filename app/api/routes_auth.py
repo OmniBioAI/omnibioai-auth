@@ -4,6 +4,7 @@ from datetime import datetime
 
 import redis as _redis_sync
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from prometheus_client import Counter
 from sqlalchemy.orm import Session
 
@@ -29,7 +30,7 @@ from app.services.auth_service import (
     rotate_refresh_token,
 )
 from app.services.role_service import assign_default_role
-from app.services import org_service, sso_discovery_service, team_service
+from app.services import login_throttle_service, org_service, sso_discovery_service, team_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -134,12 +135,29 @@ def register(req: LoginRequest, db: Session = Depends(get_db)):
 # ---------------- LOGIN ----------------
 @router.post("/login")
 def login(req: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    # Phase 4 PR-A: best-effort client metadata -- never logged, never
+    # returned in this endpoint's own response (see
+    # app/services/session_service.py). `request.client` is None in some
+    # test-client/ASGI-transport configurations, hence the guard.
+    #
+    # HIPAA Phase 1 PR1: computed before the SSO-enforcement check below
+    # (moved up from after `authenticate_user`, where it used to live) --
+    # the throttle peek a few lines down needs it, and this value doesn't
+    # change meaning by being read earlier.
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+
     # Phase 2 PR5: checked before any credential verification at all --
     # authenticate_user (the only caller of verify_password) is never
     # reached for an org that enforces SSO, not just short-circuited
     # after a failed check. domain-based matching (same as GET
     # /auth/sso/discover) is the only signal available here: there is no
     # authenticated identity yet to look up a real membership against.
+    #
+    # HIPAA Phase 1 PR1: also unaffected by login throttling -- SSO-
+    # enforced orgs never reach authenticate_user, so they never record
+    # against or get blocked by the local-password rate limiter. Their
+    # own IdP is the correct place for brute-force protection.
     enforced_config = sso_discovery_service.find_enforced_org_for_email(db, req.email)
     if enforced_config:
         org = org_service.get_organization(db, enforced_config.organization_id)
@@ -152,7 +170,24 @@ def login(req: LoginRequest, request: Request, response: Response, db: Session =
             },
         )
 
-    user = authenticate_user(db, req.email, req.password)
+    # HIPAA Phase 1 PR1: peek-only, no DB/bcrypt work yet. Keyed off a
+    # hash of whatever email string was submitted, real account or not --
+    # see login_throttle_service.py's module docstring for why this
+    # doesn't leak account existence. 429/Retry-After is deliberately a
+    # different status than the 401 below (bad credentials), which is the
+    # one place this endpoint's response shape changes for this PR;
+    # neither response reveals anything about the submitted email that
+    # the other doesn't.
+    throttle = login_throttle_service.check_throttled(req.email, client_ip)
+    if throttle.locked:
+        JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="throttled").inc()
+        return JSONResponse(
+            status_code=429,
+            content={"error": "too_many_attempts", "message": "Too many failed login attempts. Try again later."},
+            headers={"Retry-After": str(throttle.retry_after_seconds)},
+        )
+
+    user = authenticate_user(db, req.email, req.password, client_ip=client_ip)
     if not user:
         JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="failure").inc()
         raise HTTPException(401, "Invalid credentials")
@@ -163,12 +198,6 @@ def login(req: LoginRequest, request: Request, response: Response, db: Session =
     # compatible per that PR's own explicit requirement.
     # PR11.5.5: org-required MFA the user hasn't personally enrolled --
     # same 403 shape the SSO-enforcement check above already uses.
-    # Phase 4 PR-A: best-effort client metadata for the new session row --
-    # never logged, never returned in this endpoint's own response (see
-    # app/services/session_service.py). `request.client` is None in some
-    # test-client/ASGI-transport configurations, hence the guard.
-    client_ip = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
 
     try:
         result = generate_tokens_or_mfa_challenge(

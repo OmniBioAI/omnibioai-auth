@@ -100,6 +100,12 @@ class AuditEventType:
     # they get their own trail rather than just surfacing as a 400/403
     # with nothing recorded server-side.
     ROLE_ASSIGNMENT_DENIED = "role_assignment_denied"
+    # HIPAA Phase 1 PR1 (Authentication Abuse Protection). Emitted once
+    # per dimension (account/ip/pair) each time that dimension's lockout
+    # is newly triggered -- not on every throttled attempt while a
+    # lockout is already active, to avoid audit-log amplification during
+    # a sustained attack. See app/services/login_throttle_service.py.
+    AUTH_RATE_LIMIT_TRIGGERED = "auth_rate_limit_triggered"
 
 
 def log_event(

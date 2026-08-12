@@ -98,6 +98,79 @@ class Settings:
     # the now-decommissioned license_server.py exposed (Phase 1 PR4 cutover).
     GHCR_PULL_TOKEN = os.getenv("GHCR_PULL_TOKEN", "")
 
+    # HIPAA Phase 1 PR1: local-password login brute-force protection
+    # (app/core/rate_limit.py, app/services/login_throttle_service.py).
+    # Three independently-tunable layers -- account, source IP, and the
+    # (account, IP) pair -- see login_throttle_service.py's module
+    # docstring for why all three exist and what each defends against.
+    # Every _MAX_ATTEMPTS/_WINDOW_SECONDS/_LOCKOUT_SECONDS default below
+    # is a production-safe starting point, not a hard requirement --
+    # operators tune via env var, no code change or redeploy needed
+    # (this Settings class already re-reads os.getenv on process start,
+    # same as every other setting here).
+    RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+
+    # Account dimension: keyed on a truncated SHA-256 of the submitted
+    # email (not the raw address -- consistent with this module's own
+    # "don't retain unnecessary account-identifying data" requirement,
+    # and with the existing _hash_refresh_token/_hash_key convention
+    # elsewhere in this service). Primary defense against an attacker
+    # who varies source IP but targets one account.
+    RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS = int(os.getenv("RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS", 10))
+    RATE_LIMIT_ACCOUNT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_ACCOUNT_WINDOW_SECONDS", 900))
+    RATE_LIMIT_ACCOUNT_LOCKOUT_SECONDS = int(os.getenv("RATE_LIMIT_ACCOUNT_LOCKOUT_SECONDS", 900))
+
+    # IP dimension: keyed on source IP. Primary defense against an
+    # attacker who varies the account (credential stuffing / spraying)
+    # but attacks from one IP. Threshold is deliberately higher than the
+    # account dimension -- a shared/corporate/NAT IP can legitimately
+    # produce more failed attempts across many real users than one
+    # account ever should.
+    RATE_LIMIT_IP_MAX_ATTEMPTS = int(os.getenv("RATE_LIMIT_IP_MAX_ATTEMPTS", 30))
+    RATE_LIMIT_IP_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_IP_WINDOW_SECONDS", 900))
+    RATE_LIMIT_IP_LOCKOUT_SECONDS = int(os.getenv("RATE_LIMIT_IP_LOCKOUT_SECONDS", 900))
+
+    # (account, IP) pair dimension: the tight, fast circuit-breaker for
+    # the common case -- one attacker hammering one account. Neither
+    # varying the email nor varying the IP alone resets this key, since
+    # it's the *combination* that's tracked; changing either one starts
+    # a fresh pair-key, but the unchanged dimension keeps accumulating
+    # against its own (account or IP) counter above.
+    RATE_LIMIT_PAIR_MAX_ATTEMPTS = int(os.getenv("RATE_LIMIT_PAIR_MAX_ATTEMPTS", 5))
+    RATE_LIMIT_PAIR_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_PAIR_WINDOW_SECONDS", 300))
+    RATE_LIMIT_PAIR_LOCKOUT_SECONDS = int(os.getenv("RATE_LIMIT_PAIR_LOCKOUT_SECONDS", 300))
+
+    # Progressive escalation, account dimension only: each time the same
+    # account's lockout is re-triggered before its "strike" window
+    # expires, the lockout duration actually applied is
+    # RATE_LIMIT_ACCOUNT_LOCKOUT_SECONDS * (multiplier ** (strikes-1)),
+    # capped at RATE_LIMIT_MAX_LOCKOUT_SECONDS. A legitimate user who
+    # mistypes their password a few times, once, is unaffected -- this
+    # only escalates for an account still under repeated attack across
+    # multiple lockout cycles.
+    RATE_LIMIT_PROGRESSIVE_MULTIPLIER = int(os.getenv("RATE_LIMIT_PROGRESSIVE_MULTIPLIER", 2))
+    RATE_LIMIT_MAX_LOCKOUT_SECONDS = int(os.getenv("RATE_LIMIT_MAX_LOCKOUT_SECONDS", 3600))
+    RATE_LIMIT_STRIKE_TTL_SECONDS = int(os.getenv("RATE_LIMIT_STRIKE_TTL_SECONDS", 86400))
+
+    # Redis-unavailable behavior (app/core/rate_limit.py). Deliberately
+    # NOT the same fail-open policy this service's token-revocation
+    # blacklist uses (see token_revocation.py's own docstring) -- that
+    # precedent is for a check that runs on every authenticated request;
+    # this one exists specifically to stop credential-guessing, so
+    # failing fully open on a Redis outage would silently disable the
+    # control for the exact scenario (sustained attack traffic that
+    # might itself be straining shared infra) it matters most in. Nor is
+    # it fully closed -- see RATE_LIMIT_FALLBACK_* below -- since that
+    # would make a Redis outage a total login outage, turning an
+    # availability problem into an authentication one.
+    RATE_LIMIT_FALLBACK_MAX_ATTEMPTS = int(os.getenv("RATE_LIMIT_FALLBACK_MAX_ATTEMPTS", 5))
+    RATE_LIMIT_FALLBACK_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_FALLBACK_WINDOW_SECONDS", 300))
+    # Hard cap on the number of distinct keys the in-process fallback
+    # counter will track -- bounds its memory use during a prolonged
+    # Redis outage under attack traffic. Deliberately small: this path
+    # is degraded-mode-only, not the steady-state mechanism.
+    RATE_LIMIT_FALLBACK_MAX_KEYS = int(os.getenv("RATE_LIMIT_FALLBACK_MAX_KEYS", 10000))
+
     @property
     def DATABASE_URL(self):
         return (
