@@ -145,3 +145,95 @@ def test_build_sp_metadata_is_independent_of_organization_existing():
 def test_entity_id_and_acs_url_are_pure_functions_of_org_slug():
     assert org_saml_service.entity_id_for("acme") == "https://webstudio.omnibioai.org/auth/saml/acme/metadata"
     assert org_saml_service.acs_url_for("acme") == "https://webstudio.omnibioai.org/auth/saml/acme/acs"
+
+
+# ── XML escaping (PR3 fix: org_slug into generated metadata XML) ───────
+#
+# OneLogin_Saml2_Settings.builder() (onelogin/saml2/metadata.py) inserts
+# sp['entityId'] and the ACS Location directly into its XML template via
+# raw Python %-string formatting -- it applies no escaping of its own.
+# org_slug has no format restriction anywhere in the schema or DB layer
+# (OrganizationCreate.slug is a bare `str`; organizations.slug is just
+# VARCHAR(100) UNIQUE), and any self-registered user can set it via
+# POST /orgs. Before this fix, a slug containing XML metacharacters
+# reached that template unescaped, producing either HTTP 500 (malformed
+# XML) or, for a slug that happened to already be well-formed XML on its
+# own, unescaped/injected content in a document served from a public,
+# unauthenticated endpoint.
+
+_XML_METACHAR_SLUGS = [
+    "acme&corp",
+    "acme<corp",
+    "acme>corp",
+    'acme"corp',
+    "acme'corp",
+    "acme&<>\"'corp",
+]
+
+
+def _create_org_with_slug(client, slug):
+    owner = _register_and_login(client)
+    headers = {"Authorization": f"Bearer {owner['access_token']}"}
+    resp = client.post("/orgs", json={"name": "XML Escaping Test Org", "slug": slug}, headers=headers)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.mark.parametrize("slug", _XML_METACHAR_SLUGS)
+def test_metadata_escapes_xml_metacharacters_in_org_slug(client, slug):
+    """The endpoint must still return valid, well-formed metadata for an
+    org whose slug contains XML metacharacters -- not a 500, and not a
+    document where the slug altered the XML structure."""
+    _create_org_with_slug(client, slug)
+    resp = client.get(f"/auth/saml/{slug}/metadata")
+    assert resp.status_code == 200, resp.text
+
+    root = etree.fromstring(resp.content)
+    # Exactly one EntityDescriptor -- proves no sibling element was
+    # injected by the slug (an unescaped '>' could otherwise close the
+    # start tag early and let subsequent slug content become new
+    # elements).
+    assert root.tag == "{urn:oasis:names:tc:SAML:2.0:metadata}EntityDescriptor"
+
+    # The parser decodes entities back to the original text -- this
+    # round-trip proves the slug was escaped on the wire (not that it
+    # was rejected/stripped), and that both entityID and the ACS
+    # Location still incorporate it exactly, per-org, as before the fix.
+    assert slug in root.get("entityID")
+    acs = root.find(".//md:AssertionConsumerService", _MD_NS)
+    assert slug in acs.get("Location")
+
+
+@pytest.mark.parametrize("slug", _XML_METACHAR_SLUGS)
+def test_build_sp_metadata_escapes_xml_metacharacters(slug):
+    """Service-layer equivalent of the HTTP-layer test above -- proves
+    the escaping happens in org_saml_service itself (independent of the
+    HTTP route, and of any Organization row existing)."""
+    xml = org_saml_service.build_sp_metadata(slug)
+    root = etree.fromstring(xml.encode())
+    assert root.tag == "{urn:oasis:names:tc:SAML:2.0:metadata}EntityDescriptor"
+    assert slug in root.get("entityID")
+
+
+def test_metadata_still_valid_for_normal_slug_after_escaping_fix(client, org):
+    """Regression guard: the escaping fix must not alter output for an
+    ordinary slug (no XML metacharacters) -- same assertions as
+    test_metadata_is_well_formed_xml_and_matches_org_slug, kept
+    independent so this file's two eras (pre-fix behavior, PR3 fix) each
+    have their own explicit normal-case coverage."""
+    resp = client.get(f"/auth/saml/{org['slug']}/metadata")
+    assert resp.status_code == 200
+    root = etree.fromstring(resp.content)
+    assert root.get("entityID") == f"https://webstudio.omnibioai.org/auth/saml/{org['slug']}/metadata"
+
+
+def test_entity_id_and_acs_url_remain_unescaped_pure_url_builders():
+    """entity_id_for/acs_url_for stay pure, unescaped URL builders -- the
+    XML escaping (PR3 fix) is applied only at the point of XML template
+    embedding, in org_saml_service._sp_settings_dict, not in these
+    functions themselves. Other callers (e.g. a future ACS route
+    comparing against a request path) need the real URL back, not an
+    XML-escaped one."""
+    slug = "acme&corp"
+    assert org_saml_service.entity_id_for(slug) == f"https://webstudio.omnibioai.org/auth/saml/{slug}/metadata"
+    assert org_saml_service.acs_url_for(slug) == f"https://webstudio.omnibioai.org/auth/saml/{slug}/acs"

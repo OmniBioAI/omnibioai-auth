@@ -21,6 +21,8 @@ URL already used for the existing OIDC SSO callback and the 3 global
 OAuth providers' callback, not a new setting, since this is the same
 "where this service is externally reachable" value either way.
 """
+from xml.sax.saxutils import escape as _xml_escape
+
 from onelogin.saml2.settings import OneLogin_Saml2_Settings
 
 from app.core.config import settings
@@ -66,12 +68,39 @@ def acs_url_for(org_slug: str) -> str:
     return f"{settings.OAUTH_REDIRECT_BASE_URL}/auth/saml/{org_slug}/acs"
 
 
+# python3-saml's OneLogin_Saml2_Settings.builder() (onelogin/saml2/
+# metadata.py) inserts sp['entityId'] and the ACS Location directly into
+# its XML template via raw Python %-string formatting -- verified
+# empirically (not assumed) by reading that source: it applies no
+# escaping of its own. org_slug -- the only variable input to
+# entity_id_for/acs_url_for -- has no format restriction anywhere in the
+# schema or DB layer (OrganizationCreate.slug is a bare `str`,
+# organizations.slug is just VARCHAR(100) UNIQUE), so a slug containing
+# XML metacharacters would otherwise reach that template unescaped,
+# producing malformed metadata (observed: HTTP 500) or, for a slug that
+# happens to form well-formed XML on its own, structurally altering the
+# document served from this public endpoint. Escaping happens here, at
+# the one place these values are embedded into XML -- entity_id_for/
+# acs_url_for themselves stay pure, unescaped URL builders, since other
+# callers (e.g. a future ACS route comparing against a request path)
+# need the real URL, not an XML-escaped one.
+_XML_ATTR_ESCAPES = {'"': "&quot;", "'": "&apos;"}
+
+
+def _xml_escape_attr(value: str) -> str:
+    """Escapes `value` for safe embedding as an XML attribute value.
+    `xml.sax.saxutils.escape` covers &/</> by default; the extra map
+    covers the two quote characters, since both entityID and the ACS
+    Location are embedded in double-quoted XML attributes."""
+    return _xml_escape(value, _XML_ATTR_ESCAPES)
+
+
 def _sp_settings_dict(org_slug: str) -> dict:
     return {
         "sp": {
-            "entityId": entity_id_for(org_slug),
+            "entityId": _xml_escape_attr(entity_id_for(org_slug)),
             "assertionConsumerService": {
-                "url": acs_url_for(org_slug),
+                "url": _xml_escape_attr(acs_url_for(org_slug)),
                 "binding": _ACS_BINDING,
             },
             "NameIDFormat": _NAME_ID_FORMAT,
