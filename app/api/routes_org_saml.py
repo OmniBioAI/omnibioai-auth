@@ -34,6 +34,7 @@ def _to_out(config: OrganizationSAMLConfig) -> OrgSAMLConfigOut:
         attribute_mapping=config.attribute_mapping,
         enabled=bool(config.enabled),
         status=config.status,
+        slo_url=config.slo_url,
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -56,7 +57,7 @@ def create_saml_config(
     try:
         config = org_saml_service.create_saml_config(
             db, org_id, body.entity_id, body.sso_url, body.x509_certificate,
-            body.attribute_mapping, membership.user_id,
+            body.attribute_mapping, membership.user_id, slo_url=body.slo_url,
         )
     except org_saml_service.SAMLConfigValidationError as e:
         raise HTTPException(422, str(e))
@@ -91,6 +92,7 @@ def update_saml_config(
             attribute_mapping=body.attribute_mapping,
             enabled=body.enabled,
             status=body.status,
+            slo_url=body.slo_url,
         )
     except org_saml_service.SAMLConfigValidationError as e:
         raise HTTPException(422, str(e))

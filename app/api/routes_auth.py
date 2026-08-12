@@ -1,6 +1,5 @@
 import json
 import os
-from datetime import datetime
 
 import redis as _redis_sync
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -81,26 +80,6 @@ _pub = _redis_sync.from_url(
 )
 
 ACCESS_TOKEN_TTL = 15 * 60  # seconds — matches jwt.py
-
-
-def _blacklist_access_token(access_token: str) -> None:
-    """Store access token jti in Redis blacklist with remaining-lifetime TTL.
-
-    Writes through `token_revocation._blacklist` (qualified attribute
-    access, not a local `_blacklist` name) -- PR0.1 made that module the
-    canonical owner of this Redis client, since `assert_token_usable` reads
-    from the exact same object to enforce revocation in `get_current_user`.
-    """
-    try:
-        payload = decode_token(access_token)
-        jti = payload.get("jti")
-        if jti:
-            exp = payload.get("exp", 0)
-            now = int(datetime.utcnow().timestamp())
-            ttl = max(exp - now, 1)
-            token_revocation._blacklist.setex(f"blacklist:jti:{jti}", ttl, "1")
-    except Exception:
-        pass  # fail open — never block logout
 
 
 def _publish_invalidation(user_id: str, token: str = ""):
@@ -328,7 +307,7 @@ def logout(req: LogoutRequest, response: Response, db: Session = Depends(get_db)
     revoke_token(db, req.refresh_token)
 
     if req.access_token:
-        _blacklist_access_token(req.access_token)
+        token_revocation.blacklist_access_token(req.access_token)
 
     try:
         payload = decode_token(req.refresh_token)

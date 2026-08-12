@@ -82,6 +82,9 @@ from xml.sax.saxutils import escape as _xml_escape
 
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from onelogin.saml2.authn_request import OneLogin_Saml2_Authn_Request
+from onelogin.saml2.constants import OneLogin_Saml2_Constants
+from onelogin.saml2.logout_request import OneLogin_Saml2_Logout_Request
+from onelogin.saml2.logout_response import OneLogin_Saml2_Logout_Response
 from onelogin.saml2.settings import OneLogin_Saml2_Settings
 from onelogin.saml2.utils import OneLogin_Saml2_Utils
 from sqlalchemy.orm import Session
@@ -99,6 +102,13 @@ from app.services.audit_service import AuditEventType
 SP_METADATA_CONTENT_TYPE = "application/samlmetadata+xml"
 
 _ACS_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+# PR11 (SLO): HTTP-Redirect, not HTTP-POST -- verified by reading
+# OneLogin_Saml2_Auth.process_slo directly, which only reads SAMLRequest/
+# SAMLResponse from `get_data` (query-string parameters) and explicitly
+# raises "Only supported HTTP_REDIRECT Binding" for anything else. This
+# is also the binding real IdPs (Okta, Entra ID, ADFS) commonly expect
+# for SLO regardless of what they used for login.
+_SLO_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 
 # The plan (see OrganizationSAMLConfig.attribute_mapping's own example
 # shape, app/db/models.py: {"email": "NameID", ...}) is for NameID to
@@ -138,6 +148,17 @@ def acs_url_for(org_slug: str) -> str:
     return f"{settings.OAUTH_REDIRECT_BASE_URL}/auth/saml/{org_slug}/acs"
 
 
+def slo_url_for(org_slug: str) -> str:
+    """This SP's own Single Logout Service endpoint for `org_slug` (PR11)
+    -- declared in SP metadata so an IdP administrator can configure
+    where to send both directions of SLO (an unsolicited LogoutRequest,
+    or this SP's own LogoutResponse reply to one), and the canonical URL
+    the Destination check on an incoming LogoutRequest is validated
+    against. Same "static base URL, not request introspection"
+    convention as acs_url_for."""
+    return f"{settings.OAUTH_REDIRECT_BASE_URL}/auth/saml/{org_slug}/slo"
+
+
 # python3-saml's OneLogin_Saml2_Settings.builder() (onelogin/saml2/
 # metadata.py) inserts sp['entityId'] and the ACS Location directly into
 # its XML template via raw Python %-string formatting -- verified
@@ -172,6 +193,16 @@ def _sp_settings_dict(org_slug: str) -> dict:
             "assertionConsumerService": {
                 "url": _xml_escape_attr(acs_url_for(org_slug)),
                 "binding": _ACS_BINDING,
+            },
+            # PR11 (SLO): declared unconditionally, same as
+            # assertionConsumerService above -- this SP's own SLO
+            # endpoint always exists at this fixed URL regardless of
+            # whether any org's IdP is configured to use it yet (an IdP
+            # administrator reading this SP's metadata is exactly how
+            # they'd learn to configure it in the first place).
+            "singleLogoutService": {
+                "url": _xml_escape_attr(slo_url_for(org_slug)),
+                "binding": _SLO_BINDING,
             },
             "NameIDFormat": _NAME_ID_FORMAT,
             # No SP private key or certificate: PR2's own docstring
@@ -296,16 +327,25 @@ def create_saml_config(
     x509_certificate: str,
     attribute_mapping: dict | None,
     actor_user_id: int,
+    slo_url: str | None = None,
 ) -> OrganizationSAMLConfig:
     """Creates the org's SAML config. Raises ValueError if one already
     exists (one IdP per org -- organization_id is UNIQUE, same as
     org_sso_service.configure_sso's identical guard), or
-    SAMLConfigValidationError if entity_id/sso_url/x509_certificate fail
-    structural validation. Neither path writes a row.
+    SAMLConfigValidationError if entity_id/sso_url/x509_certificate (or,
+    PR11, slo_url) fail structural validation. Neither path writes a
+    row.
 
     status="active" immediately -- see module docstring for why this
     differs from configure_sso's status="active"-as-discovery-outcome:
-    there is nothing here to verify before persisting."""
+    there is nothing here to verify before persisting.
+
+    slo_url (PR11): optional, default None -- not every IdP supports or
+    is configured for SLO. Validated with the identical _validate_sso_
+    url structural check sso_url itself gets, same reasoning: both are
+    admin-supplied IdP endpoint URLs, and this is the one validation
+    boundary either needs.
+    """
     if get_saml_config(db, organization_id) is not None:
         raise ValueError("this organization already has a SAML configuration")
 
@@ -313,6 +353,8 @@ def create_saml_config(
         raise SAMLConfigValidationError("entity_id must not be empty")
     _validate_sso_url(sso_url)
     _validate_x509_certificate(x509_certificate)
+    if slo_url is not None:
+        _validate_sso_url(slo_url)
 
     now = datetime.utcnow()
     config = OrganizationSAMLConfig(
@@ -322,6 +364,7 @@ def create_saml_config(
         x509_certificate=x509_certificate,
         attribute_mapping=attribute_mapping,
         status="active",
+        slo_url=slo_url,
         created_at=now,
         updated_at=now,
         updated_by_user_id=actor_user_id,
@@ -351,13 +394,21 @@ def update_saml_config(
     attribute_mapping: dict | None = None,
     enabled: bool | None = None,
     status: str | None = None,
+    slo_url: str | None = None,
 ) -> OrganizationSAMLConfig:
     """Only touches fields actually supplied (None = leave unchanged),
     same convention as org_sso_service.update_sso_config /
     config_service.update_config. Raises SAMLConfigValidationError before
     touching the row at all if a supplied field fails validation -- the
     existing config is left exactly as it was, not partially updated,
-    same guarantee update_sso_config gives for a failed re-discovery."""
+    same guarantee update_sso_config gives for a failed re-discovery.
+
+    slo_url (PR11): same None-means-leave-unchanged convention as every
+    other field here -- including the pre-existing limitation that
+    follows from it: there is no way to explicitly clear slo_url back to
+    NULL once set, the same limitation attribute_mapping already has.
+    Not a new gap introduced by PR11, the established convention.
+    """
     if entity_id is not None and not entity_id.strip():
         raise SAMLConfigValidationError("entity_id must not be empty")
     if sso_url is not None:
@@ -366,6 +417,8 @@ def update_saml_config(
         _validate_x509_certificate(x509_certificate)
     if status is not None:
         _validate_status(status)
+    if slo_url is not None:
+        _validate_sso_url(slo_url)
 
     before_entity_id, before_sso_url, before_status = config.entity_id, config.sso_url, config.status
 
@@ -379,6 +432,8 @@ def update_saml_config(
         config.attribute_mapping = attribute_mapping
     if enabled is not None:
         config.enabled = enabled
+    if slo_url is not None:
+        config.slo_url = slo_url
     if status is not None:
         config.status = status
 
@@ -609,7 +664,13 @@ def _acs_request_data(org_slug: str, saml_response_b64: str, relay_state: str | 
 _SAML_REPLAY_TTL_SECONDS = 600
 
 
-def _reject_if_replayed(organization_id: int, organization_saml_config_id: int, assertion_id: str) -> None:
+def _reject_if_replayed(
+    organization_id: int,
+    organization_saml_config_id: int,
+    message_id: str,
+    key_prefix: str = "saml_replay",
+    error_cls: type = SAMLAssertionError,
+) -> None:
     """Atomic set-if-absent against the same Redis connection
     app.core.token_revocation already uses for the access-token
     blacklist -- reusing that established connection/keyspace (distinct
@@ -623,11 +684,11 @@ def _reject_if_replayed(organization_id: int, organization_saml_config_id: int, 
     exercised in tests via the exact same TestClient fixture (see
     tests/conftest.py) this function's tests reuse.
 
-    Keyed by organization_id + organization_saml_config_id +
-    assertion_id together, not assertion_id alone -- binds the replay
-    check to the specific org/config a login transaction resolved to, so
-    a (however astronomically unlikely) assertion-ID collision between
-    two unrelated IdPs can never cross-reject or cross-accept between
+    Keyed by organization_id + organization_saml_config_id + message_id
+    together, not message_id alone -- binds the replay check to the
+    specific org/config a login (or, PR11, logout) transaction resolved
+    to, so a (however astronomically unlikely) ID collision between two
+    unrelated IdPs can never cross-reject or cross-accept between
     organizations.
 
     Deliberately fails CLOSED -- the opposite of token_revocation's own
@@ -636,19 +697,28 @@ def _reject_if_replayed(organization_id: int, organization_saml_config_id: int, 
     token_revocation.assert_token_usable's own docstring, which already
     draws exactly this line (Redis-only checks fail open; checks whose
     failure "would newly mask a real problem" do not). A Redis outage
-    here failing open would mean a captured/replayed SAMLResponse could
-    authenticate repeatedly for as long as Redis stays unreachable --
+    here failing open would mean a captured/replayed SAML message could
+    be consumed repeatedly for as long as Redis stays unreachable --
     silently defeating the one guarantee this function exists to
-    provide -- so an unreachable store must reject the login attempt,
-    not silently accept it.
+    provide -- so an unreachable store must reject the attempt, not
+    silently accept it.
+
+    key_prefix/error_cls (PR11): this same function, generalized rather
+    than copy-pasted, also backs SLO's LogoutRequest replay protection
+    (validate_slo_logout_request below) -- a LogoutRequest has no
+    InResponseTo of its own to check (it's unsolicited by definition),
+    so message-ID replay protection is the only defense against the
+    same signed, valid LogoutRequest being resubmitted. Both defaults
+    preserve this function's exact pre-PR11 behavior/key format for
+    every existing ACS caller.
     """
-    key = f"saml_replay:{organization_id}:{organization_saml_config_id}:{assertion_id}"
+    key = f"{key_prefix}:{organization_id}:{organization_saml_config_id}:{message_id}"
     try:
         set_ok = token_revocation._blacklist.set(key, "1", nx=True, ex=_SAML_REPLAY_TTL_SECONDS)
     except Exception as e:
-        raise SAMLAssertionError("could not verify this SAML assertion has not already been used") from e
+        raise error_cls("could not verify this SAML message has not already been used") from e
     if not set_ok:
-        raise SAMLAssertionError("this SAML assertion has already been used")
+        raise error_cls("this SAML message has already been used")
 
 
 def validate_saml_response(
@@ -733,3 +803,376 @@ def validate_saml_response(
         assertion_id=assertion_id,
         session_index=auth.get_session_index(),
     )
+
+
+# ── PR11: Single Logout (SLO) ────────────────────────────────────────────
+#
+# Verified directly against the installed python3-saml 1.16.0 source
+# (onelogin/saml2/auth.py, logout_request.py, logout_response.py,
+# settings.py) rather than assumed, the same discipline PR4/PR5 already
+# applied to AuthnRequest/ACS:
+#
+#   - OneLogin_Saml2_Auth.process_slo only reads SAMLRequest/SAMLResponse
+#     from `get_data` (query-string parameters) and explicitly raises
+#     "Only supported HTTP_REDIRECT Binding" for anything else -- SLO in
+#     this library is GET/query-string, never POST/form, unlike ACS.
+#   - idp['singleLogoutService']['url'] is a genuinely separate settings
+#     key from idp['singleSignOnService']['url'] (settings.py's own
+#     get_idp_slo_url() returns None, not sso_url, when unset) -- the
+#     existing OrganizationSAMLConfig.sso_url column cannot be reused for
+#     this, hence the new slo_url column (0023_saml_slo).
+#   - Validating an INCOMING IdP-signed LogoutRequest/LogoutResponse
+#     needs only the IdP's x509cert (already have it, config.
+#     x509_certificate) -- exactly the same trust anchor ACS already
+#     uses for the assertion signature. No SP private key is required to
+#     validate what we receive.
+#   - Building an OUTGOING SP LogoutRequest/LogoutResponse only signs it
+#     if security['logoutRequestSigned']/['logoutResponseSigned'] is
+#     True; both stay at the library's own False default here, the
+#     identical "no SP private key exists yet" position
+#     build_authn_request_url's own docstring already documents for
+#     AuthnRequest. See this PR's own report for why this is a
+#     deliberate, disclosed scope boundary, not an oversight: some
+#     strict IdPs may reject an unsigned SP LogoutRequest.
+#   - Auth._validate_signature (used by both validate_request_signature/
+#     validate_response_signature) silently returns True -- treats the
+#     message as validly "signed" -- when NO Signature parameter is
+#     present at all, UNLESS security['wantMessagesSigned'] is True.
+#     This is the single most important setting in this section:
+#     leaving it at the library's own False default would let anyone
+#     submit a completely unsigned, forged LogoutRequest for an
+#     arbitrary NameID and have it silently accepted -- a real,
+#     unauthenticated session-termination attack against any user whose
+#     NameID an attacker can guess (their own email address, in this
+#     SP's NameID-is-email model). _SLO_SECURITY_SETTINGS below sets it
+#     True unconditionally; there is no configuration path in this
+#     module that leaves it False.
+
+_SLO_SECURITY_SETTINGS = {
+    # See this section's own module comment above for why this one
+    # setting is load-bearing for the entire security model of
+    # IdP-initiated SLO -- not merely "not left to the library default"
+    # the way the rest of this dict is, but the one setting that
+    # prevents an unsigned, forged LogoutRequest from being silently
+    # accepted as valid.
+    "wantMessagesSigned": True,
+    # Outgoing only -- no SP private key exists (see module docstring's
+    # own "later implementation step" deferral, unchanged since PR2).
+    # Both explicit False, matching AuthnRequestsSigned's own precedent,
+    # rather than left to infer from the library default.
+    "logoutRequestSigned": False,
+    "logoutResponseSigned": False,
+    "rejectDeprecatedAlgorithm": True,
+}
+
+
+def _slo_settings_dict(org_slug: str, config: OrganizationSAMLConfig) -> dict:
+    """Full SP+IdP+security settings for SLO. Reuses
+    _authn_request_settings_dict's already-escaped `sp` block and `idp`
+    entityId/x509cert -- the same trust anchor ACS already validates
+    assertion signatures against now also validates LogoutRequest/
+    LogoutResponse signatures.
+
+    idp.singleLogoutService is added only when config.slo_url is set --
+    deliberately NOT set to a None url when it isn't: validating an
+    INCOMING LogoutRequest needs only entityId/x509cert (never the IdP's
+    own SLO url), so a config with no configured slo_url can still
+    correctly validate and process an IdP-initiated LogoutRequest, it
+    just cannot be used to build an OUTGOING SP-initiated one (see
+    build_logout_request_url's own explicit check for that).
+    """
+    settings_dict = _authn_request_settings_dict(org_slug, config)
+    if config.slo_url:
+        settings_dict["idp"]["singleLogoutService"] = {"url": config.slo_url, "binding": _SLO_BINDING}
+    settings_dict["security"] = dict(_SLO_SECURITY_SETTINGS)
+    return settings_dict
+
+
+def _slo_request_data(org_slug: str, get_data: dict, query_string: str) -> dict:
+    """Builds OneLogin_Saml2_Auth's request_data for SLO's GET/query-
+    string binding -- the `get_data` analogue of _acs_request_data's
+    `post_data`. https/http_host/script_name come from this SP's own
+    fixed, canonical slo_url_for(org_slug) -- deliberately NOT from the
+    live request's own Host/scheme headers, same "static base URL, not
+    request introspection" convention _acs_request_data already follows,
+    so Destination validation checks the incoming message against this
+    SP's real, deployed SLO URL.
+
+    validate_signature_from_qs=True: makes signature validation hash the
+    RAW, byte-exact query string this request actually arrived with
+    (query_string) rather than reconstructing one from the individual
+    SAMLRequest/RelayState/SigAlg values -- avoids any re-encoding
+    mismatch (whitespace, percent-encoding case, parameter order) that
+    could cause a genuinely valid signature to fail re-validation, or
+    (in the wrong direction) let a subtly-modified reconstruction
+    validate when the original wouldn't have.
+    """
+    slo_url = urlparse(slo_url_for(org_slug))
+    return {
+        "https": "on" if slo_url.scheme == "https" else "off",
+        "http_host": slo_url.netloc,
+        "script_name": slo_url.path,
+        "get_data": get_data,
+        "query_string": query_string,
+        "validate_signature_from_qs": True,
+    }
+
+
+class SAMLLogoutError(Exception):
+    """Raised for any failure validating or constructing an SLO message
+    (LogoutRequest or LogoutResponse, incoming or outgoing) -- mirrors
+    SAMLAssertionError's identical "one exception type, no internal
+    detail leaked" role for the login/ACS side. routes_saml.py's SLO
+    endpoint catches this once and returns one generic 4xx, same
+    reasoning SAMLAssertionError's own docstring gives.
+    """
+
+
+class SAMLLogoutRequestIdentity:
+    """The identity + message ID extracted from a *successfully
+    validated* incoming LogoutRequest -- never constructed from anything
+    that hasn't passed validate_slo_logout_request's own signature/
+    structural checks first. Same "plain, small, immutable-by-
+    convention holder" shape as SAMLIdentity above."""
+
+    __slots__ = ("name_id", "request_id", "session_index")
+
+    def __init__(self, name_id, session_index, request_id):
+        self.name_id = name_id
+        self.session_index = session_index
+        self.request_id = request_id
+
+
+def build_logout_request_url(
+    org_slug: str,
+    config: OrganizationSAMLConfig,
+    name_id: str,
+    session_index: str | None,
+    relay_state_for_request_id,
+) -> str | None:
+    """SP-initiated logout (PR11): returns the redirect URL carrying this
+    SP's LogoutRequest and a caller-provided (signed) RelayState, for
+    `org_slug`'s registered IdP. Mirrors build_authn_request_url's
+    identical role/shape for AuthnRequest -- same "build the request,
+    capture its ID, call the caller-supplied RelayState builder, then
+    assemble the redirect" ordering, for the identical reason: the
+    RelayState needs the LogoutRequest's own ID embedded (so the
+    eventual LogoutResponse's InResponseTo can be validated for real),
+    but that ID doesn't exist until the request itself has been built.
+
+    Returns None -- not an error -- if this org's IdP has no configured
+    SLO endpoint (config.slo_url). Not every real-world IdP supports or
+    is configured for SLO; the caller (routes_saml.py's /logout) treats
+    this as "no IdP-side logout available for this session," completing
+    only the local logout it already performs regardless.
+
+    No LogoutRequest signing (security.logoutRequestSigned stays False,
+    _SLO_SECURITY_SETTINGS) -- see this section's own module comment for
+    why: no SP private key exists anywhere in this deployment.
+    """
+    if not config.slo_url:
+        return None
+
+    saml_settings = OneLogin_Saml2_Settings(_slo_settings_dict(org_slug, config))
+    try:
+        logout_request = OneLogin_Saml2_Logout_Request(saml_settings, name_id=name_id, session_index=session_index)
+        relay_state = relay_state_for_request_id(logout_request.id)
+        return OneLogin_Saml2_Utils.redirect(
+            saml_settings.get_idp_slo_url(),
+            {"SAMLRequest": logout_request.get_request(), "RelayState": relay_state},
+            request_data={},
+        )
+    except Exception as e:
+        raise SAMLLogoutError(f"could not construct SAML logout request: {e}") from e
+
+
+def validate_slo_logout_request(
+    org_slug: str,
+    config: OrganizationSAMLConfig,
+    saml_request_b64: str,
+    relay_state: str | None,
+    sig_alg: str | None,
+    signature: str | None,
+    query_string: str,
+) -> SAMLLogoutRequestIdentity:
+    """IdP-initiated SLO (PR11): fully validates an unsolicited
+    LogoutRequest from `org_slug`'s registered IdP and returns the
+    identity + message ID it carries. Raises SAMLLogoutError -- and only
+    SAMLLogoutError -- for every failure mode: invalid or missing
+    signature (validated against config.x509_certificate, never a
+    certificate embedded in the message itself, same trust-anchor
+    discipline validate_saml_response's own docstring establishes for
+    ACS), wrong destination, wrong issuer, expired, missing NameID,
+    missing message ID, and replayed message -- checked in that order
+    (replay last, only once the message is otherwise proven authentic --
+    same ordering validate_saml_response already uses and the same
+    reasoning: checking replay first would let an attacker pollute or
+    probe the replay store with unvalidated, unsigned garbage).
+
+    Two-step validation, decomposed from what OneLogin_Saml2_Auth.
+    process_slo does as one monolithic call (verified by reading it
+    directly) -- the same "use the library's lower-level classes
+    directly for a needed seam" pattern build_authn_request_url already
+    established relative to .login(): this function needs to insert its
+    own session-lookup/revocation logic between "the LogoutRequest is
+    valid" and "reply to the IdP," which process_slo's own all-in-one
+    shape doesn't leave room for.
+
+      1. auth.validate_request_signature -- the actual cryptographic
+         check (Auth._validate_signature), keyed off idp['x509cert']
+         from settings, exactly as ACS's signature validation is.
+      2. logout_request.is_valid -- the structural checks (Destination,
+         Issuer, NotOnOrAfter, and -- defense in depth alongside step 1
+         -- the wantMessagesSigned-requires-a-Signature-parameter-at-all
+         check).
+
+    Never trusts a NameID/SessionIndex from anything that hasn't passed
+    both checks above.
+    """
+    saml_settings = OneLogin_Saml2_Settings(_slo_settings_dict(org_slug, config))
+    get_data = {"SAMLRequest": saml_request_b64}
+    if relay_state:
+        get_data["RelayState"] = relay_state
+    if sig_alg:
+        get_data["SigAlg"] = sig_alg
+    if signature:
+        get_data["Signature"] = signature
+    request_data = _slo_request_data(org_slug, get_data, query_string)
+
+    auth = OneLogin_Saml2_Auth(request_data, old_settings=saml_settings)
+    try:
+        signature_ok = auth.validate_request_signature(get_data)
+    except Exception as e:
+        raise SAMLLogoutError("could not validate SAML LogoutRequest signature") from e
+    if not signature_ok:
+        raise SAMLLogoutError("SAML LogoutRequest signature validation failed")
+
+    logout_request = OneLogin_Saml2_Logout_Request(saml_settings, request=saml_request_b64)
+    try:
+        structurally_valid = logout_request.is_valid(request_data)
+    except Exception as e:
+        raise SAMLLogoutError("SAML LogoutRequest failed validation") from e
+    if not structurally_valid:
+        raise SAMLLogoutError("SAML LogoutRequest failed validation")
+
+    request_xml = logout_request.get_xml()
+    name_id = OneLogin_Saml2_Logout_Request.get_nameid(request_xml)
+    if not name_id:
+        raise SAMLLogoutError("SAML LogoutRequest did not include a NameID")
+
+    request_id = logout_request.id
+    if not request_id:
+        raise SAMLLogoutError("SAML LogoutRequest is missing an ID")
+
+    _reject_if_replayed(
+        config.organization_id, config.id, request_id,
+        key_prefix="saml_slo_replay", error_cls=SAMLLogoutError,
+    )
+
+    session_indexes = OneLogin_Saml2_Logout_Request.get_session_indexes(request_xml)
+    session_index = session_indexes[0] if session_indexes else None
+
+    return SAMLLogoutRequestIdentity(name_id=name_id, session_index=session_index, request_id=request_id)
+
+
+def build_slo_logout_response_redirect(org_slug: str, config: OrganizationSAMLConfig, in_response_to: str) -> str:
+    """IdP-initiated SLO (PR11): builds this SP's reply to an already-
+    validated LogoutRequest (validate_slo_logout_request must have
+    already succeeded -- this function performs no validation of its
+    own). Redirects to config.slo_url directly -- deliberately NOT to
+    whatever RelayState the incoming LogoutRequest happened to carry
+    (OneLogin_Saml2_Auth.process_slo's own convenience wrapper falls
+    back to the request's RelayState when no explicit URL is available,
+    which this module avoids by construction: an IdP-supplied value is
+    a weaker, less deliberate redirect target than this SP's own
+    server-resolved, admin-configured slo_url).
+
+    Raises SAMLLogoutError if this org's IdP has no configured SLO
+    endpoint -- there is nowhere to send the reply. In practice this
+    should be unreachable in normal operation (an IdP without a
+    configured slo_url has no URL of its own to have sent the
+    LogoutRequest we're replying to from either), but fails closed
+    rather than assuming that can never happen.
+
+    No LogoutResponse signing (security.logoutResponseSigned stays
+    False) -- same "no SP private key exists" reasoning as
+    build_logout_request_url.
+    """
+    if not config.slo_url:
+        raise SAMLLogoutError("this organization's SAML configuration does not support Single Logout")
+
+    saml_settings = OneLogin_Saml2_Settings(_slo_settings_dict(org_slug, config))
+    try:
+        response_builder = OneLogin_Saml2_Logout_Response(saml_settings)
+        response_builder.build(in_response_to)
+        return OneLogin_Saml2_Utils.redirect(
+            config.slo_url,
+            {"SAMLResponse": response_builder.get_response()},
+            request_data={},
+        )
+    except Exception as e:
+        raise SAMLLogoutError(f"could not construct SAML logout response: {e}") from e
+
+
+def validate_slo_logout_response(
+    org_slug: str,
+    config: OrganizationSAMLConfig,
+    saml_response_b64: str,
+    relay_state: str | None,
+    request_id: str,
+    sig_alg: str | None,
+    signature: str | None,
+    query_string: str,
+) -> None:
+    """SP-initiated SLO (PR11): validates the IdP's LogoutResponse
+    completing a round trip this SP itself started
+    (build_logout_request_url). Raises SAMLLogoutError -- and only
+    SAMLLogoutError -- for an invalid/missing signature, a
+    structurally-invalid response (Destination/Issuer/InResponseTo, the
+    last checked against `request_id` -- the SP-generated LogoutRequest
+    ID carried in the SLO RelayState token, the exact InResponseTo role
+    request_id already plays for ACS), or a non-Success status.
+
+    No replay protection here -- unlike validate_slo_logout_request
+    (which protects an unsolicited LogoutRequest with no InResponseTo
+    of its own), this response is already bound to a specific,
+    single-use RelayState token (create_saml_slo_relay_state_token,
+    10-minute expiry, decoded by the caller before this function ever
+    runs) -- the same reasoning validate_saml_response's own
+    InResponseTo check (via python3-saml's own replay-resistant
+    request-ID matching) already relies on for ACS's SP-initiated login
+    round trip, rather than needing a second, independent replay guard.
+
+    Local session invalidation for the SP-initiated flow already
+    happened in routes_saml.py's /logout, before this SP ever redirected
+    the browser to the IdP -- this function's only job is confirming the
+    IdP's own reply is genuine, not repeating that revocation.
+    """
+    saml_settings = OneLogin_Saml2_Settings(_slo_settings_dict(org_slug, config))
+    get_data = {"SAMLResponse": saml_response_b64}
+    if relay_state:
+        get_data["RelayState"] = relay_state
+    if sig_alg:
+        get_data["SigAlg"] = sig_alg
+    if signature:
+        get_data["Signature"] = signature
+    request_data = _slo_request_data(org_slug, get_data, query_string)
+
+    auth = OneLogin_Saml2_Auth(request_data, old_settings=saml_settings)
+    try:
+        signature_ok = auth.validate_response_signature(get_data)
+    except Exception as e:
+        raise SAMLLogoutError("could not validate SAML LogoutResponse signature") from e
+    if not signature_ok:
+        raise SAMLLogoutError("SAML LogoutResponse signature validation failed")
+
+    logout_response = OneLogin_Saml2_Logout_Response(saml_settings, response=saml_response_b64)
+    try:
+        structurally_valid = logout_response.is_valid(request_data, request_id=request_id)
+    except Exception as e:
+        raise SAMLLogoutError("SAML LogoutResponse failed validation") from e
+    if not structurally_valid:
+        raise SAMLLogoutError("SAML LogoutResponse failed validation")
+
+    if logout_response.get_status() != OneLogin_Saml2_Constants.STATUS_SUCCESS:
+        raise SAMLLogoutError("SAML LogoutResponse did not report success")
