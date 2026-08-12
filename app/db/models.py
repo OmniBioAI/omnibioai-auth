@@ -471,6 +471,63 @@ class OrganizationSSOConfig(Base):
     sso_override_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
+class OrganizationSAMLConfig(Base):
+    """SAML SSO PR2: schema only -- no CRUD API exists yet (PR8), no SP
+    metadata/login/ACS endpoint exists yet (PR3-PR7), and no login path
+    reads it yet. One row per org (org-scoped UNIQUE) registers that org's
+    own SAML 2.0 identity provider (Okta, Entra ID, ADFS, ...).
+
+    Deliberately a separate table from OrganizationSSOConfig, not a
+    generalization of it into a shared/polymorphic `organization_idp_
+    configs` table -- SAML's own discovery report flagged that
+    generalization as a real option but explicitly deferred it, since it
+    would touch OrganizationSSOConfig's existing, shipped OIDC code paths
+    for no benefit to this PR. Mirrors OrganizationSSOConfig's shape and
+    column conventions (nullable lifecycle/audit columns with an
+    ORM-level, not server_default, default -- see `enabled`/`status`
+    below) anyway, so the two tables read as one family and a future
+    admin UI (PR9) can treat them symmetrically.
+
+    Once PR6/PR7 exist, the SAML equivalent of OAuthAccount linking is
+    expected to reuse OAuthAccount as-is (provider="saml", provider_
+    user_id=the assertion's NameID, scoped by a new organization_saml_
+    config_id column on that table -- the exact shape organization_sso_
+    config_id already established for multi-tenant OIDC `sub` scoping)
+    rather than a new linking table. Not implemented here: this PR adds
+    no column to OAuthAccount and creates no linked-identity rows.
+    """
+    __tablename__ = "organization_saml_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), unique=True, nullable=False)
+
+    # IdP trust configuration -- administrator-controlled input, not a
+    # secret. The SP private key is deliberately NOT stored on this table
+    # (or anywhere yet): it's environment/deployment configuration, to be
+    # handled in a later implementation step, same as JWT_PRIVATE_KEY in
+    # app/core/config.py today.
+    entity_id = Column(String(500), nullable=False)  # IdP Entity ID
+    sso_url = Column(String(500), nullable=False)  # IdP SSO (AuthnRequest destination) endpoint
+    x509_certificate = Column(Text, nullable=False)  # IdP signing certificate, PEM -- Text, not String, since a chain can exceed a few hundred bytes
+
+    # Configuration only -- no attribute extraction/processing exists yet
+    # (a later PR's scope). Example shape: {"email": "NameID",
+    # "first_name": "givenName", "last_name": "sn", "groups": "groups",
+    # "department": "department"}.
+    attribute_mapping = Column(JSON, nullable=True)
+
+    # Nullable at the DB level with only an ORM-level (not server_default)
+    # default, deliberately matching OrganizationSSOConfig.enforced/status
+    # exactly rather than tightening to NOT NULL here -- see that class's
+    # own columns for the precedent this mirrors.
+    enabled = Column(Boolean, default=False)
+    status = Column(String(20), default="pending_verification")  # pending_verification | active | disabled
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
 class AuditEvent(Base):
     """PR9 (Enterprise IAM Foundation): persistent IAM audit ledger,
     colocated with Users/Organizations/Roles in this repo's own database
