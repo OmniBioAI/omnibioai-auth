@@ -13,3 +13,4 @@ redis[asyncio]
 prometheus_client
 httpx
 python-multipart  # required by FastAPI's Form() -- routes_oauth_token.py's RFC 6749 SS4.4 grant (application/x-www-form-urlencoded, not JSON)
+python3-saml==1.16.0  # SAML 2.0 SP toolkit (enterprise SAML SSO, build-only PR -- no app code uses this yet). Exact-pinned, not >=, since its transitive xmlsec dep wraps a native library (libxmlsec1) where minor-version drift is riskier to pull in silently than for a pure-Python package. Pulls in xmlsec>=1.3.9 and lxml!=4.7.0,>=4.6.5 -- both ship manylinux wheels with libxmlsec1/libxml2 vendored in, so no extra apt package is needed in Dockerfile/Dockerfile.worker (verified against this repo's actual python:3.11-slim base image, both linux/amd64 and linux/arm64 -- see the PR1 discovery report, not assumed from a tutorial).
