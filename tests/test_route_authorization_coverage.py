@@ -132,8 +132,20 @@ def test_org_scoped_route_inventory_matches_expected_count():
     authorization_dependency above already passes for all of them; this
     is purely the count catching up to routes that were already
     correctly protected when they shipped.
+
+    37 -> 41 as of PR8 (SAML Organization Configuration CRUD): POST/GET/
+    PATCH/DELETE /orgs/{org_id}/saml, all using require_org_permission_
+    or_platform_admin(MANAGE_SSO) -- reuses the existing manage_sso
+    permission rather than a new manage_saml (same precedent PR11.5.5's
+    MFA policy routes already set for reusing manage_sso beyond its
+    original OIDC-only name). No break-glass override route added here
+    (unlike SSO/MFA policy): OrganizationSAMLConfig has no `enforced`-
+    style flag with a lockout guard for an override to suspend, so there
+    is nothing analogous to add to the global-permission-exception set
+    test_sso_and_mfa_policy_override_routes_are_the_only_global_
+    permission_exception locks in below.
     """
-    assert len(list(_org_scoped_routes())) == 37
+    assert len(list(_org_scoped_routes())) == 41
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():

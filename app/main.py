@@ -16,6 +16,7 @@ from app.api.routes_oauth_token import router as oauth_token_router
 from app.api.routes_org_sso import router as org_sso_router
 from app.api.routes_sso import router as sso_router
 from app.api.routes_saml import router as saml_router
+from app.api.routes_org_saml import router as org_saml_router
 from app.api.routes_platform_admin import router as platform_admin_router
 from app.api.routes_platform_users import router as platform_users_router
 from app.api.routes_platform_roles import router as platform_roles_router
@@ -87,6 +88,7 @@ app.include_router(oauth_token_router)
 app.include_router(org_sso_router)
 app.include_router(sso_router)
 app.include_router(saml_router)
+app.include_router(org_saml_router)
 app.include_router(platform_admin_router)
 app.include_router(platform_users_router)
 app.include_router(platform_roles_router)
