@@ -211,6 +211,34 @@ class Settings:
         os.getenv("PASSWORD_COMPROMISE_CHECK_FAIL_CLOSED", "false").lower() == "true"
     )
 
+    # HIPAA Phase 1 PR3: session lifecycle hardening
+    # (app/services/auth_service.py::rotate_refresh_token,
+    # app/services/session_service.py). `UserSession.created_at`/
+    # `last_activity_at` already existed (Phase 4 PR-A) but were only
+    # ever used for display -- these two settings are what makes them
+    # policy-enforcing.
+    #
+    # Idle timeout: how long a session may go completely unused (no
+    # refresh at all) before it's rejected. Default matches the existing
+    # REFRESH_TOKEN_TTL_DAYS=7 de facto behavior, so a normally-used
+    # session (refreshed at least once a week) is unaffected by this PR
+    # -- the actual new property is the absolute timeout below.
+    SESSION_IDLE_TIMEOUT_SECONDS = int(os.getenv("SESSION_IDLE_TIMEOUT_SECONDS", 7 * 86400))
+    # Absolute lifetime: hard ceiling from the session's original
+    # creation, computed from `created_at` -- refreshing can never push
+    # this deadline out. This is the actual gap PR3 closes: before this,
+    # a continuously-refreshed session's `expires_at` slid forward on
+    # every rotation and never itself expired. 30 days -- even a daily
+    # user must fully re-authenticate at least monthly.
+    SESSION_ABSOLUTE_TIMEOUT_SECONDS = int(os.getenv("SESSION_ABSOLUTE_TIMEOUT_SECONDS", 30 * 86400))
+    # Maximum concurrent active sessions per user -- typical legitimate
+    # use is browser + laptop + mobile + maybe one more workstation; 5
+    # gives headroom above that without being unbounded. Reaching the
+    # limit evicts the oldest active session (by created_at), not a
+    # rejection of the new login -- see generate_tokens's own comment for
+    # why, and the concurrent-login race-safety discussion there.
+    SESSION_MAX_CONCURRENT = int(os.getenv("SESSION_MAX_CONCURRENT", 5))
+
     @property
     def DATABASE_URL(self):
         return (

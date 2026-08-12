@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import MFADevice, MFARecoveryCode, OrganizationMembership, Role, User
 from app.schemas.user_admin import ALLOWED_USER_STATUSES
-from app.services import audit_service
+from app.services import audit_service, auth_service, session_service
 from app.services.audit_service import AuditEventType
 
 DEFAULT_PAGE_SIZE = 20
@@ -236,9 +236,18 @@ def set_user_status(
     assert_token_usable already rejects any token for a non-"active"
     user, and PR0.2's refresh rebuilds claims from the database on every
     use, so a suspended user's next authenticated request or refresh --
-    whichever comes first -- is rejected. No new enforcement code is
-    needed here; this function only flips the same column those two
-    already check.
+    whichever comes first -- is rejected.
+
+    HIPAA Phase 1 PR3 update to the paragraph above: that live status
+    check stops the user's *next* request, but until this PR it never
+    touched the underlying RefreshToken/UserSession rows -- they stayed
+    un-revoked, so **re-enabling the account silently made those old
+    refresh tokens valid again**. On the active-\\>non-active transition,
+    this function now also calls `auth_service.revoke_all_sessions_for_
+    user`, making the revocation real and permanent rather than a live
+    check a later re-enable quietly undoes. Uses the existing user-admin
+    chokepoint (this function) rather than a parallel admin pathway --
+    every existing caller of `set_user_status` gets this for free.
     """
     if status not in ALLOWED_USER_STATUSES:
         raise ValueError(f"Unknown status: {status!r} (expected one of {sorted(ALLOWED_USER_STATUSES)})")
@@ -254,6 +263,11 @@ def set_user_status(
 
     db.commit()
     db.refresh(user)
+
+    if changed and status != "active":
+        auth_service.revoke_all_sessions_for_user(
+            db, user.id, session_service.REASON_ACCOUNT_DISABLED, actor_user_id=actor_user_id,
+        )
 
     if changed:
         # PR11.4b: event *type* uses the task's requested enabled/
