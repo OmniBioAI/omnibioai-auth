@@ -166,6 +166,7 @@ def confirm_oauth_link(body: OAuthLinkConfirmRequest, db: Session = Depends(get_
     oauth_service.link_oauth_to_existing_user(
         db, user, payload["provider"], payload["provider_user_id"], payload["email"],
         organization_sso_config_id=payload.get("organization_sso_config_id"),
+        organization_saml_config_id=payload.get("organization_saml_config_id"),
     )
 
     # Phase 2 PR4 -- additive. Every link token minted by the existing

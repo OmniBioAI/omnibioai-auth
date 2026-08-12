@@ -166,7 +166,14 @@ def build_user_claims(
 # fifth displayed value. The JWT claim itself is untouched by this map --
 # every existing consumer of `auth_method` in a token payload keeps
 # seeing exactly what it always has.
-_PERSISTED_AUTH_METHODS = {"password": "password", "oauth": "oauth", "sso": "oidc"}
+#
+# SAML PR6: "saml" gets its own dedicated value (not folded into "oidc")
+# -- unlike enterprise OIDC SSO, which this service's login flow itself
+# calls "sso" internally, SAML's own `auth_method` claim is already the
+# literal string "saml" (see routes_saml.py), so mapping it to itself
+# keeps the admin console able to tell the two enterprise IdP protocols
+# apart instead of conflating them under one label.
+_PERSISTED_AUTH_METHODS = {"password": "password", "oauth": "oauth", "sso": "oidc", "saml": "saml"}
 
 
 def _persisted_auth_method(auth_method: str) -> str:

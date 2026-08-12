@@ -146,24 +146,46 @@ class RevokedToken(Base):
 class OAuthAccount(Base):
     __tablename__ = "oauth_accounts"
     __table_args__ = (
-        # Widened by Phase 2 PR2's 0004_org_sso_schema migration from
-        # (provider, provider_user_id) to include organization_sso_config_id
-        # -- every existing row has that column NULL, and MySQL treats each
-        # NULL as distinct across a composite unique index, so every row
-        # that satisfied the old 2-column constraint still satisfies this
-        # one unchanged. Needed once org-IdP logins exist (Phase 2 PR4):
-        # multiple orgs' custom OIDC IdPs can otherwise collide on the same
-        # generic provider="oidc" + a provider_user_id namespace that's
-        # only unique *within* one IdP, not globally.
+        # Established by Phase 2 PR2's 0004_org_sso_schema migration --
+        # unchanged by SAML PR6. Deliberately NOT widened to also include
+        # organization_saml_config_id: verified empirically (both SQLite
+        # and MySQL follow the same ANSI SQL "NULL is never equal to
+        # anything, including another NULL" rule for composite UNIQUE
+        # indexes) that adding a 4th column that is NULL on every existing
+        # OIDC/3-provider row would make the *whole* constraint stop
+        # rejecting duplicates for those rows -- a real, present-tense
+        # NULL in *any* column of a composite unique index defeats
+        # uniqueness enforcement across *all* of that index's columns for
+        # that row, not just the NULL one. Two rows with the exact same
+        # (provider="oidc", provider_user_id, organization_sso_config_id)
+        # and organization_saml_config_id=NULL on both would silently stop
+        # being rejected -- reintroducing the cross-tenant `sub`-collision
+        # bug this constraint exists to prevent, for every environment
+        # that has ever created a SAML row anywhere. See
+        # uq_oauth_provider_saml_account below for SAML's own, separate
+        # constraint instead.
         UniqueConstraint(
             "provider", "provider_user_id", "organization_sso_config_id",
             name="uq_oauth_provider_account",
+        ),
+        # SAML PR6's own analogue, added as a SEPARATE constraint rather
+        # than folded into the one above for exactly the NULL-poisoning
+        # reason explained there -- this constraint's own 3 columns have
+        # no NULLs for a real SAML row (organization_saml_config_id is
+        # always populated for provider="saml"), so it enforces SAML
+        # NameID uniqueness per org/config correctly, independent of
+        # organization_sso_config_id's value (always NULL for SAML rows,
+        # and irrelevant to this constraint since it isn't one of its
+        # columns).
+        UniqueConstraint(
+            "provider", "provider_user_id", "organization_saml_config_id",
+            name="uq_oauth_provider_saml_account",
         ),
     )
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    provider = Column(String(20), nullable=False)  # "google" | "github" | "microsoft" | "oidc"
+    provider = Column(String(20), nullable=False)  # "google" | "github" | "microsoft" | "oidc" | "saml"
     provider_user_id = Column(String(255), nullable=False)
     email = Column(String(255))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -174,6 +196,22 @@ class OAuthAccount(Base):
     # providers; populated only for accounts created via a future org-IdP
     # login.
     organization_sso_config_id = Column(Integer, ForeignKey("organization_sso_configs.id"), nullable=True)
+
+    # SAML PR6 (0022_oauth_saml_config_id): the SAML equivalent of
+    # organization_sso_config_id above -- a separate column, not a reuse of
+    # it, because it is a real ForeignKey to a different table
+    # (organization_saml_configs, not organization_sso_configs). Populating
+    # organization_sso_config_id with a organization_saml_configs.id value
+    # instead would either violate that FK (if enforced) or, left NULL,
+    # collapse this table's uniqueness scoping for SAML rows back to a bare
+    # (provider, provider_user_id) pair -- reintroducing the exact
+    # cross-tenant NameID-collision bug organization_sso_config_id was
+    # added to prevent for OIDC (see org_saml_service's module docstring
+    # and OrganizationSAMLConfig's own class docstring, which anticipated
+    # exactly this column and this reasoning back in PR2). NULL on every
+    # pre-PR6 row (all 4 pre-existing providers); populated only for
+    # accounts linked via a SAML login (provider="saml").
+    organization_saml_config_id = Column(Integer, ForeignKey("organization_saml_configs.id"), nullable=True)
 
     user = relationship("User")
 
@@ -488,13 +526,15 @@ class OrganizationSAMLConfig(Base):
     below) anyway, so the two tables read as one family and a future
     admin UI (PR9) can treat them symmetrically.
 
-    Once PR6/PR7 exist, the SAML equivalent of OAuthAccount linking is
-    expected to reuse OAuthAccount as-is (provider="saml", provider_
-    user_id=the assertion's NameID, scoped by a new organization_saml_
-    config_id column on that table -- the exact shape organization_sso_
-    config_id already established for multi-tenant OIDC `sub` scoping)
-    rather than a new linking table. Not implemented here: this PR adds
-    no column to OAuthAccount and creates no linked-identity rows.
+    SAML PR6 implemented the plan this docstring anticipated: OAuthAccount
+    gained a nullable organization_saml_config_id FK to this table
+    (0022_oauth_saml_config_id), and provider="saml" rows are keyed by
+    provider_user_id=the assertion's NameID, scoped by that column -- see
+    OAuthAccount's own comment. PR6 only links/resolves *existing* users
+    this way (an already-linked identity, or an explicit password-
+    confirmed link to a matching email) -- auto-creating a brand-new user
+    purely from an unrecognized SAML identity (JIT provisioning) is still
+    PR7 scope, not implemented here.
     """
     __tablename__ = "organization_saml_configs"
 

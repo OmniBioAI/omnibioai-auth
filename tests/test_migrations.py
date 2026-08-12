@@ -86,11 +86,18 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     assert {"organization_id", "machine_id", "max_devices"} <= license_columns
 
     oauth_account_columns = {c["name"] for c in inspector.get_columns("oauth_accounts")}
-    assert "organization_sso_config_id" in oauth_account_columns
+    assert {"organization_sso_config_id", "organization_saml_config_id"} <= oauth_account_columns
 
     uqs = inspector.get_unique_constraints("oauth_accounts")
-    widened = next(uq for uq in uqs if uq["name"] == "uq_oauth_provider_account")
-    assert set(widened["column_names"]) == {"provider", "provider_user_id", "organization_sso_config_id"}
+    oidc_uq = next(uq for uq in uqs if uq["name"] == "uq_oauth_provider_account")
+    assert set(oidc_uq["column_names"]) == {"provider", "provider_user_id", "organization_sso_config_id"}
+    # SAML PR6: a SEPARATE constraint, not a further widening of the one
+    # above -- see 0022_oauth_saml_config_id's own docstring for why
+    # widening in place would have silently defeated the OIDC constraint's
+    # own enforcement (NULL-in-any-column defeats a composite UNIQUE index
+    # for that row, on both SQLite and MySQL).
+    saml_uq = next(uq for uq in uqs if uq["name"] == "uq_oauth_provider_saml_account")
+    assert set(saml_uq["column_names"]) == {"provider", "provider_user_id", "organization_saml_config_id"}
 
     org_sso_columns = {c["name"] for c in inspector.get_columns("organization_sso_configs")}
     assert {"last_verified_at", "verification_error"} <= org_sso_columns
@@ -412,7 +419,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0021_organization_saml_config"
+    assert recorded == "0022_oauth_saml_config_id"
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -610,6 +617,132 @@ def test_sqlite_0021_downgrade_drops_only_the_new_table(sqlite_db_url):
     assert org_count == 1
 
 
+def test_sqlite_0022_adds_saml_scoping_column_and_its_own_constraint(sqlite_db_url):
+    """SAML PR6's specific concern: organization_saml_config_id must not
+    exist before 0022, and after it must exist with its OWN separate
+    unique constraint -- the pre-existing uq_oauth_provider_account must
+    be completely untouched (still exactly 3 columns), never widened to
+    include the new column. See 0022_oauth_saml_config_id's own docstring
+    for why widening in place would have been unsafe."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0021_organization_saml_config")
+
+    engine = create_engine(sqlite_db_url)
+    inspector = inspect(engine)
+    assert "organization_saml_config_id" not in {c["name"] for c in inspector.get_columns("oauth_accounts")}
+    pre_uqs = inspector.get_unique_constraints("oauth_accounts")
+    assert not any(uq["name"] == "uq_oauth_provider_saml_account" for uq in pre_uqs)
+
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    oauth_account_columns = {c["name"] for c in inspector.get_columns("oauth_accounts")}
+    assert "organization_saml_config_id" in oauth_account_columns
+
+    uqs = inspector.get_unique_constraints("oauth_accounts")
+    oidc_uq = next(uq for uq in uqs if uq["name"] == "uq_oauth_provider_account")
+    assert set(oidc_uq["column_names"]) == {"provider", "provider_user_id", "organization_sso_config_id"}
+    saml_uq = next(uq for uq in uqs if uq["name"] == "uq_oauth_provider_saml_account")
+    assert set(saml_uq["column_names"]) == {"provider", "provider_user_id", "organization_saml_config_id"}
+
+
+def test_sqlite_oauth_accounts_rows_survive_0022_and_oidc_constraint_still_enforced(sqlite_db_url):
+    """A pre-existing oauth_accounts row (including one already scoped to
+    an organization_sso_config_id, i.e. an enterprise OIDC login) must
+    come out the other side of 0022 unchanged in value, with
+    organization_saml_config_id defaulting to NULL. Critically, the
+    ORIGINAL OIDC uniqueness guarantee must still be enforced afterward --
+    this is the exact regression 0022's docstring explains a naive
+    4-column widen would have silently introduced the moment any SAML row
+    existed."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0021_organization_saml_config")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO oauth_accounts "
+                "(user_id, provider, provider_user_id, email, organization_sso_config_id) "
+                "VALUES (:user_id, :provider, :provider_user_id, :email, :sso_config_id)"
+            ),
+            {
+                "user_id": 1, "provider": "oidc", "provider_user_id": "pre-0022-sub",
+                "email": "pre-0022@omnibioai.test", "sso_config_id": 7,
+            },
+        )
+
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT provider, provider_user_id, email, organization_sso_config_id, "
+                "organization_saml_config_id FROM oauth_accounts WHERE provider_user_id = :uid"
+            ),
+            {"uid": "pre-0022-sub"},
+        ).mappings().one()
+
+    assert row["provider"] == "oidc"
+    assert row["email"] == "pre-0022@omnibioai.test"
+    assert row["organization_sso_config_id"] == 7
+    assert row["organization_saml_config_id"] is None
+
+    # The regression check: a duplicate (provider, provider_user_id,
+    # organization_sso_config_id) row must still be rejected post-0022.
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO oauth_accounts "
+                "(user_id, provider, provider_user_id, email, organization_sso_config_id) "
+                "VALUES (:user_id, :provider, :provider_user_id, :email, :sso_config_id)"
+            ),
+            {
+                "user_id": 1, "provider": "oidc", "provider_user_id": "pre-0022-sub",
+                "email": "duplicate-attempt@omnibioai.test", "sso_config_id": 7,
+            },
+        )
+
+
+def test_sqlite_0022_downgrade_drops_only_the_new_column(sqlite_db_url):
+    """Downgrading past 0022 must remove organization_saml_config_id and
+    its own constraint, leaving the pre-existing uq_oauth_provider_account
+    constraint and oauth_accounts' rows completely untouched."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO oauth_accounts (user_id, provider, provider_user_id, email) "
+                "VALUES (1, 'google', 'post-0022-uid', 'post-0022@omnibioai.test')"
+            )
+        )
+
+    command.downgrade(cfg, "0021_organization_saml_config")
+
+    inspector = inspect(engine)
+    oauth_account_columns = {c["name"] for c in inspector.get_columns("oauth_accounts")}
+    assert "organization_saml_config_id" not in oauth_account_columns
+
+    uqs = inspector.get_unique_constraints("oauth_accounts")
+    assert not any(uq["name"] == "uq_oauth_provider_saml_account" for uq in uqs)
+    reverted = next(uq for uq in uqs if uq["name"] == "uq_oauth_provider_account")
+    assert set(reverted["column_names"]) == {"provider", "provider_user_id", "organization_sso_config_id"}
+
+    with engine.connect() as conn:
+        row_count = conn.execute(
+            text("SELECT COUNT(*) FROM oauth_accounts WHERE provider_user_id='post-0022-uid'")
+        ).scalar()
+    assert row_count == 1
+
+    tables = set(inspector.get_table_names())
+    assert "organization_saml_configs" in tables
+
+
 # ---------------------------------------------------------------------------
 # MySQL: runs against a throwaway database on a real MySQL server, skipped
 # entirely if one isn't reachable (e.g. in a CI environment without MySQL).
@@ -728,7 +861,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0021_organization_saml_config"
+    assert recorded == "0022_oauth_saml_config_id"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

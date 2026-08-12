@@ -106,7 +106,13 @@ async def exchange_code_for_userinfo(provider: str, code: str, code_verifier: st
     return provider_user_id, email
 
 
-def find_linked_user(db, provider: str, provider_user_id: str, organization_sso_config_id: int | None = None):
+def find_linked_user(
+    db,
+    provider: str,
+    provider_user_id: str,
+    organization_sso_config_id: int | None = None,
+    organization_saml_config_id: int | None = None,
+):
     """organization_sso_config_id is a Phase 2 PR4 addition, default None
     preserves the exact query (and therefore behavior) every existing
     caller already gets. Passing it scopes the lookup to one org's IdP --
@@ -116,12 +122,21 @@ def find_linked_user(db, provider: str, provider_user_id: str, organization_sso_
     Without this, two different orgs' IdPs that happen to issue the same
     sub value could resolve to each other's linked account -- exactly the
     cross-tenant identity confusion this scoping exists to prevent.
+
+    organization_saml_config_id is SAML PR6's exact analogue for
+    provider="saml": scopes the lookup to one org's SAML IdP the same way,
+    for the same reason (a NameID is only guaranteed unique within one
+    IdP). Both scoping params default to None and are independent columns
+    (see OAuthAccount's own comment), so passing one never affects a query
+    for the other provider family.
     """
     query = db.query(OAuthAccount).filter(
         OAuthAccount.provider == provider, OAuthAccount.provider_user_id == provider_user_id
     )
     if organization_sso_config_id is not None:
         query = query.filter(OAuthAccount.organization_sso_config_id == organization_sso_config_id)
+    if organization_saml_config_id is not None:
+        query = query.filter(OAuthAccount.organization_saml_config_id == organization_saml_config_id)
     account = query.first()
     return account.user if account else None
 
@@ -130,9 +145,27 @@ def find_user_by_email(db, email: str):
     return db.query(User).filter(User.email == email).first()
 
 
+def _assert_single_idp_scope(organization_sso_config_id, organization_saml_config_id) -> None:
+    """OAuthAccount's two scoping columns (see its own model comment) are
+    each a real ForeignKey into a different table -- a row scoped to an
+    OIDC config can never also be scoped to a SAML config, and vice versa.
+    Guards every write path (create/link) against ever persisting both at
+    once, which the schema's nullable-FK shape alone does not prevent."""
+    if organization_sso_config_id is not None and organization_saml_config_id is not None:
+        raise ValueError(
+            "organization_sso_config_id and organization_saml_config_id are mutually exclusive"
+        )
+
+
 def create_user_with_oauth(
-    db, provider: str, provider_user_id: str, email: str, organization_sso_config_id: int | None = None
+    db,
+    provider: str,
+    provider_user_id: str,
+    email: str,
+    organization_sso_config_id: int | None = None,
+    organization_saml_config_id: int | None = None,
 ) -> User:
+    _assert_single_idp_scope(organization_sso_config_id, organization_saml_config_id)
     user = User(email=email, hashed_password=None, status="active")
     db.add(user)
     db.flush()
@@ -144,6 +177,7 @@ def create_user_with_oauth(
             provider_user_id=provider_user_id,
             email=email,
             organization_sso_config_id=organization_sso_config_id,
+            organization_saml_config_id=organization_saml_config_id,
         )
     )
     db.commit()
@@ -158,7 +192,9 @@ def link_oauth_to_existing_user(
     provider_user_id: str,
     email: str,
     organization_sso_config_id: int | None = None,
+    organization_saml_config_id: int | None = None,
 ) -> None:
+    _assert_single_idp_scope(organization_sso_config_id, organization_saml_config_id)
     db.add(
         OAuthAccount(
             user_id=user.id,
@@ -166,6 +202,7 @@ def link_oauth_to_existing_user(
             provider_user_id=provider_user_id,
             email=email,
             organization_sso_config_id=organization_sso_config_id,
+            organization_saml_config_id=organization_saml_config_id,
         )
     )
     db.commit()
@@ -177,10 +214,13 @@ def issue_link_confirmation(
     provider_user_id: str,
     email: str,
     organization_sso_config_id: int | None = None,
+    organization_saml_config_id: int | None = None,
     idp_org_id: int | None = None,
 ) -> str:
+    _assert_single_idp_scope(organization_sso_config_id, organization_saml_config_id)
     return create_link_token(
         user.id, provider, provider_user_id, email,
         organization_sso_config_id=organization_sso_config_id,
+        organization_saml_config_id=organization_saml_config_id,
         idp_org_id=idp_org_id,
     )

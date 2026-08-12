@@ -1,24 +1,35 @@
-"""SAML SSO PR3+PR4+PR5: SP metadata (PR3), SP-initiated login (PR4), and
-ACS/assertion validation (PR5) -- no identity linking/JIT provisioning
-(PR6/PR7), CRUD API (PR8), or SLO (PR11) yet.
+"""SAML SSO PR3+PR4+PR5+PR6: SP metadata (PR3), SP-initiated login (PR4),
+ACS/assertion validation (PR5) -- no CRUD API (PR8) or SLO (PR11) yet.
 
-PR5's own hard boundary, load-bearing for the rest of this docstring and
-for routes_saml.py's ACS route: validate_saml_response fully validates
-and extracts identity from an IdP's SAMLResponse, but this module
-deliberately stops there and never calls find_linked_user/
+PR5's own hard boundary, load-bearing for the rest of this docstring:
+validate_saml_response fully validates and extracts identity from an
+IdP's SAMLResponse, but this module itself never calls find_linked_user/
 create_user_with_oauth/issue_link_confirmation (app/services/
-oauth_service.py). Those three functions' `organization_sso_config_id`
-parameter is not a generic scoping value -- OAuthAccount.
-organization_sso_config_id (app/db/models.py) is a real ForeignKey to
-organization_sso_configs specifically. Calling them with a
-organization_saml_configs.id in that slot would either violate that FK
-(if enforced) or, if left NULL instead, collapse OAuthAccount's
+oauth_service.py) -- that decision tree lives in routes_saml.py's
+_complete_saml_login (PR6), mirroring routes_sso.py's own
+_complete_sso_flow, which similarly lives outside org_oidc_service.py.
+
+PR6 added OAuthAccount.organization_saml_config_id (0022_oauth_saml_
+config_id) precisely so those oauth_service.py functions CAN now be
+called safely for provider="saml": that column is what scopes a NameID
+lookup to one org's specific SAML IdP, the same role organization_sso_
+config_id already plays for OIDC's `sub`. Passing an organization_saml_
+configs.id into organization_sso_config_id instead would either violate
+that column's own FK (if enforced) or, left NULL, collapse OAuthAccount's
 uniqueness scoping back to a bare (provider, provider_user_id) pair --
-reintroducing, for SAML, the exact cross-tenant NameID/sub-collision bug
-organization_sso_config_id was added to prevent for OIDC (see that
-column's own migration comment). Safely persisting a SAML identity needs
-its own organization_saml_config_id column on OAuthAccount -- explicitly
-PR6/PR7 scope, not invented here.
+reintroducing the exact cross-tenant NameID-collision bug organization_
+sso_config_id was added to prevent for OIDC. Both scoping columns are
+real, separate, mutually exclusive FKs (see oauth_service._assert_single_
+idp_scope) -- not one column reused across two unrelated tables.
+
+_complete_saml_login only resolves *existing* users this way: an already-
+linked identity logs in directly, and an identity matching an existing
+account's email requires the same explicit password confirmation
+(POST /auth/link/confirm) OIDC/OAuth already use -- never a silent link.
+Auto-creating a brand-new user purely from an unrecognized SAML identity
+(JIT provisioning) is still PR7 scope, not invented here -- see
+_complete_saml_login's own docstring for exactly where that boundary now
+sits.
 
 build_sp_metadata (PR3) is deliberately independent of
 `OrganizationSAMLConfig` (app/db/models.py) entirely -- it never queries
