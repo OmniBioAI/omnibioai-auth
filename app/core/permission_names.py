@@ -261,7 +261,12 @@ _register(
         action="manage",
         scope=PermissionScope.ORG,
         category=PermissionCategory.ORGANIZATION,
-        description="Manage an organization's SSO/OIDC identity provider configuration.",
+        # PR8 (SAML Organization Configuration CRUD): reused as-is for
+        # OrganizationSAMLConfig too, same precedent PR11.5.5 already set
+        # for OrganizationMFAPolicy -- one org-level "manage this org's
+        # identity-provider configuration" permission, not a parallel
+        # manage_saml.
+        description="Manage an organization's SSO/OIDC/SAML identity provider configuration.",
         legacy=True,
     )
 )

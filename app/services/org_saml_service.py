@@ -1,6 +1,7 @@
-"""SAML SSO PR3+PR4+PR5+PR6+PR7: SP metadata (PR3), SP-initiated login
-(PR4), ACS/assertion validation (PR5) -- no CRUD API (PR8) or SLO (PR11)
-yet.
+"""SAML SSO PR3+PR4+PR5+PR6+PR7+PR8: SP metadata (PR3), SP-initiated
+login (PR4), ACS/assertion validation (PR5), identity linking + JIT
+provisioning (PR6/PR7), and organization-scoped CRUD (PR8) -- no SLO
+(PR11) yet.
 
 PR5's own hard boundary, load-bearing for the rest of this docstring:
 validate_saml_response fully validates and extracts identity from an
@@ -59,7 +60,23 @@ construction from settings.OAUTH_REDIRECT_BASE_URL -- the exact same base
 URL already used for the existing OIDC SSO callback and the 3 global
 OAuth providers' callback, not a new setting, since this is the same
 "where this service is externally reachable" value either way.
+
+PR8 (create_saml_config/update_saml_config/delete_saml_config) is
+deliberately narrower than org_sso_service.py's OIDC equivalents: there
+is no discovery/verification network call here at all (SAML has no
+`.well-known` analogue, and PR8's own task spec explicitly forbids
+introducing IdP metadata-URL fetching -- an SSRF surface OIDC's issuer
+discovery already has to defend against via _assert_not_ssrf_target,
+that this module has no reason to ever grow). An admin pastes their
+IdP's already-issued entity_id/sso_url/x509_certificate directly; the
+only validation performed is structural (URL shape, non-empty PEM
+markers), not a live round-trip to the IdP. Because there is no
+verification step to gate on, create_saml_config sets status="active"
+immediately (the honest state: the trust material is captured and
+ready), unlike configure_sso's status="active" being the *outcome of* a
+successful discovery call.
 """
+from datetime import datetime
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -72,6 +89,8 @@ from sqlalchemy.orm import Session
 from app.core import token_revocation
 from app.core.config import settings
 from app.db.models import OrganizationSAMLConfig
+from app.services import audit_service
+from app.services.audit_service import AuditEventType
 
 # SAML V2.0 Metadata Interoperability Profile (OASIS) specifies this as
 # the correct media type for a metadata document -- not application/xml
@@ -212,6 +231,182 @@ def get_saml_config(db: Session, organization_id: int) -> OrganizationSAMLConfig
         .filter(OrganizationSAMLConfig.organization_id == organization_id)
         .first()
     )
+
+
+# ---------------------------------------------------------------------------
+# PR8: organization-scoped CRUD. See module docstring for why this has no
+# discovery/verification network call, unlike org_sso_service.py's OIDC
+# equivalents.
+# ---------------------------------------------------------------------------
+
+
+class SAMLConfigValidationError(Exception):
+    """Raised for any structural validation failure on admin-supplied
+    entity_id/sso_url/x509_certificate -- the message is safe to return
+    directly to the caller (an org admin), never internal detail."""
+
+
+def _validate_sso_url(sso_url: str) -> None:
+    """Structural-only: scheme + hostname shape, same as org_sso_
+    service._validate_issuer_url's own first half. Deliberately does NOT
+    reuse that function's second half (_assert_not_ssrf_target) -- this
+    value is never fetched by this service (no discovery call exists for
+    SAML), so there is no SSRF surface to defend here; a DNS-resolution
+    check would be pure overhead with no security benefit. Reuses the
+    same REQUIRE_HTTPS_FOR_SSO_ISSUER toggle OIDC's issuer validation
+    already reads -- one "does this deployment require HTTPS for
+    federation endpoints" knob, not a parallel SAML-only setting."""
+    parsed = urlparse(sso_url)
+    if parsed.scheme not in ("http", "https"):
+        raise SAMLConfigValidationError("sso_url must be an http(s) URL")
+    if settings.REQUIRE_HTTPS_FOR_SSO_ISSUER and parsed.scheme != "https":
+        raise SAMLConfigValidationError("sso_url must use HTTPS")
+    if not parsed.hostname:
+        raise SAMLConfigValidationError("sso_url must include a hostname")
+
+
+def _validate_x509_certificate(x509_certificate: str) -> None:
+    """Basic PEM-shape validation only -- this codebase has no existing
+    precedent anywhere in app/ (as opposed to tests, which build real
+    certs for signing) for parsing X.509 with the `cryptography` library,
+    and PR8's own task spec explicitly warns against over-engineering
+    certificate parsing with no repository precedent. This catches the
+    obvious case (empty, or not a PEM certificate block at all) without
+    introducing ASN.1 parsing this module has never needed before real
+    signature validation (PR5's OneLogin_Saml2_Auth, which does its own,
+    separate, already-correct parsing) runs against it."""
+    stripped = x509_certificate.strip()
+    if "-----BEGIN CERTIFICATE-----" not in stripped or "-----END CERTIFICATE-----" not in stripped:
+        raise SAMLConfigValidationError("x509_certificate must be a PEM-encoded certificate")
+
+
+_VALID_STATUSES = ("pending_verification", "active", "disabled")
+
+
+def _validate_status(status: str) -> None:
+    if status not in _VALID_STATUSES:
+        raise SAMLConfigValidationError(f"status must be one of: {', '.join(_VALID_STATUSES)}")
+
+
+def create_saml_config(
+    db: Session,
+    organization_id: int,
+    entity_id: str,
+    sso_url: str,
+    x509_certificate: str,
+    attribute_mapping: dict | None,
+    actor_user_id: int,
+) -> OrganizationSAMLConfig:
+    """Creates the org's SAML config. Raises ValueError if one already
+    exists (one IdP per org -- organization_id is UNIQUE, same as
+    org_sso_service.configure_sso's identical guard), or
+    SAMLConfigValidationError if entity_id/sso_url/x509_certificate fail
+    structural validation. Neither path writes a row.
+
+    status="active" immediately -- see module docstring for why this
+    differs from configure_sso's status="active"-as-discovery-outcome:
+    there is nothing here to verify before persisting."""
+    if get_saml_config(db, organization_id) is not None:
+        raise ValueError("this organization already has a SAML configuration")
+
+    if not entity_id.strip():
+        raise SAMLConfigValidationError("entity_id must not be empty")
+    _validate_sso_url(sso_url)
+    _validate_x509_certificate(x509_certificate)
+
+    now = datetime.utcnow()
+    config = OrganizationSAMLConfig(
+        organization_id=organization_id,
+        entity_id=entity_id,
+        sso_url=sso_url,
+        x509_certificate=x509_certificate,
+        attribute_mapping=attribute_mapping,
+        status="active",
+        created_at=now,
+        updated_at=now,
+        updated_by_user_id=actor_user_id,
+    )
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    # x509_certificate is a public certificate, not a secret -- safe in
+    # audit metadata, unlike configure_sso's own deliberate omission of
+    # client_secret/client_secret_encrypted.
+    audit_service.log_event(
+        db, AuditEventType.SAML_CONFIGURATION_CREATED, actor_user_id=actor_user_id,
+        organization_id=organization_id, resource_type="organization_saml_config", resource_id=config.id,
+        after_state={"entity_id": config.entity_id, "sso_url": config.sso_url, "status": config.status},
+        metadata={"entity_id": config.entity_id},
+    )
+    return config
+
+
+def update_saml_config(
+    db: Session,
+    config: OrganizationSAMLConfig,
+    actor_user_id: int,
+    entity_id: str | None = None,
+    sso_url: str | None = None,
+    x509_certificate: str | None = None,
+    attribute_mapping: dict | None = None,
+    enabled: bool | None = None,
+    status: str | None = None,
+) -> OrganizationSAMLConfig:
+    """Only touches fields actually supplied (None = leave unchanged),
+    same convention as org_sso_service.update_sso_config /
+    config_service.update_config. Raises SAMLConfigValidationError before
+    touching the row at all if a supplied field fails validation -- the
+    existing config is left exactly as it was, not partially updated,
+    same guarantee update_sso_config gives for a failed re-discovery."""
+    if entity_id is not None and not entity_id.strip():
+        raise SAMLConfigValidationError("entity_id must not be empty")
+    if sso_url is not None:
+        _validate_sso_url(sso_url)
+    if x509_certificate is not None:
+        _validate_x509_certificate(x509_certificate)
+    if status is not None:
+        _validate_status(status)
+
+    before_entity_id, before_sso_url, before_status = config.entity_id, config.sso_url, config.status
+
+    if entity_id is not None:
+        config.entity_id = entity_id
+    if sso_url is not None:
+        config.sso_url = sso_url
+    if x509_certificate is not None:
+        config.x509_certificate = x509_certificate
+    if attribute_mapping is not None:
+        config.attribute_mapping = attribute_mapping
+    if enabled is not None:
+        config.enabled = enabled
+    if status is not None:
+        config.status = status
+
+    config.updated_at = datetime.utcnow()
+    config.updated_by_user_id = actor_user_id
+    db.commit()
+    db.refresh(config)
+    # Emitted unconditionally, same as update_sso_config's own reasoning
+    # -- a no-op resupply is rare enough not to warrant tracking per-field
+    # dirtiness just to suppress one audit row.
+    audit_service.log_event(
+        db, AuditEventType.SAML_CONFIGURATION_UPDATED, actor_user_id=actor_user_id,
+        organization_id=config.organization_id, resource_type="organization_saml_config", resource_id=config.id,
+        before_state={"entity_id": before_entity_id, "sso_url": before_sso_url, "status": before_status},
+        after_state={"entity_id": config.entity_id, "sso_url": config.sso_url, "status": config.status},
+        metadata={"entity_id": config.entity_id},
+    )
+    return config
+
+
+def delete_saml_config(db: Session, config: OrganizationSAMLConfig) -> None:
+    # No audit event -- mirrors org_sso_service.delete_sso_config's own,
+    # identical lack of one exactly, a discovered pre-existing gap in the
+    # OIDC precedent this PR follows rather than silently diverging from
+    # in one direction only. See app/api/routes_org_saml.py's own PR8
+    # report for this finding.
+    db.delete(config)
+    db.commit()
 
 
 def _authn_request_settings_dict(org_slug: str, config: OrganizationSAMLConfig) -> dict:
