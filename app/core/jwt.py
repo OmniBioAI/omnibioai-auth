@@ -242,6 +242,7 @@ def create_link_token(
     provider_user_id: str,
     email: str,
     organization_sso_config_id: int | None = None,
+    organization_saml_config_id: int | None = None,
     idp_org_id: int | None = None,
 ):
     """Short-lived token proving an OAuth exchange resolved to `user_id`'s
@@ -253,6 +254,11 @@ def create_link_token(
     this token came from an enterprise IdP, so /auth/link/confirm knows
     which org to JIT-provision membership in and what idp_org_id to put
     on the eventually-issued access token.
+
+    organization_saml_config_id is SAML PR6's exact analogue, populated
+    only when the exchange came from a SAML login instead -- always None
+    for every existing caller (OIDC and the 3-provider flow), so this is
+    purely additive to the payload shape.
     """
     return _sign(
         {
@@ -262,6 +268,7 @@ def create_link_token(
             "provider_user_id": provider_user_id,
             "email": email,
             "organization_sso_config_id": organization_sso_config_id,
+            "organization_saml_config_id": organization_saml_config_id,
             "idp_org_id": idp_org_id,
             "exp": datetime.utcnow() + timedelta(minutes=10),
             "jti": str(uuid.uuid4()),
