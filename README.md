@@ -47,13 +47,14 @@ flush any cached token state immediately.
 | `GET`  | `/auth/sso/discover?email=` | Domain-based lookup: does this email's org enforce Enterprise OIDC? |
 | `GET`  | `/auth/sso/{org_slug}/login` | Redirect to the organization's configured Enterprise OIDC IdP |
 | `GET`/`POST` | `/auth/sso/{org_slug}/callback` | Complete an Enterprise OIDC login for that organization |
+| `GET`  | `/auth/saml/{org_slug}/metadata` | This SP's SAML 2.0 metadata for that organization (entity ID, ACS URL, NameID format) — no login/ACS endpoint exists yet |
 | `POST` | `/oauth/token` | `client_credentials` grant — issues a service-identity access token |
 | `GET`/`POST`/`DELETE` | `/orgs/{org_id}/oauth-clients` | Manage an organization's `client_credentials` clients |
 | `GET`  | `/.well-known/jwks.json` | RS256 public-key set (JWKS), for future RS256 verifiers |
 | `GET`  | `/health` | Liveness check — returns `{"status": "ok"}` |
 | `GET`  | `/metrics` | Prometheus metrics (jwt_auth_total counter) |
 
-This is the core identity/session surface. The service also registers 17
+This is the core identity/session surface. The service also registers 18
 more routers covering organization management, platform administration,
 MFA, and service credentials — grouped below rather than flattened into
 one table, since each group has its own permission model.
@@ -209,6 +210,18 @@ login JIT-provisions org membership and issues `auth_method="sso"` with
 `idp_org_id` set. When an org sets `enforced=true` on its SSO config,
 password and generic OAuth login are both blocked for that org's domains —
 Enterprise OIDC becomes the only way in.
+
+### Enterprise SAML (in progress)
+
+A second enterprise SSO protocol, additive to — not a replacement for —
+Enterprise OIDC above; `OrganizationSAMLConfig` (its own table, not a
+generalization of `OrganizationSSOConfig`) is the eventual per-org IdP
+registration. So far only `GET /auth/saml/{org_slug}/metadata` exists:
+this SP's own metadata (entity ID, ACS URL, NameID format) for that
+org, independent of whether the org has configured a SAML IdP yet —
+that document is what an org admin hands to their IdP administrator
+*before* any config can be created. No login, ACS, assertion validation,
+or SLO endpoint exists yet.
 
 ### Organization-aware authentication
 
@@ -438,7 +451,7 @@ before it starts. An admin user is bootstrapped automatically on first startup.
 
 ```
 app/
-├── main.py                  # FastAPI entrypoint — registers all 23 routers, admin
+├── main.py                  # FastAPI entrypoint — registers all 24 routers, admin
 │                             # bootstrap, Permission Registry drift check at startup,
 │                             # /metrics, /health
 ├── rbac.py                  # Role + permission dependency helpers (require_permission,
@@ -449,6 +462,7 @@ app/
 │   ├── routes_oauth_token.py     # /oauth/token (client_credentials grant)
 │   ├── routes_sso.py             # /auth/sso/discover, /{org_slug}/login, /{org_slug}/callback
 │   ├── routes_org_sso.py         # /orgs/{org_id}/sso config CRUD + override
+│   ├── routes_saml.py            # /auth/saml/{org_slug}/metadata -- SP metadata only, no login/ACS yet
 │   ├── routes_jwks.py            # /.well-known/jwks.json
 │   ├── routes_orgs.py            # /orgs — org CRUD, invite, member roles
 │   ├── routes_teams.py           # /orgs/{org_id}/teams
