@@ -35,9 +35,10 @@ MFA_TABLES = {"mfa_devices", "mfa_recovery_codes"}  # PR11.5.1 (0013)
 MFA_ORG_POLICY_TABLES = {"organization_mfa_policies"}  # PR11.5.5 (0014)
 SESSION_TABLES = {"sessions"}  # Phase 4 PR-A (0018)
 INTERACTION_TABLES = {"interactions"}  # PR-B2 (0019)
+ORG_SAML_TABLES = {"organization_saml_configs"}  # SAML SSO PR2 (0021)
 ALL_TABLES = (
     BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
-    | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES | INTERACTION_TABLES
+    | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES | INTERACTION_TABLES | ORG_SAML_TABLES
 )
 
 
@@ -179,6 +180,14 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
 
     team_membership_columns = {c["name"] for c in inspector.get_columns("team_memberships")}
     assert {"role", "invited_by_user_id", "joined_at"} <= team_membership_columns
+
+    org_saml_columns = {c["name"] for c in inspector.get_columns("organization_saml_configs")}
+    assert {
+        "id", "organization_id", "entity_id", "sso_url", "x509_certificate",
+        "attribute_mapping", "enabled", "status", "created_at", "updated_at", "updated_by_user_id",
+    } <= org_saml_columns
+    org_saml_uqs = inspector.get_unique_constraints("organization_saml_configs")
+    assert any(uq["column_names"] == ["organization_id"] for uq in org_saml_uqs)
 
 
 def test_sqlite_pre_existing_user_row_survives_0013_with_correct_mfa_defaults(sqlite_db_url):
@@ -403,7 +412,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0020_team_member_roles"
+    assert recorded == "0021_organization_saml_config"
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -542,6 +551,65 @@ def test_sqlite_0020_downgrade_drops_only_the_new_columns(sqlite_db_url):
     assert membership_count == 1
 
 
+def test_sqlite_0021_creates_organization_saml_configs_table(sqlite_db_url):
+    """SAML SSO PR2's specific concern: a brand-new table only -- must not
+    touch any existing table, and must land with exactly the columns/
+    unique constraint the ORM's OrganizationSAMLConfig class declares."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0020_team_member_roles")
+
+    engine = create_engine(sqlite_db_url)
+    inspector = inspect(engine)
+    assert "organization_saml_configs" not in set(inspector.get_table_names())
+
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    assert "organization_saml_configs" in set(inspector.get_table_names())
+    columns = {c["name"] for c in inspector.get_columns("organization_saml_configs")}
+    assert {
+        "id", "organization_id", "entity_id", "sso_url", "x509_certificate",
+        "attribute_mapping", "enabled", "status", "created_at", "updated_at", "updated_by_user_id",
+    } <= columns
+    uqs = inspector.get_unique_constraints("organization_saml_configs")
+    assert any(uq["column_names"] == ["organization_id"] for uq in uqs)
+
+
+def test_sqlite_0021_downgrade_drops_only_the_new_table(sqlite_db_url):
+    """Downgrading past 0021 must remove organization_saml_configs and
+    leave every other table (in particular teams/team_memberships, the
+    immediately preceding migration's own tables) intact."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO organizations (slug, name) VALUES (:slug, :name)"),
+            {"slug": "pre-0021-org", "name": "Pre 0021 Org"},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO organization_saml_configs "
+                "(organization_id, entity_id, sso_url, x509_certificate, enabled, status) "
+                "VALUES (1, 'https://idp.example.com/metadata', 'https://idp.example.com/sso', "
+                "'-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----', 0, 'pending_verification')"
+            )
+        )
+
+    command.downgrade(cfg, "0020_team_member_roles")
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    assert "organization_saml_configs" not in tables
+    assert "teams" in tables
+    assert "team_memberships" in tables
+
+    with engine.connect() as conn:
+        org_count = conn.execute(text("SELECT COUNT(*) FROM organizations WHERE slug='pre-0021-org'")).scalar()
+    assert org_count == 1
+
+
 # ---------------------------------------------------------------------------
 # MySQL: runs against a throwaway database on a real MySQL server, skipped
 # entirely if one isn't reachable (e.g. in a CI environment without MySQL).
@@ -660,7 +728,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0020_team_member_roles"
+    assert recorded == "0021_organization_saml_config"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):
