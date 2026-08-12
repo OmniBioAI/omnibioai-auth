@@ -1,12 +1,13 @@
-"""SAML SSO PR3+PR4+PR5+PR6: SP metadata (PR3), SP-initiated login (PR4),
-ACS/assertion validation (PR5) -- no CRUD API (PR8) or SLO (PR11) yet.
+"""SAML SSO PR3+PR4+PR5+PR6+PR7: SP metadata (PR3), SP-initiated login
+(PR4), ACS/assertion validation (PR5) -- no CRUD API (PR8) or SLO (PR11)
+yet.
 
 PR5's own hard boundary, load-bearing for the rest of this docstring:
 validate_saml_response fully validates and extracts identity from an
 IdP's SAMLResponse, but this module itself never calls find_linked_user/
 create_user_with_oauth/issue_link_confirmation (app/services/
 oauth_service.py) -- that decision tree lives in routes_saml.py's
-_complete_saml_login (PR6), mirroring routes_sso.py's own
+_complete_saml_login (PR6+PR7), mirroring routes_sso.py's own
 _complete_sso_flow, which similarly lives outside org_oidc_service.py.
 
 PR6 added OAuthAccount.organization_saml_config_id (0022_oauth_saml_
@@ -22,14 +23,18 @@ sso_config_id was added to prevent for OIDC. Both scoping columns are
 real, separate, mutually exclusive FKs (see oauth_service._assert_single_
 idp_scope) -- not one column reused across two unrelated tables.
 
-_complete_saml_login only resolves *existing* users this way: an already-
-linked identity logs in directly, and an identity matching an existing
-account's email requires the same explicit password confirmation
-(POST /auth/link/confirm) OIDC/OAuth already use -- never a silent link.
-Auto-creating a brand-new user purely from an unrecognized SAML identity
-(JIT provisioning) is still PR7 scope, not invented here -- see
-_complete_saml_login's own docstring for exactly where that boundary now
-sits.
+_complete_saml_login resolves an already-linked identity by logging in
+directly, and an identity matching an existing account's email by
+requiring the same explicit password confirmation (POST /auth/link/
+confirm) OIDC/OAuth already use -- never a silent link. PR7 added the
+third, remaining case: a never-seen-before identity (no link, no
+matching email) is now JIT-provisioned -- a brand-new User + OAuthAccount
+(provider="saml") + organization membership, through the exact same
+create_user_with_oauth/jit_provision_membership/generate_tokens_or_mfa_
+challenge choke points OIDC's own new-user branch already uses. See
+_complete_saml_login's own docstring for the full decision tree, its
+race handling, and why no attribute beyond the validated NameID is ever
+trusted for provisioning.
 
 build_sp_metadata (PR3) is deliberately independent of
 `OrganizationSAMLConfig` (app/db/models.py) entirely -- it never queries
@@ -312,8 +317,9 @@ class SAMLIdentity:
     hasn't passed OneLogin_Saml2_Auth.is_authenticated() first (see
     validate_saml_response, the only place this is built). Deliberately
     a plain, small, immutable-by-convention holder, not a schema/ORM
-    model -- nothing here is persisted (see module docstring: persisting
-    a SAML identity via OAuthAccount is PR6/PR7 scope, not implemented).
+    model -- this class itself never persists anything (see module
+    docstring: persisting a SAML identity via OAuthAccount happens in
+    routes_saml.py's _complete_saml_login, PR6+PR7).
     """
 
     __slots__ = ("assertion_id", "attributes", "name_id", "name_id_format", "session_index")

@@ -1,14 +1,13 @@
 """SAML SSO PR6: identity linking (OAuthAccount.organization_saml_config_id,
 0022_oauth_saml_config_id). Builds on PR2 (OrganizationSAMLConfig), PR3 (SP
 metadata), PR4 (SP-initiated login), and PR5 (ACS/assertion validation,
-tests/test_saml_acs.py -- all 29 of those tests still pass unmodified,
-proving PR6 did not touch PR5's own validation/replay/RelayState/security
-boundaries). Auto-provisioning a brand-new user from an unrecognized SAML
-identity (JIT provisioning) is still PR7 scope -- see
-app/api/routes_saml.py's _complete_saml_login docstring -- and this file's
-own `test_unrecognized_identity_still_stops_at_501_jit_boundary` proves that
-boundary is still enforced, exactly as tests/test_saml_acs.py's own
-linking-boundary tests already do for PR5.
+tests/test_saml_acs.py -- proving PR6 did not touch PR5's own validation/
+replay/RelayState/security boundaries). Auto-provisioning a brand-new user
+from an unrecognized SAML identity (JIT provisioning, PR7) is covered in
+its own tests/test_saml_jit_provisioning.py, not this file -- this file's
+scope stays PR6's own two cases: an already-linked identity, and an
+identity matching an existing account's email (explicit password
+confirmation, never a silent link).
 
 Each test file in this suite is self-contained (local helpers), matching
 this repo's established per-file duplication convention -- see
@@ -438,20 +437,6 @@ def test_find_linked_user_oidc_behavior_unchanged_by_new_param():
 
 
 # ── 3. End-to-end ACS flow: linking decision tree ────────────────────────
-
-
-def test_unrecognized_identity_still_stops_at_501_jit_boundary(client, idp_keys):
-    """PR6's own remaining hard boundary, re-proven in this file too (not
-    just relying on tests/test_saml_acs.py's own copies): a brand-new
-    identity with no existing account and no prior link must NOT be
-    auto-provisioned -- that's PR7."""
-    ctx = _org_with_saml_login(client, idp_keys)
-    email = f"never-seen-{uuid.uuid4().hex[:8]}@example.com"
-    resp_body = _build_response(ctx, idp_keys, name_id=email)
-    resp = _post_acs(client, ctx["org_slug"], resp_body, ctx["relay_state"])
-    assert resp.status_code == 501
-    assert "access_token" not in resp.text
-    assert not _oauth_accounts_for(email)
 
 
 def test_existing_email_returns_link_required_not_direct_token(client, idp_keys):

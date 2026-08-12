@@ -1,18 +1,21 @@
-"""SAML SSO PR3+PR4+PR5+PR6: SP metadata endpoint (PR3), SP-initiated login
-(PR4), ACS/assertion validation (PR5), and identity linking (PR6). JIT
-provisioning of brand-new users from an unrecognized SAML identity is
-still PR7 scope -- see app/services/org_saml_service.py's module
-docstring and _complete_saml_login's own docstring below for that
-boundary, and for CRUD/admin UI/SLO's own separate roadmap slots.
+"""SAML SSO PR3+PR4+PR5+PR6+PR7: SP metadata endpoint (PR3), SP-initiated
+login (PR4), ACS/assertion validation (PR5), identity linking (PR6), and
+JIT provisioning of brand-new users (PR7). CRUD API (PR8), admin UI (PR9),
+and SLO remain their own separate roadmap slots -- see
+app/services/org_saml_service.py's module docstring.
 """
 from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.jwt import create_saml_relay_state_token, decode_token
 from app.db.session import get_db
 from app.services import oauth_service, org_saml_service, org_service
-from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
+from app.services.auth_service import (
+    MFAEnrollmentRequiredError,
+    generate_tokens_or_mfa_challenge,
+)
 
 router = APIRouter(prefix="/auth/saml", tags=["saml"])
 
@@ -122,13 +125,32 @@ def _verify_saml_relay_state(db: Session, org_slug: str, relay_state: str | None
     return org, config, payload
 
 
+def _login_or_challenge_result(db: Session, user, org_id: int) -> dict:
+    """Shared MFA-aware success shape for both the 'already linked' and
+    the 'freshly JIT-provisioned' branches below -- same choke point
+    (_issue_tokens_or_challenge -> generate_tokens_or_mfa_challenge) and
+    the exact same response shape routes_sso.py/routes_oauth.py's own
+    OIDC/OAuth callers already produce. A SAML JIT user follows this
+    identical path -- there is no SAML-specific token format and no way
+    for either branch to skip the MFA decision."""
+    result = _issue_tokens_or_challenge(db, user, auth_method="saml", idp_org_id=org_id)
+    if result["mfa_required"]:
+        return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
+    return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
+
+
 def _complete_saml_login(db: Session, org, config, identity) -> dict:
-    """PR6: resolves a *validated* SAMLIdentity (see org_saml_service's own
-    hard guarantee that this is never called with anything that hasn't
-    passed OneLogin_Saml2_Auth.is_authenticated() first) to a real login
-    outcome. Mirrors routes_sso.py's _complete_sso_flow deliberately
-    closely -- same decision tree, reusing oauth_service.py's actual
-    provider-agnostic functions rather than a parallel implementation:
+    """PR6+PR7: resolves a *validated* SAMLIdentity (see org_saml_service's
+    own hard guarantee that this is never called with anything that
+    hasn't passed OneLogin_Saml2_Auth.is_authenticated() first) to a real
+    login outcome. `org`/`config` are themselves already server-verified
+    by _verify_saml_relay_state before this function is ever reached --
+    never re-derived from org_slug, RelayState contents without signature
+    verification, or anything client-supplied -- so every branch below
+    inherits that same trust boundary for free. Mirrors routes_sso.py's
+    _complete_sso_flow deliberately closely -- same decision tree, reusing
+    oauth_service.py's actual provider-agnostic functions rather than a
+    parallel implementation:
 
       1. Already linked (an OAuthAccount row scoped to this exact
          organization_saml_config_id already exists) -> log in directly.
@@ -136,57 +158,81 @@ def _complete_saml_login(db: Session, org, config, identity) -> dict:
          link silently (see oauth_service.link_oauth_to_existing_user's
          own reasoning); require the *same* password-confirmation flow
          POST /auth/link/confirm already provides for OIDC/OAuth.
-      3. Neither -> PR6's own remaining hard boundary. Auto-creating a
-         brand-new user purely from an IdP's say-so (JIT provisioning) is
-         a materially bigger trust decision than linking an *existing*
-         account, and is explicitly PR7 scope -- see org_saml_service's
-         module docstring and OrganizationSAMLConfig's own class
-         docstring. Still 501, not 200/400: the assertion and the
-         identity it carries are both genuinely valid, this deployment
-         just cannot complete authentication for a never-seen-before
-         identity yet.
+      3. Neither -> PR7: JIT-provision a brand-new user. Reuses
+         create_user_with_oauth (User + OAuthAccount in one commit,
+         provider="saml") + org_service.jit_provision_membership exactly
+         as OIDC's own new-user branch does -- no SAML-specific user
+         schema, no SAML-specific role, no SAML-specific token format.
 
     This SP's identity model is NameID-based (declared NameIDFormat is
     "emailAddress" -- see org_saml_service's _NAME_ID_FORMAT), so
     identity.name_id doubles as both provider_user_id (the stable
     per-IdP identifier oauth_service scopes lookups by) and email (what
-    find_user_by_email/OAuthAccount.email need) -- exactly the shape
-    OrganizationSAMLConfig.attribute_mapping's own example ("email":
-    "NameID") already documented. A NameID that isn't actually an email
-    address is rejected outright rather than silently used as one: it
-    would never coincidentally match a real user's email either, but a
-    non-email string has no business landing in the `email` column or
-    driving an email-collision check at all.
+    find_user_by_email/OAuthAccount.email/the new User row need) --
+    exactly the shape OrganizationSAMLConfig.attribute_mapping's own
+    example ("email": "NameID") already documented. A NameID that isn't
+    actually an email address is rejected outright rather than silently
+    used as one. Nothing else on `identity` (attributes, session_index)
+    is read anywhere in this function: attribute_mapping-driven
+    extraction (first/last/display name) is still not part of this
+    codebase's contract anywhere (PR5's own docstring: "no attribute
+    extraction/processing exists yet"), and `User` itself has no such
+    columns for any provider today -- there is nothing trustworthy-and-
+    appropriate left to populate beyond email, matching OIDC/OAuth's own
+    identical `create_user_with_oauth` defaults exactly (hashed_password=
+    None, status="active", no profile fields at all).
+
+    Race handling (PR7): two concurrent requests that both pass the
+    find_linked_user/find_user_by_email checks above with the SAME NameID
+    (two IdP round-trips racing) or the SAME email (a SAML JIT racing
+    another SAML/OIDC/OAuth signup for that address) resolve to a single
+    winner via the database's own uniqueness constraints -- User.email's
+    UNIQUE index and OAuthAccount's uq_oauth_provider_saml_account -- not
+    a process-local lock. The loser's create_user_with_oauth raises
+    IntegrityError; caught, rolled back, and the *entire* decision tree
+    above is re-run once against the now-committed winner's rows, so the
+    loser correctly falls into whichever branch is now true (already
+    linked, if the SAME identity won; link_required, if a DIFFERENT
+    identity happened to share the email) rather than a raw 500 or a
+    second, duplicate user. Mirrors interaction_service.persist_
+    interaction's own catch-IntegrityError-and-re-resolve idiom, this
+    codebase's only other precedent for this exact class of race. Bounded
+    to one retry: a second failure is not a recognized race (both
+    resolution paths were re-checked and still found nothing) and is
+    left to propagate as a fail-closed 500 rather than looping.
     """
     if "@" not in identity.name_id:
         raise HTTPException(400, "SAML authentication failed")
     email = identity.name_id
 
-    linked_user = oauth_service.find_linked_user(
-        db, "saml", identity.name_id, organization_saml_config_id=config.id
-    )
-    if linked_user:
-        org_service.jit_provision_membership(db, org.id, linked_user.id)
-        result = _issue_tokens_or_challenge(db, linked_user, auth_method="saml", idp_org_id=org.id)
-        if result["mfa_required"]:
-            return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
-        return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
-
-    existing_user = oauth_service.find_user_by_email(db, email)
-    if existing_user:
-        link_token = oauth_service.issue_link_confirmation(
-            existing_user, "saml", identity.name_id, email,
-            organization_saml_config_id=config.id, idp_org_id=org.id,
+    for _attempt in range(2):
+        linked_user = oauth_service.find_linked_user(
+            db, "saml", identity.name_id, organization_saml_config_id=config.id
         )
-        return {"status": "link_required", "link_token": link_token, "provider": "saml", "email": email}
+        if linked_user:
+            org_service.jit_provision_membership(db, org.id, linked_user.id)
+            return _login_or_challenge_result(db, linked_user, org.id)
 
-    raise HTTPException(
-        501,
-        "SAML authentication is not yet available for new accounts in this "
-        "organization -- assertion validation and identity linking "
-        "succeeded, but automatic account provisioning is not implemented "
-        "in this deployment.",
-    )
+        existing_user = oauth_service.find_user_by_email(db, email)
+        if existing_user:
+            link_token = oauth_service.issue_link_confirmation(
+                existing_user, "saml", identity.name_id, email,
+                organization_saml_config_id=config.id, idp_org_id=org.id,
+            )
+            return {"status": "link_required", "link_token": link_token, "provider": "saml", "email": email}
+
+        try:
+            new_user = oauth_service.create_user_with_oauth(
+                db, "saml", identity.name_id, email, organization_saml_config_id=config.id,
+            )
+        except IntegrityError:
+            db.rollback()
+            continue
+
+        org_service.jit_provision_membership(db, org.id, new_user.id)
+        return _login_or_challenge_result(db, new_user, org.id)
+
+    raise HTTPException(500, "SAML authentication failed")
 
 
 @router.post("/{org_slug}/acs")
@@ -220,11 +266,12 @@ def saml_acs(
     for why every validation failure collapses into one exception type
     before it ever reaches this route.
 
-    PR6 replaces PR5's original unconditional 501 with a real login
-    outcome for a *recognized* identity (already linked, or a
-    password-confirmed link to an existing account) -- see
-    _complete_saml_login's own docstring for the full decision tree and
-    for why a never-seen-before identity still stops at 501.
+    PR6+PR7 together replace PR5's original unconditional 501 with a real
+    login outcome for every case: an already-linked identity, a
+    password-confirmed link to an existing account, or (PR7) JIT
+    provisioning of a brand-new user -- see _complete_saml_login's own
+    docstring for the full decision tree, its race handling, and its
+    attribute trust model.
     """
     org, config, relay_payload = _verify_saml_relay_state(db, org_slug, RelayState)
 

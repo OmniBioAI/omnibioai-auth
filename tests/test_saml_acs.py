@@ -7,6 +7,19 @@ existing OIDC SSO / OAuth / MFA flows -- see tests/test_sso_login.py and
 tests/test_saml_login.py, both still run unmodified as part of the full
 suite.
 
+What DOES change with PR7: this file's own success-path tests originally
+asserted 501 for a fully-valid, never-before-seen identity -- PR5/PR6's
+own architectural stop, before either linking or JIT provisioning
+existed. PR7 replaces that stop with real JIT provisioning (see
+tests/test_saml_jit_provisioning.py for the actual decision-tree/
+isolation/race coverage), so a fully-valid assertion now completes login
+(200, access_token) instead of stopping at 501. Every test below that
+previously asserted 501 as a stand-in for "validation succeeded" now
+asserts 200 + access_token present instead -- the validation logic under
+test (signature/audience/destination/issuer/InResponseTo/timestamp/
+replay/no-leakage/cross-org) is completely unchanged; only the
+post-validation outcome it's checked against moved.
+
 Tests construct REAL, genuinely-signed SAMLResponse documents (RSA
 keypair + self-signed X.509 cert via `cryptography`, signed via
 python3-saml's own OneLogin_Saml2_Utils.add_sign, which uses the real
@@ -525,14 +538,16 @@ def test_not_yet_valid_assertion_rejected(client, org_with_saml_login, idp_keys)
 
 def test_replay_of_previously_accepted_assertion_rejected(client, org_with_saml_login, idp_keys):
     """The IMPORTANT boundary this test proves: the FIRST use gets past
-    every validation check (reaches PR5's own architectural stop -- 501,
-    not 400 -- see test_valid_assertion_stops_at_linking_boundary), and
-    only the SECOND, replayed use of the exact same assertion is
-    rejected as a replay specifically."""
+    every validation check and completes login (PR7 JIT-provisions the
+    never-before-seen identity -- see
+    test_valid_assertion_completes_login_via_jit_provisioning), and only
+    the SECOND, replayed use of the exact same assertion is rejected as a
+    replay specifically."""
     resp_body = _build_valid_response(org_with_saml_login, idp_keys)
 
     first = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
-    assert first.status_code == 501  # validated fine; stops at the linking boundary, not a validation failure
+    assert first.status_code == 200  # validated fine, JIT-provisioned, not a validation failure
+    assert "access_token" in first.json()
 
     second = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
     assert second.status_code == 400  # same assertion, rejected as a replay this time
@@ -541,29 +556,40 @@ def test_replay_of_previously_accepted_assertion_rejected(client, org_with_saml_
 # ── 9. Identity pipeline boundary ─────────────────────────────────────────
 
 
-def test_valid_assertion_stops_at_linking_boundary(client, org_with_saml_login, idp_keys):
-    """The core architectural-boundary test: a fully valid, correctly
-    signed, correctly bound assertion must NOT produce an access_token
-    or refresh_token -- PR6/PR7's OAuthAccount schema work is a
-    prerequisite this PR does not invent around. 501, not 200/400: the
-    assertion itself was valid (not a client error), but this
-    deployment cannot complete authentication with it yet."""
-    resp_body = _build_valid_response(org_with_saml_login, idp_keys)
+def test_valid_assertion_completes_login_via_jit_provisioning(client, org_with_saml_login, idp_keys):
+    """The core architectural-boundary test, updated for PR7: a fully
+    valid, correctly signed, correctly bound assertion for a
+    never-before-seen identity now DOES produce an access_token, via
+    JIT provisioning (see tests/test_saml_jit_provisioning.py for the
+    full decision-tree coverage) -- this file only re-proves that a
+    validation-only pass genuinely reaches that outcome, not 400/501.
+
+    Uses a per-test unique NameID, not the file's shared "user@example.com"
+    default -- the test client's DB persists across this whole session, so
+    reusing the default here would make this test's own success depend on
+    no earlier test in this file having already JIT-provisioned it."""
+    resp_body = _build_valid_response(org_with_saml_login, idp_keys, name_id=f"jit-boundary-{uuid.uuid4().hex[:8]}@example.com")
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
 
-    assert resp.status_code == 501
-    assert "access_token" not in resp.text
-    assert "refresh_token" not in resp.text
+    assert resp.status_code == 200
+    assert "access_token" in resp.json()
+    assert "refresh_token" in resp.json()
 
 
-def test_valid_assertion_with_attributes_still_stops_at_linking_boundary(client, org_with_saml_login, idp_keys):
-    """Same boundary, but with a real AttributeStatement present too --
+def test_valid_assertion_with_attributes_still_completes_login(client, org_with_saml_login, idp_keys):
+    """Same outcome, but with a real AttributeStatement present too --
     proves attribute extraction doesn't accidentally become a path
-    around the linking boundary."""
-    resp_body = _build_valid_response(org_with_saml_login, idp_keys, attributes={"department": "Engineering"})
+    around validation (untrusted attributes still can't influence
+    identity resolution -- see
+    tests/test_saml_jit_provisioning.py's own attribute-trust tests).
+    Per-test unique NameID -- see the previous test's docstring."""
+    resp_body = _build_valid_response(
+        org_with_saml_login, idp_keys, attributes={"department": "Engineering"},
+        name_id=f"jit-boundary-attrs-{uuid.uuid4().hex[:8]}@example.com",
+    )
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
-    assert resp.status_code == 501
-    assert "access_token" not in resp.text
+    assert resp.status_code == 200
+    assert "access_token" in resp.json()
 
 
 # ── 10. No sensitive data leakage ────────────────────────────────────────
@@ -590,11 +616,18 @@ def test_no_certificate_or_raw_assertion_leaks_in_error_responses(client, org_wi
     assert "traceback" not in resp.text.lower()
 
 
-def test_no_leakage_on_successful_validation_stopped_at_boundary(client, org_with_saml_login, idp_keys):
-    resp_body = _build_valid_response(org_with_saml_login, idp_keys)
+def test_no_leakage_on_successful_login(client, org_with_saml_login, idp_keys):
+    """Post-PR7 this identity is JIT-provisioned and logs in for real
+    (200, access_token) -- the certificate and NameID must still never be
+    echoed back in plaintext, JWT claims included. Per-test unique
+    NameID -- see test_valid_assertion_completes_login_via_jit_
+    provisioning's own docstring for why the file's shared default isn't
+    safe to reuse once a success path actually persists a user."""
+    name_id = f"jit-no-leak-{uuid.uuid4().hex[:8]}@example.com"
+    resp_body = _build_valid_response(org_with_saml_login, idp_keys, name_id=name_id)
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
     assert "SENTINEL-CERT-SHOULD-NOT-LEAK" not in resp.text
-    assert "user@example.com" not in resp.text  # NameID itself not echoed back either
+    assert name_id not in resp.text  # NameID itself not echoed back either, JWT claims included
 
 
 # ── 11. Cross-organization isolation ─────────────────────────────────────
@@ -615,11 +648,15 @@ def test_two_organizations_cannot_consume_each_others_saml_responses(client, idp
     relay_a = parse_qs(urlparse(login_a.headers["location"]).query)["RelayState"][0]
     request_id_a = decode_token(relay_a)["request_id"]
 
-    # A genuinely valid response FOR ORG A...
+    # A genuinely valid response FOR ORG A... (per-test unique NameID --
+    # see test_valid_assertion_completes_login_via_jit_provisioning's own
+    # docstring for why the file's shared default isn't safe to reuse
+    # once a success path actually persists a user)
     resp_body_a = build_signed_saml_response(
         key_a, cert_a, idp_entity_id=idp_a,
         sp_entity_id=org_saml_service.entity_id_for(org_a["slug"]),
         acs_url=org_saml_service.acs_url_for(org_a["slug"]), request_id=request_id_a,
+        name_id=f"jit-cross-org-{uuid.uuid4().hex[:8]}@example.com",
     )
 
     # ...must be rejected when POSTed to Org B's ACS endpoint, even with
@@ -629,11 +666,12 @@ def test_two_organizations_cannot_consume_each_others_saml_responses(client, idp
     resp = _post_acs(client, org_b["slug"], resp_body_a, relay_a)
     assert resp.status_code == 400
 
-    # And Org A's real, correct flow still succeeds through validation
-    # (reaches the 501 linking boundary, not a 400) -- proves the 400
-    # above is genuine cross-org isolation, not a broken fixture.
+    # And Org A's real, correct flow still succeeds through validation and
+    # completes login (200, JIT-provisioned) -- proves the 400 above is
+    # genuine cross-org isolation, not a broken fixture.
     resp_own = _post_acs(client, org_a["slug"], resp_body_a, relay_a)
-    assert resp_own.status_code == 501
+    assert resp_own.status_code == 200
+    assert "access_token" in resp_own.json()
 
 
 # ── 12. Existing OIDC/OAuth/JWT/MFA behavior unaffected ─────────────────
