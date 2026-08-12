@@ -1,17 +1,32 @@
-"""SAML SSO PR3+PR4+PR5+PR6+PR7: SP metadata endpoint (PR3), SP-initiated
-login (PR4), ACS/assertion validation (PR5), identity linking (PR6), and
-JIT provisioning of brand-new users (PR7). CRUD API (PR8), admin UI (PR9),
-and SLO remain their own separate roadmap slots -- see
-app/services/org_saml_service.py's module docstring.
+"""SAML SSO PR3+PR4+PR5+PR6+PR7+PR11: SP metadata endpoint (PR3),
+SP-initiated login (PR4), ACS/assertion validation (PR5), identity
+linking (PR6), JIT provisioning of brand-new users (PR7), and Single
+Logout (PR11) -- see app/services/org_saml_service.py's module
+docstring, particularly its own "PR11: Single Logout (SLO)" section, for
+the full python3-saml-verified design this file's two SLO routes below
+implement. CRUD API (PR8) and admin UI (PR9) live in
+routes_org_saml.py/omnibioai-control-center respectively.
 """
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.jwt import create_saml_relay_state_token, decode_token
+from app.core import token_revocation
+from app.core.jwt import (
+    create_saml_relay_state_token,
+    create_saml_slo_relay_state_token,
+    decode_token,
+)
 from app.db.session import get_db
-from app.services import oauth_service, org_saml_service, org_service
+from app.schemas.auth import LogoutRequest
+from app.services import (
+    auth_service,
+    oauth_service,
+    org_saml_service,
+    org_service,
+    session_service,
+)
 from app.services.auth_service import (
     MFAEnrollmentRequiredError,
     generate_tokens_or_mfa_challenge,
@@ -20,10 +35,26 @@ from app.services.auth_service import (
 router = APIRouter(prefix="/auth/saml", tags=["saml"])
 
 
-def _issue_tokens_or_challenge(db: Session, user, auth_method: str, idp_org_id: int | None = None) -> dict:
-    """PR6: same wrapper shape as routes_sso.py/routes_oauth.py's own."""
+def _issue_tokens_or_challenge(
+    db: Session, user, auth_method: str, idp_org_id: int | None = None,
+    saml_name_id: str | None = None, saml_session_index: str | None = None,
+    organization_saml_config_id: int | None = None,
+) -> dict:
+    """PR6: same wrapper shape as routes_sso.py/routes_oauth.py's own.
+
+    PR11 (SLO): saml_name_id/saml_session_index/organization_saml_
+    config_id are threaded straight through to generate_tokens_or_mfa_
+    challenge -- this is the one place every SAML login (already-linked
+    or freshly JIT-provisioned, MFA-gated or not) funnels through, so
+    every resulting session gets its SAML identity recorded on it by
+    construction, the same reasoning idp_org_id already relies on here.
+    """
     try:
-        return generate_tokens_or_mfa_challenge(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+        return generate_tokens_or_mfa_challenge(
+            db, user, auth_method=auth_method, idp_org_id=idp_org_id,
+            saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+            organization_saml_config_id=organization_saml_config_id,
+        )
     except MFAEnrollmentRequiredError:
         raise HTTPException(403, detail={
             "error": "mfa_enrollment_required",
@@ -125,15 +156,26 @@ def _verify_saml_relay_state(db: Session, org_slug: str, relay_state: str | None
     return org, config, payload
 
 
-def _login_or_challenge_result(db: Session, user, org_id: int) -> dict:
+def _login_or_challenge_result(db: Session, user, org_id: int, identity, config) -> dict:
     """Shared MFA-aware success shape for both the 'already linked' and
     the 'freshly JIT-provisioned' branches below -- same choke point
     (_issue_tokens_or_challenge -> generate_tokens_or_mfa_challenge) and
     the exact same response shape routes_sso.py/routes_oauth.py's own
     OIDC/OAuth callers already produce. A SAML JIT user follows this
     identical path -- there is no SAML-specific token format and no way
-    for either branch to skip the MFA decision."""
-    result = _issue_tokens_or_challenge(db, user, auth_method="saml", idp_org_id=org_id)
+    for either branch to skip the MFA decision.
+
+    PR11 (SLO): `identity`/`config` -- both already server-verified
+    before this function is ever reached, same as everywhere else in
+    this file -- are what let the resulting session (or MFA challenge
+    token) carry identity.name_id/identity.session_index/config.id, so
+    an IdP-initiated LogoutRequest can later find it.
+    """
+    result = _issue_tokens_or_challenge(
+        db, user, auth_method="saml", idp_org_id=org_id,
+        saml_name_id=identity.name_id, saml_session_index=identity.session_index,
+        organization_saml_config_id=config.id,
+    )
     if result["mfa_required"]:
         return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
     return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
@@ -172,15 +214,23 @@ def _complete_saml_login(db: Session, org, config, identity) -> dict:
     exactly the shape OrganizationSAMLConfig.attribute_mapping's own
     example ("email": "NameID") already documented. A NameID that isn't
     actually an email address is rejected outright rather than silently
-    used as one. Nothing else on `identity` (attributes, session_index)
-    is read anywhere in this function: attribute_mapping-driven
-    extraction (first/last/display name) is still not part of this
-    codebase's contract anywhere (PR5's own docstring: "no attribute
-    extraction/processing exists yet"), and `User` itself has no such
-    columns for any provider today -- there is nothing trustworthy-and-
+    used as one. `identity.attributes` is not read anywhere in this
+    function: attribute_mapping-driven extraction (first/last/display
+    name) is still not part of this codebase's contract anywhere (PR5's
+    own docstring: "no attribute extraction/processing exists yet"), and
+    `User` itself has no such columns for any provider today -- there is
+    nothing trustworthy-and-
     appropriate left to populate beyond email, matching OIDC/OAuth's own
     identical `create_user_with_oauth` defaults exactly (hashed_password=
     None, status="active", no profile fields at all).
+
+    `identity.session_index` (PR11, SLO): unlike attributes, this IS now
+    read -- by _login_or_challenge_result below, which threads it (and
+    identity.name_id, config.id) through to generate_tokens_or_mfa_
+    challenge so the resulting UserSession row can be found again by an
+    IdP-initiated LogoutRequest. Not used for any identity-resolution
+    decision here, same as before -- purely carried through for that one
+    write.
 
     Race handling (PR7): two concurrent requests that both pass the
     find_linked_user/find_user_by_email checks above with the SAME NameID
@@ -211,7 +261,7 @@ def _complete_saml_login(db: Session, org, config, identity) -> dict:
         )
         if linked_user:
             org_service.jit_provision_membership(db, org.id, linked_user.id)
-            return _login_or_challenge_result(db, linked_user, org.id)
+            return _login_or_challenge_result(db, linked_user, org.id, identity, config)
 
         existing_user = oauth_service.find_user_by_email(db, email)
         if existing_user:
@@ -230,7 +280,7 @@ def _complete_saml_login(db: Session, org, config, identity) -> dict:
             continue
 
         org_service.jit_provision_membership(db, org.id, new_user.id)
-        return _login_or_challenge_result(db, new_user, org.id)
+        return _login_or_challenge_result(db, new_user, org.id, identity, config)
 
     raise HTTPException(500, "SAML authentication failed")
 
@@ -286,3 +336,180 @@ def saml_acs(
         raise HTTPException(400, "SAML authentication failed")
 
     return _complete_saml_login(db, org, config, identity)
+
+
+# ── PR11: Single Logout (SLO) ────────────────────────────────────────────
+
+
+@router.post("/{org_slug}/logout")
+def saml_logout(org_slug: str, req: LogoutRequest, db: Session = Depends(get_db)):
+    """SP-initiated logout (PR11). Same request shape as the existing
+    POST /auth/logout (app/schemas/auth.py's LogoutRequest, unchanged)
+    -- the refresh_token itself is the proof of the session being ended,
+    exactly as that route already relies on, so this needs no separate
+    authentication dependency of its own.
+
+    Always performs the same local logout POST /auth/logout already
+    does -- revoke the refresh-token family (auth_service.revoke_token,
+    unmodified), mark its UserSession revoked, best-effort blacklist the
+    access token if supplied (token_revocation.blacklist_access_token,
+    the same function /auth/logout itself now calls, PR11 promoted it
+    out of routes_auth.py's own private scope for exactly this reuse) --
+    regardless of org_slug, and regardless of whether this session even
+    is a SAML one. org_slug only matters for the one thing this route
+    adds beyond /auth/logout: if the session being logged out really was
+    a SAML login for *this* org_slug's own config (session.
+    organization_saml_config_id must equal the org_slug-resolved
+    config's id -- never trusted from org_slug alone, the same
+    "server-resolved, not client-asserted" discipline every other org/
+    config check in this file already applies), and that config has a
+    configured slo_url, the response additionally carries
+    idp_logout_url: a redirect the caller can navigate the browser to,
+    completing IdP-side logout too. Every other case (non-SAML session,
+    session belongs to a different org's config, no slo_url configured)
+    degrades to the exact same {"message": "Logged out"} shape
+    /auth/logout already returns -- purely additive, never a stricter or
+    different contract for what is still fundamentally a local logout.
+
+    Deliberately does not also send the policy:invalidate broadcast
+    /auth/logout's own _publish_invalidation performs -- a disclosed
+    simplification (a downstream cache-freshness optimization, not a
+    security boundary; that cache entry still expires on its own TTL),
+    not an oversight. See this PR's own report.
+    """
+    session = auth_service.get_session_for_refresh_token(db, req.refresh_token)
+
+    auth_service.revoke_token(db, req.refresh_token)
+    if req.access_token:
+        token_revocation.blacklist_access_token(req.access_token)
+
+    idp_logout_url = None
+    if session and session.saml_name_id and session.organization_saml_config_id:
+        org = org_service.get_organization_by_slug(db, org_slug)
+        config = org_saml_service.get_saml_config(db, org.id) if org else None
+        if (
+            org is not None and config is not None
+            and config.id == session.organization_saml_config_id
+            and config.status == "active"
+        ):
+            idp_logout_url = org_saml_service.build_logout_request_url(
+                org_slug, config, session.saml_name_id, session.saml_session_index,
+                lambda request_id: create_saml_slo_relay_state_token(org.id, config.id, request_id),
+            )
+
+    if idp_logout_url:
+        return {"message": "Logged out", "idp_logout_url": idp_logout_url}
+    return {"message": "Logged out"}
+
+
+@router.get("/{org_slug}/slo")
+def saml_slo(
+    org_slug: str,
+    request: Request,
+    SAMLRequest: str | None = None,
+    SAMLResponse: str | None = None,
+    RelayState: str | None = None,
+    SigAlg: str | None = None,
+    Signature: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Single Logout Service (PR11) -- one endpoint handling both
+    directions of SLO, mirroring OneLogin_Saml2_Auth.process_slo's own
+    internal dispatch (verified by reading it directly, then
+    decomposed the same way build_authn_request_url already decomposed
+    .login() -- see org_saml_service.py's validate_slo_logout_request/
+    validate_slo_logout_response docstrings for why): a query string
+    carrying SAMLRequest is an unsolicited, IdP-initiated LogoutRequest;
+    one carrying SAMLResponse is the IdP's reply to a LogoutRequest THIS
+    SP sent (the SP-initiated round trip POST .../logout's own
+    idp_logout_url starts).
+
+    GET, not POST: python3-saml only supports SLO over HTTP-Redirect
+    binding (query-string parameters) -- verified directly against the
+    installed library, which raises "Only supported HTTP_REDIRECT
+    Binding" for anything else. See org_saml_service.py's own "PR11:
+    Single Logout" module comment for the full verification.
+
+    org_slug resolves the trusted org/config exactly as saml_login/
+    saml_acs above do -- never anything else. A LogoutRequest/
+    LogoutResponse arriving here is only ever validated against THIS
+    org's own config.x509_certificate/entity_id (org_saml_service.
+    _slo_settings_dict), so a message genuinely signed for a different
+    org's IdP fails signature/issuer validation here, the same
+    cross-org isolation _verify_saml_relay_state already establishes
+    for login/ACS -- there is no separate "which org does this belong
+    to" trust decision for SLO to get wrong.
+    """
+    org = org_service.get_organization_by_slug(db, org_slug)
+    if not org:
+        raise HTTPException(404, "Unknown organization")
+
+    config = org_saml_service.get_saml_config(db, org.id)
+    if not config or config.status != "active":
+        raise HTTPException(404, "SAML SSO is not configured for this organization")
+
+    query_string = request.url.query
+
+    if SAMLRequest:
+        try:
+            identity = org_saml_service.validate_slo_logout_request(
+                org_slug, config, SAMLRequest, RelayState, SigAlg, Signature, query_string,
+            )
+        except org_saml_service.SAMLLogoutError:
+            raise HTTPException(400, "SAML logout failed")
+
+        # config.id scopes this lookup to THIS org's own SAML config --
+        # the same isolation session_service.find_active_by_saml_
+        # identity's own docstring requires: a NameID that happens to
+        # match under a different org's config can never be found (let
+        # alone revoked) by a LogoutRequest validated against this one.
+        sessions = session_service.find_active_by_saml_identity(
+            db, config.id, identity.name_id, identity.session_index,
+        )
+        for session in sessions:
+            session_service.revoke(db, session.session_id, session_service.REASON_USER_LOGOUT)
+        db.commit()
+
+        try:
+            redirect_url = org_saml_service.build_slo_logout_response_redirect(
+                org_slug, config, identity.request_id,
+            )
+        except org_saml_service.SAMLLogoutError:
+            raise HTTPException(400, "SAML logout failed")
+        return RedirectResponse(redirect_url)
+
+    if SAMLResponse:
+        # Mirrors _verify_saml_relay_state's own RelayState-first
+        # discipline: the request_id this response's InResponseTo is
+        # checked against comes only from a RelayState this SP itself
+        # signed when it sent the original LogoutRequest (POST
+        # .../logout's idp_logout_url) -- never from anything else in
+        # the request.
+        if not RelayState:
+            raise HTTPException(400, "Missing RelayState")
+        try:
+            relay_payload = decode_token(RelayState)
+        except Exception:
+            raise HTTPException(400, "Invalid or expired SAML RelayState")
+        if relay_payload.get("type") != "saml_slo_relay_state":
+            raise HTTPException(400, "Invalid SAML RelayState")
+        if (
+            relay_payload.get("organization_id") != org.id
+            or relay_payload.get("organization_saml_config_id") != config.id
+        ):
+            raise HTTPException(400, "SAML RelayState does not match this organization")
+
+        try:
+            org_saml_service.validate_slo_logout_response(
+                org_slug, config, SAMLResponse, RelayState, relay_payload["request_id"],
+                SigAlg, Signature, query_string,
+            )
+        except org_saml_service.SAMLLogoutError:
+            raise HTTPException(400, "SAML logout failed")
+
+        # The local session was already revoked in POST .../logout,
+        # before this SP ever redirected the browser to the IdP -- this
+        # branch only confirms the IdP's own reply is genuine.
+        return {"message": "Logged out"}
+
+    raise HTTPException(400, "Missing SAMLRequest or SAMLResponse")

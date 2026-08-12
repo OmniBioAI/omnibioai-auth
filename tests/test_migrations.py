@@ -419,7 +419,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0022_oauth_saml_config_id"
+    assert recorded == "0023_saml_slo"
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -743,6 +743,131 @@ def test_sqlite_0022_downgrade_drops_only_the_new_column(sqlite_db_url):
     assert "organization_saml_configs" in tables
 
 
+def test_sqlite_0023_adds_slo_url_and_session_saml_columns(sqlite_db_url):
+    """SAML PR11's specific concern: organization_saml_configs.slo_url and
+    sessions.saml_name_id/saml_session_index/organization_saml_config_id
+    must not exist before 0023, and must exist (all nullable) after it."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0022_oauth_saml_config_id")
+
+    engine = create_engine(sqlite_db_url)
+    inspector = inspect(engine)
+    assert "slo_url" not in {c["name"] for c in inspector.get_columns("organization_saml_configs")}
+    pre_session_columns = {c["name"] for c in inspector.get_columns("sessions")}
+    assert not {"saml_name_id", "saml_session_index", "organization_saml_config_id"} & pre_session_columns
+
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(engine)
+    config_columns = inspector.get_columns("organization_saml_configs")
+    slo_url_col = next(c for c in config_columns if c["name"] == "slo_url")
+    assert slo_url_col["nullable"] is True
+
+    session_columns = inspector.get_columns("sessions")
+    for name in ("saml_name_id", "saml_session_index", "organization_saml_config_id"):
+        col = next(c for c in session_columns if c["name"] == name)
+        assert col["nullable"] is True
+
+    session_fks = inspector.get_foreign_keys("sessions")
+    assert any(
+        fk["referred_table"] == "organization_saml_configs" and fk["constrained_columns"] == ["organization_saml_config_id"]
+        for fk in session_fks
+    )
+
+
+def test_sqlite_pre_existing_rows_survive_0023_with_null_new_columns(sqlite_db_url):
+    """A pre-existing organization_saml_configs row and a pre-existing
+    sessions row must come out the other side of 0023 with every prior
+    value unchanged, and NULL in each of the 4 new columns -- purely
+    additive, same convention 0021/0022's own survival tests establish."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0022_oauth_saml_config_id")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO organizations (slug, name) VALUES ('pre-0023-org', 'Pre 0023 Org')")
+        )
+        conn.execute(
+            text(
+                "INSERT INTO organization_saml_configs "
+                "(organization_id, entity_id, sso_url, x509_certificate, enabled, status) "
+                "VALUES (1, 'https://idp.example.com/metadata', 'https://idp.example.com/sso', "
+                "'-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----', 0, 'active')"
+            )
+        )
+        conn.execute(text("INSERT INTO users (email, hashed_password, status) VALUES ('pre-0023@omnibioai.test', 'x', 'active')"))
+        conn.execute(
+            text(
+                "INSERT INTO sessions (session_id, user_id, auth_method, mfa_verified, status, "
+                "created_at, last_activity_at, expires_at) "
+                "VALUES ('pre-0023-session', 1, 'password', 1, 'active', "
+                "'2026-01-01 00:00:00', '2026-01-01 00:00:00', '2030-01-01 00:00:00')"
+            )
+        )
+
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        config_row = conn.execute(
+            text("SELECT entity_id, sso_url, status, slo_url FROM organization_saml_configs WHERE organization_id = 1")
+        ).mappings().one()
+        session_row = conn.execute(
+            text(
+                "SELECT auth_method, status, saml_name_id, saml_session_index, organization_saml_config_id "
+                "FROM sessions WHERE session_id = 'pre-0023-session'"
+            )
+        ).mappings().one()
+
+    assert config_row["entity_id"] == "https://idp.example.com/metadata"
+    assert config_row["status"] == "active"
+    assert config_row["slo_url"] is None
+
+    assert session_row["auth_method"] == "password"
+    assert session_row["status"] == "active"
+    assert session_row["saml_name_id"] is None
+    assert session_row["saml_session_index"] is None
+    assert session_row["organization_saml_config_id"] is None
+
+
+def test_sqlite_0023_downgrade_drops_only_the_new_columns(sqlite_db_url):
+    """Downgrading past 0023 must remove all 4 new columns and their FK,
+    leaving organization_saml_configs/sessions rows and every other
+    column completely untouched."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO organizations (slug, name) VALUES ('post-0023-org', 'Post 0023 Org')")
+        )
+        conn.execute(
+            text(
+                "INSERT INTO organization_saml_configs "
+                "(organization_id, entity_id, sso_url, x509_certificate, enabled, status, slo_url) "
+                "VALUES (1, 'https://idp.example.com/metadata', 'https://idp.example.com/sso', "
+                "'-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----', 0, 'active', "
+                "'https://idp.example.com/slo')"
+            )
+        )
+
+    command.downgrade(cfg, "0022_oauth_saml_config_id")
+
+    inspector = inspect(engine)
+    config_columns = {c["name"] for c in inspector.get_columns("organization_saml_configs")}
+    assert "slo_url" not in config_columns
+    session_columns = {c["name"] for c in inspector.get_columns("sessions")}
+    assert not {"saml_name_id", "saml_session_index", "organization_saml_config_id"} & session_columns
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT entity_id, status FROM organization_saml_configs WHERE organization_id = 1")
+        ).mappings().one()
+    assert row["entity_id"] == "https://idp.example.com/metadata"
+    assert row["status"] == "active"
+
+
 # ---------------------------------------------------------------------------
 # MySQL: runs against a throwaway database on a real MySQL server, skipped
 # entirely if one isn't reachable (e.g. in a CI environment without MySQL).
@@ -861,7 +986,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0022_oauth_saml_config_id"
+    assert recorded == "0023_saml_slo"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

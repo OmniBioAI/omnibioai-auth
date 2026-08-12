@@ -186,6 +186,39 @@ def create_saml_relay_state_token(organization_id: int, organization_saml_config
     )
 
 
+def create_saml_slo_relay_state_token(organization_id: int, organization_saml_config_id: int, request_id: str):
+    """PR11 (SLO): signed, opaque RelayState for the SP-initiated logout
+    round trip (POST /auth/saml/{org_slug}/logout builds the redirect;
+    GET /auth/saml/{org_slug}/slo consumes it when the IdP redirects the
+    browser back with a LogoutResponse). Structurally identical to
+    create_saml_relay_state_token above, and deliberately a DISTINCT
+    token `type` ("saml_slo_relay_state", not "saml_relay_state") for the
+    same reason that function's own docstring gives for why it isn't
+    reused for OIDC's `state`: a token minted for one purpose must never
+    be replayable against a different route that also happens to accept
+    a RelayState-shaped payload. In particular, this token must never be
+    accepted by POST /auth/saml/{org_slug}/acs, and the login RelayState
+    must never be accepted by GET /auth/saml/{org_slug}/slo.
+
+    request_id: the SP-initiated LogoutRequest's own ID (generated when
+    org_saml_service.build_logout_request_url constructs it) -- carried
+    here for the identical reason create_saml_relay_state_token's own
+    request_id is: so the returning LogoutResponse's InResponseTo can be
+    validated for real (OneLogin_Saml2_Logout_Response.is_valid(...,
+    request_id=...)) instead of skipping that check.
+    """
+    return _sign(
+        {
+            "type": "saml_slo_relay_state",
+            "organization_id": organization_id,
+            "organization_saml_config_id": organization_saml_config_id,
+            "request_id": request_id,
+            "exp": datetime.utcnow() + timedelta(minutes=10),
+            "jti": str(uuid.uuid4()),
+        }
+    )
+
+
 def create_service_access_token(data: dict, expires_minutes: int):
     """Phase 2 PR1: issues a client_credentials-grant access token (RFC 6749
     SS4.4) -- a service identity, not a user. Deliberately does not go
@@ -205,7 +238,14 @@ def create_service_access_token(data: dict, expires_minutes: int):
     return _sign(to_encode)
 
 
-def create_mfa_challenge_token(user_id: int, auth_method: str, idp_org_id: int | None = None):
+def create_mfa_challenge_token(
+    user_id: int,
+    auth_method: str,
+    idp_org_id: int | None = None,
+    saml_name_id: str | None = None,
+    saml_session_index: str | None = None,
+    organization_saml_config_id: int | None = None,
+):
     """PR11.5.3: short-lived, self-contained proof that primary
     authentication (password/oauth/sso/license) already succeeded for
     `user_id` and only the second factor remains -- same "no
@@ -222,6 +262,16 @@ def create_mfa_challenge_token(user_id: int, auth_method: str, idp_org_id: int |
     (mfa_service.verify_mfa_challenge) can call the existing
     generate_tokens() and produce a token identical in shape to what
     primary auth would have issued directly, had MFA not been required.
+
+    saml_name_id/saml_session_index/organization_saml_config_id (PR11,
+    SLO): same optional/default-None convention, carried through for the
+    identical reason auth_method/idp_org_id are -- a SAML login for a
+    user with personal MFA enabled doesn't reach generate_tokens (and
+    therefore doesn't get a UserSession row written) until this
+    challenge is verified; without threading these three through, that
+    session would come out the other side with no SAML identity
+    recorded on it at all, and an IdP-initiated LogoutRequest would have
+    no way to find it. None for every non-SAML login, unaffected.
     """
     return _sign(
         {
@@ -230,6 +280,9 @@ def create_mfa_challenge_token(user_id: int, auth_method: str, idp_org_id: int |
             "mfa_required": True,
             "auth_method": auth_method,
             "idp_org_id": idp_org_id,
+            "saml_name_id": saml_name_id,
+            "saml_session_index": saml_session_index,
+            "organization_saml_config_id": organization_saml_config_id,
             "exp": datetime.utcnow() + timedelta(minutes=5),
             "jti": str(uuid.uuid4()),
         }

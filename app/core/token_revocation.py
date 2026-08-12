@@ -1,9 +1,11 @@
 import os
+from datetime import datetime
 
 import redis as _redis_sync
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.jwt import decode_token
 from app.db.models import RevokedToken, User
 
 # Canonical home for the access-token blacklist client. `/auth/logout`
@@ -16,6 +18,30 @@ _blacklist = _redis_sync.from_url(
     os.getenv("REDIS_URL", "redis://redis:6379"),
     decode_responses=True,
 )
+
+
+def blacklist_access_token(access_token: str) -> None:
+    """Store access token jti in Redis blacklist with remaining-lifetime
+    TTL. Moved here from app/api/routes_auth.py's own (formerly private)
+    `_blacklist_access_token` (PR11, SLO) -- this module already owns
+    the Redis client every read of the blacklist (assert_token_usable,
+    above) goes through, and the SAML SP-initiated logout endpoint
+    (routes_saml.py) needs the identical behavior `/auth/logout` already
+    has, not a second, parallel implementation. routes_auth.py's own
+    /auth/logout now calls this public function directly instead of a
+    module-private copy; behavior is byte-identical, only the home
+    changed.
+    """
+    try:
+        payload = decode_token(access_token)
+        jti = payload.get("jti")
+        if jti:
+            exp = payload.get("exp", 0)
+            now = int(datetime.utcnow().timestamp())
+            ttl = max(exp - now, 1)
+            _blacklist.setex(f"blacklist:jti:{jti}", ttl, "1")
+    except Exception:
+        pass  # fail open — never block logout
 
 
 def assert_token_usable(payload: dict, db: Session) -> None:

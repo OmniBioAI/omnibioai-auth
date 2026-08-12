@@ -207,6 +207,9 @@ def generate_tokens(
     idp_org_id: int | None = None,
     client_ip: str | None = None,
     user_agent: str | None = None,
+    saml_name_id: str | None = None,
+    saml_session_index: str | None = None,
+    organization_saml_config_id: int | None = None,
 ):
     """`auth_method` records which flow issued this token ("password" |
     "oauth" | "license" | "sso") -- purely informational, not used for any
@@ -230,6 +233,16 @@ def generate_tokens(
     mfa_service.py, none of which pass them today) is completely
     unaffected; only routes_auth.py's password login currently supplies
     them. See app/services/session_service.py.
+
+    PR11 (SLO): saml_name_id/saml_session_index/organization_saml_
+    config_id are the identical optional/default-None convention --
+    only routes_saml.py's SAML login flow (directly, or by way of
+    mfa_service.verify_mfa_challenge for a SAML+personal-MFA user, see
+    that module's own threading of these same three values through
+    create_mfa_challenge_token) ever supplies them. Every other caller
+    is unaffected, and every session these three describe a *SAML*
+    login gets written with them so an IdP-initiated LogoutRequest can
+    later find it (session_service.find_active_by_saml_identity).
     """
     user.last_login_at = datetime.utcnow()
     user.authentication_method = _persisted_auth_method(auth_method)
@@ -268,6 +281,9 @@ def generate_tokens(
         expires_at=expires_at,
         client_ip=client_ip,
         user_agent=user_agent,
+        saml_name_id=saml_name_id,
+        saml_session_index=saml_session_index,
+        organization_saml_config_id=organization_saml_config_id,
     )
 
     db.commit()
@@ -293,6 +309,9 @@ def generate_tokens_or_mfa_challenge(
     idp_org_id: int | None = None,
     client_ip: str | None = None,
     user_agent: str | None = None,
+    saml_name_id: str | None = None,
+    saml_session_index: str | None = None,
+    organization_saml_config_id: int | None = None,
 ) -> dict:
     """PR11.5.3: the single shared MFA decision point every login flow
     (password/oauth/sso/license -- all seven generate_tokens call sites,
@@ -352,10 +371,16 @@ def generate_tokens_or_mfa_challenge(
         access, refresh = generate_tokens(
             db, user, auth_method=auth_method, idp_org_id=idp_org_id,
             client_ip=client_ip, user_agent=user_agent,
+            saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+            organization_saml_config_id=organization_saml_config_id,
         )
         return {"mfa_required": False, "access_token": access, "refresh_token": refresh}
 
-    challenge_token = create_mfa_challenge_token(user.id, auth_method=auth_method, idp_org_id=idp_org_id)
+    challenge_token = create_mfa_challenge_token(
+        user.id, auth_method=auth_method, idp_org_id=idp_org_id,
+        saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+        organization_saml_config_id=organization_saml_config_id,
+    )
 
     audit_service.log_event(
         db, AuditEventType.MFA_CHALLENGE_REQUIRED,
@@ -381,6 +406,32 @@ def revoke_token(db, token):
         # the session).
         session_service.revoke(db, db_token.family_id, session_service.REASON_USER_LOGOUT)
         db.commit()
+
+
+def get_session_for_refresh_token(db, token: str):
+    """PR11 (SLO): resolves the UserSession row a given (still-unrevoked
+    or already-revoked -- this is a plain lookup, not a validity check)
+    refresh token belongs to. Reuses the exact same token_hash lookup
+    revoke_token itself uses, rather than a second hashing scheme.
+
+    routes_saml.py's SP-initiated /logout endpoint calls this BEFORE
+    calling revoke_token, to read the session's saml_name_id/
+    saml_session_index/organization_saml_config_id (if any) while the
+    row is still easy to find by its own family_id -- revoke_token only
+    changes status/revoked_at/revoked_reason, never these three columns,
+    so the order doesn't affect what's read, but reading first keeps the
+    route's own logic linear (look up -> revoke -> maybe redirect to the
+    IdP) rather than needing a second query after revocation.
+
+    Returns None if the token doesn't hash-match any RefreshToken row,
+    or if that row's family has no session (a token that predates Phase
+    4 PR-A's session foundation) -- both are simply "nothing to build an
+    IdP logout redirect from," not errors.
+    """
+    db_token = db.query(RefreshToken).filter(RefreshToken.token_hash == _hash_refresh_token(token)).first()
+    if not db_token:
+        return None
+    return session_service.get_by_family_id(db, db_token.family_id)
 
 
 def revoke_session(db, session_id: str) -> bool:

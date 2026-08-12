@@ -376,6 +376,13 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
     organization_id = org_membership.organization_id if org_membership else None
     auth_method = payload.get("auth_method") or "password"
     idp_org_id = payload.get("idp_org_id")
+    # PR11 (SLO): carried through from create_mfa_challenge_token -- None
+    # for every non-SAML challenge token, unaffected. See that
+    # function's own docstring for why a SAML+personal-MFA login needs
+    # this threaded through the challenge round trip at all.
+    saml_name_id = payload.get("saml_name_id")
+    saml_session_index = payload.get("saml_session_index")
+    organization_saml_config_id = payload.get("organization_saml_config_id")
 
     if matched_device is not None:
         now = datetime.utcnow()
@@ -389,7 +396,11 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
             resource_type="mfa_device", resource_id=matched_device.id,
             metadata={"authentication_method": auth_method},
         )
-        return generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+        return generate_tokens(
+            db, user, auth_method=auth_method, idp_org_id=idp_org_id,
+            saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+            organization_saml_config_id=organization_saml_config_id,
+        )
 
     # PR11.5.4: TOTP didn't match any device -- try `code` as a recovery
     # code before giving up. Same challenge_token, same request shape;
@@ -409,7 +420,11 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
             resource_type="user", resource_id=user.id,
             metadata={"authentication_method": auth_method},
         )
-        return generate_tokens(db, user, auth_method=auth_method, idp_org_id=idp_org_id)
+        return generate_tokens(
+            db, user, auth_method=auth_method, idp_org_id=idp_org_id,
+            saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+            organization_saml_config_id=organization_saml_config_id,
+        )
 
     audit_service.log_event(
         db, AuditEventType.MFA_VERIFICATION_FAILED,

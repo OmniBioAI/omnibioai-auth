@@ -549,6 +549,17 @@ class OrganizationSAMLConfig(Base):
     entity_id = Column(String(500), nullable=False)  # IdP Entity ID
     sso_url = Column(String(500), nullable=False)  # IdP SSO (AuthnRequest destination) endpoint
     x509_certificate = Column(Text, nullable=False)  # IdP signing certificate, PEM -- Text, not String, since a chain can exceed a few hundred bytes
+    # PR11 (SLO): the IdP's SingleLogoutService endpoint -- a genuinely
+    # distinct URL from sso_url above. python3-saml's own settings schema
+    # (onelogin/saml2/settings.py) requires idp.singleLogoutService.url as
+    # a separate key from idp.singleSignOnService.url and does not fall
+    # back to the latter (verified by reading get_idp_slo_url() directly
+    # -- it returns None, not sso_url, when unset), so reusing sso_url for
+    # both purposes was not an option. Nullable: an org's SAML config can
+    # exist and support login without its IdP also supporting SLO (many
+    # smaller IdPs don't), and every pre-PR11 config row has no value for
+    # this by construction.
+    slo_url = Column(String(500), nullable=True)
 
     # Configuration only -- no attribute extraction/processing exists yet
     # (a later PR's scope). Example shape: {"email": "NameID",
@@ -736,6 +747,22 @@ class UserSession(Base):
     # session_service for where these are written.
     client_ip = Column(String(64), nullable=True)
     user_agent = Column(String(255), nullable=True)
+    # PR11 (SLO): set only for a session created by a SAML login (see
+    # auth_service.generate_tokens' new optional saml_name_id/
+    # saml_session_index kwargs) -- this is what lets an IdP-initiated
+    # LogoutRequest (which carries NameID + SessionIndex, never this
+    # session's own family_id/refresh token) find the right local
+    # session(s) to revoke. All three nullable and all three None for
+    # every non-SAML session (password/OAuth/OIDC-SSO/license) and for
+    # every session that predates this column.
+    saml_name_id = Column(String(500), nullable=True, index=True)
+    saml_session_index = Column(String(255), nullable=True)
+    # Scopes the NameID lookup to one org's specific SAML IdP -- same
+    # role OAuthAccount.organization_saml_config_id already plays for
+    # SAML identity linking (PR6): without this, a NameID that happens to
+    # match across two different orgs' IdPs could let one org's
+    # LogoutRequest revoke another org's session for "the same" email.
+    organization_saml_config_id = Column(Integer, ForeignKey("organization_saml_configs.id"), nullable=True)
 
 
 class OrganizationMFAPolicy(Base):

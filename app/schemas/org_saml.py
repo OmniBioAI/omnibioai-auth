@@ -8,6 +8,11 @@ class OrgSAMLConfigCreate(BaseModel):
     sso_url: str
     x509_certificate: str
     attribute_mapping: dict[str, str] | None = None
+    # PR11 (SLO): the IdP's SingleLogoutService endpoint -- optional,
+    # since not every IdP supports or needs SLO configured to use SAML
+    # login at all. See OrganizationSAMLConfig.slo_url's own comment for
+    # why this is a genuinely separate field from sso_url.
+    slo_url: str | None = None
 
 
 class OrgSAMLConfigUpdate(BaseModel):
@@ -22,6 +27,7 @@ class OrgSAMLConfigUpdate(BaseModel):
     # relay_state), so this is the real, working way to disable/
     # re-enable a config without deleting it.
     status: str | None = None
+    slo_url: str | None = None
 
 
 class OrgSAMLConfigOut(BaseModel):
@@ -40,5 +46,6 @@ class OrgSAMLConfigOut(BaseModel):
     # docstrings for this discovered, disclosed gap.
     enabled: bool
     status: str
+    slo_url: str | None
     created_at: datetime | None
     updated_at: datetime | None
