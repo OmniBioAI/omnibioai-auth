@@ -295,8 +295,12 @@ def test_relaystate_does_not_carry_the_certificate_or_raw_config(client, org_wit
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     relay_state = parse_qs(urlparse(resp.headers["location"]).query)["RelayState"][0]
     claims = decode_token(relay_state)
+    # request_id (PR5 addition): the AuthnRequest's own ID -- not
+    # secret/config data, just what lets PR5's ACS handler validate
+    # InResponseTo for real. See create_saml_relay_state_token's own
+    # docstring.
     assert set(claims.keys()) <= {
-        "type", "organization_id", "organization_saml_config_id", "exp", "jti", "iss", "aud",
+        "type", "organization_id", "organization_saml_config_id", "request_id", "exp", "jti", "iss", "aud",
     }
 
 

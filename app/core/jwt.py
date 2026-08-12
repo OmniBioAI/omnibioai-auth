@@ -141,7 +141,7 @@ def create_sso_state_token(
     )
 
 
-def create_saml_relay_state_token(organization_id: int, organization_saml_config_id: int):
+def create_saml_relay_state_token(organization_id: int, organization_saml_config_id: int, request_id: str):
     """SAML SSO PR4: signed, opaque RelayState for the SP-initiated SAML
     login flow (/auth/saml/{org_slug}/login). Structural analog of
     create_sso_state_token's role for OIDC SSO's `state` parameter --
@@ -159,16 +159,27 @@ def create_saml_relay_state_token(organization_id: int, organization_saml_config
     create_sso_state_token's organization_sso_config_id: which IdP config
     this login attempt is for, bound server-side at /login time from the
     already-resolved Organization/OrganizationSAMLConfig rows -- never
-    from anything client-supplied -- so a future ACS handler can verify
-    the callback's RelayState commits to the same organization/config
-    this login actually started with, instead of trusting org_slug (or
-    any other client-supplied value) a second time at that point.
+    from anything client-supplied -- so PR5's ACS handler can verify the
+    callback's RelayState commits to the same organization/config this
+    login actually started with, instead of trusting org_slug (or any
+    other client-supplied value) a second time at that point.
+
+    request_id (PR5 addition): the AuthnRequest's own ID, generated at
+    /login time -- carried here so PR5 can pass it back into
+    OneLogin_Saml2_Auth.process_response(request_id=...) and get a real
+    InResponseTo check from python3-saml itself, instead of skipping
+    that validation (which the library treats as "don't check
+    InResponseTo" when request_id is None -- not acceptable for a
+    security-relevant check). Required, not optional: unlike
+    code_verifier on create_oauth_state_token, there is no pre-PR5
+    RelayState in the wild that would need to keep decoding without it.
     """
     return _sign(
         {
             "type": "saml_relay_state",
             "organization_id": organization_id,
             "organization_saml_config_id": organization_saml_config_id,
+            "request_id": request_id,
             "exp": datetime.utcnow() + timedelta(minutes=10),
             "jti": str(uuid.uuid4()),
         }
