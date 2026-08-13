@@ -196,10 +196,15 @@ not a novel technique.
 
 ## Residual limitations (intentionally unresolved in this PR)
 
-1. **`POST /auth/{provider}/link/confirm` has its own, separate,
+1. ~~**`POST /auth/{provider}/link/confirm` has its own, separate,
    lower-severity `verify_password` call site** -- see "Scope" above.
    Not an arbitrary-email enumeration oracle (requires a valid signed
-   `link_token` first), not fixed here.
+   `link_token` first), not fixed here.~~ **Closed** by the
+   HIPAA Phase 4 follow-up -- see
+   [docs/security-link-confirm-timing-equalization.md](security-link-confirm-timing-equalization.md)
+   for the full discovery/threat-model/design writeup, including why it
+   remained lower severity than this document's own finding even before
+   being closed.
 2. **Database query timing itself is not equalized.** An index lookup
    for an existing row vs. a miss can differ by a small, sub-millisecond-
    to-low-single-digit-millisecond amount depending on database engine,
