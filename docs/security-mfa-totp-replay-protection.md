@@ -228,19 +228,27 @@ targets. `verify_recovery_code` (a read: is there an unused row matching
 this hash) and `consume_recovery_code` (a separate write: mark it used)
 are not atomic with each other -- two truly concurrent requests
 presenting the same recovery code could both read "unused" before either
-writes. In practice this does **not** allow two sessions to be minted:
-the challenge token's own `jti` uniqueness (hardened above) is the
-backstop that ensures only one of the two ever completes
-`generate_tokens`. The *only* residual effect is that the recovery
-code's own `used_at` timestamp can be written twice (idempotently, by
-both the winner and the loser) rather than exactly once, and the loser
-now gets a clean `401` (via the `_consume_challenge_jti` hardening above)
-instead of a raw 500. **Recommended follow-up** (not implemented here,
-per this PR's explicit scope): give `consume_recovery_code` the same
-atomic-claim shape as `_try_claim_totp_step` (e.g. an
-`UPDATE ... WHERE used_at IS NULL` with a rows-affected check) if a
-fully race-free audit trail for recovery-code consumption specifically
-is ever required.
+writes.
+
+**Status: closed by HIPAA Phase 5, see
+[docs/security-mfa-recovery-code-atomicity.md](security-mfa-recovery-code-atomicity.md)
+-- with one correction to this section's own original analysis.** This
+section originally assessed the residual risk as *not* allowing two
+sessions to be minted, reasoning that the challenge token's own `jti`
+uniqueness backstops it. That reasoning holds only for two concurrent
+requests racing the *same* `challenge_token` (one `jti`, one row in
+`revoked_tokens`, `UNIQUE` rejects the second). It does **not** hold for
+two concurrent requests using *different* challenge_tokens (e.g. two
+separate logins) presenting the same still-unused recovery code -- each
+gets its own distinct `jti`, so neither is ever rejected by that
+constraint, and (verified by direct reproduction during HIPAA Phase 5's
+own discovery, against this exact pre-fix code) **two independent
+sessions could in fact be minted from one recovery code** in that
+broader case. The original "no double-session risk" framing understated
+the actual exposure; HIPAA Phase 5's `try_consume_recovery_code` closes
+both variants with one fix (an atomic `UPDATE ... WHERE used_at IS NULL`
+claim, checked by rows-affected), independent of which or how many
+challenge_tokens are involved.
 
 ## Audit / secret-handling verification
 
