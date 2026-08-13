@@ -21,6 +21,7 @@ FUTURE_NAMES = {
     "workflow.manage",
     "runs.read",
     "model.use",
+    "model.resolve_ownership",
     "dataset.read",
     "usage.read",
     "billing.read",
@@ -95,10 +96,11 @@ def test_response_contains_all_registered_permissions(client):
     # 13 legacy (5 platform + 3 PR3D + 5 org) + 7 future enterprise entries
     # + 3 omnibioai-workflow-bundles entries (workflow.read/publish/manage)
     # + 2 omnibioai-tes entries (workflow.execute, now consumed by that
-    # repo instead of sitting unenforced, + runs.read).
+    # repo instead of sitting unenforced, + runs.read)
+    # + 1 omnibioai-model-registry Phase 2E entry (model.resolve_ownership).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 25
+    assert len(REGISTRY) == 26
 
 
 def test_response_fields_match_permission_def_as_dict(client):

@@ -379,6 +379,44 @@ _register(
         legacy=False,
     )
 )
+# omnibioai-model-registry Phase 2E: a deliberately SEPARATE permission
+# from model.use, not layered on top of it -- resolving a
+# status="legacy_unowned" model's ownership (assigning it, once, to the
+# resolver's own organization) is a narrower, more privileged
+# administrative action than "use the registry", and Phase 2E's own
+# design explicitly requires that holding model.use alone must not be
+# sufficient to invoke it. Same enforcement shape as model.use itself
+# (checked by that service against the JWT `permissions` claim, not a
+# live call back into this repo) -- BOTH-scoped for the same reason
+# model.use is. Granted to the platform-wide "org_admin" role (see
+# org_service.py's ORG_ADMIN_PERMISSIONS) -- the existing "administer
+# this org's own resources" role, the same one workflow.manage/
+# runs.read/manage_teams/etc. already live on -- never to "scientist"
+# (model.use's own role), so an ordinary model.use holder does not
+# incidentally gain it. Deliberately NOT org_role/"org_admin" as a
+# role-name check anywhere downstream -- this is the permission-based
+# alternative that was chosen instead of that, in
+# omnibioai-model-registry's own Phase 2E design.
+_register(
+    PermissionDef(
+        name="model.resolve_ownership",
+        resource="model",
+        action="resolve_ownership",
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.MODEL,
+        description=(
+            "Resolve a legacy_unowned Model Registry model's ownership to "
+            "the resolver's own organization (omnibioai-model-registry "
+            "Phase 2E). Distinct from model.use -- does not grant, and is "
+            "not granted by, ordinary model read/write access. Already-"
+            "owned models can never be reassigned via this permission; "
+            "authorization is enforced entirely in "
+            "omnibioai-model-registry, which remains the sole source of "
+            "truth for model ownership."
+        ),
+        legacy=False,
+    )
+)
 _register(
     PermissionDef(
         name="dataset.read",

@@ -34,6 +34,16 @@ ORG_ADMIN_PERMISSIONS = [
     # workflow.execute itself isn't: that's an operator capability, not
     # an org-administration one).
     "runs.read",
+    # omnibioai-model-registry Phase 2E: resolving a legacy_unowned
+    # model's ownership to this org is the same "administer this org's
+    # own resources" character as manage_teams/manage_api_keys/
+    # workflow.manage above -- an org-administration action, not routine
+    # model usage. Deliberately NOT added to SCIENTIST_PERMISSIONS below
+    # (which already carries model.use): an ordinary scientist who can
+    # use models must not incidentally gain the ability to claim
+    # ownership of orphaned ones. See permission_names.py's
+    # model.resolve_ownership entry for the full design rationale.
+    "model.resolve_ownership",
 ]
 ORG_MEMBER_ROLE = "org_member"
 
