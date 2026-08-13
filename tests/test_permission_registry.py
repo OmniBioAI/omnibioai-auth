@@ -69,6 +69,15 @@ TES_NAMES = {
     "runs.read": PermissionCategory.WORKFLOW,
 }
 
+# omnibioai-model-registry Phase 2E integration: same "real, immediately-
+# enforced" shape as WORKFLOW_BUNDLES_NAMES/TES_NAMES above -- gates that
+# repo's POST /v1/ownership/resolve endpoint (legacy/unowned model
+# ownership resolution), independent of model.use. Not a FUTURE_NAMES-
+# style unenforced placeholder.
+MODEL_REGISTRY_OWNERSHIP_NAMES = {
+    "model.resolve_ownership": PermissionCategory.MODEL,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -191,6 +200,42 @@ def test_tes_names_are_not_marked_reserved():
         assert "not yet enforced" not in REGISTRY[name].description.lower()
 
 
+# ── omnibioai-model-registry permissions ────────────────────────────────────
+
+def test_all_model_registry_ownership_names_are_known_not_legacy_scope_both():
+    for name, category in MODEL_REGISTRY_OWNERSHIP_NAMES.items():
+        assert is_known_permission(name), f"{name} missing from registry"
+        entry = REGISTRY[name]
+        assert entry.legacy is False
+        assert entry.scope == PermissionScope.BOTH
+        assert entry.category == category
+        assert entry.deprecated is False
+
+
+def test_all_model_registry_ownership_names_pass_format_validation():
+    for name in MODEL_REGISTRY_OWNERSHIP_NAMES:
+        assert is_valid_permission_format(name), name
+
+
+def test_model_registry_ownership_names_are_not_marked_reserved():
+    # Real, immediately-enforced permission (omnibioai-model-registry Phase
+    # 2E), same shape as WORKFLOW_BUNDLES_NAMES/TES_NAMES above -- must not
+    # carry the FUTURE_NAMES "Reserved -- not yet enforced" description.
+    for name in MODEL_REGISTRY_OWNERSHIP_NAMES:
+        assert "not yet enforced" not in REGISTRY[name].description.lower()
+
+
+def test_model_resolve_ownership_is_independent_of_model_use():
+    # model.use must not imply model.resolve_ownership, or vice versa --
+    # they are two separate registry entries with no relationship encoded
+    # anywhere in the registry itself (implication, if any, can only ever
+    # come from role-grant data, never from this vocabulary layer).
+    assert "model.use" in REGISTRY
+    assert "model.resolve_ownership" in REGISTRY
+    assert REGISTRY["model.use"].name != REGISTRY["model.resolve_ownership"].name
+    assert REGISTRY["model.resolve_ownership"].description != REGISTRY["model.use"].description
+
+
 # ── Registry-wide invariant ──────────────────────────────────────────────────
 
 def test_every_non_legacy_entry_satisfies_permission_format():
@@ -204,7 +249,7 @@ def test_every_non_legacy_entry_satisfies_permission_format():
 def test_registry_contains_exactly_the_expected_names():
     assert set(REGISTRY.keys()) == (
         LEGACY_NAMES | set(FUTURE_NAMES.keys()) | set(WORKFLOW_BUNDLES_NAMES.keys())
-        | set(TES_NAMES.keys())
+        | set(TES_NAMES.keys()) | set(MODEL_REGISTRY_OWNERSHIP_NAMES.keys())
     )
 
 
@@ -331,6 +376,7 @@ def test_registry_stats_totals_match_registry_size():
     assert stats["legacy_permissions"] == len(LEGACY_NAMES)
     assert stats["future_permissions"] == (
         len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
+        + len(MODEL_REGISTRY_OWNERSHIP_NAMES)
     )
 
 
@@ -344,8 +390,10 @@ def test_registry_stats_by_scope_sums_to_total():
     assert stats["by_scope"]["org"] == 5
     assert stats["by_scope"]["global"] == 8
     # 11 pre-runs.read + 1 (runs.read, added by the omnibioai-tes IAM
-    # integration -- see TES_NAMES above).
-    assert stats["by_scope"]["both"] == 12
+    # integration -- see TES_NAMES above) + 1 (model.resolve_ownership,
+    # added by the omnibioai-model-registry Phase 2E integration -- see
+    # MODEL_REGISTRY_OWNERSHIP_NAMES above).
+    assert stats["by_scope"]["both"] == 13
 
 
 def test_registry_stats_by_category_sums_to_total():
