@@ -673,6 +673,60 @@ class MFARecoveryCode(Base):
     user = relationship("User")
 
 
+class MFAUsedTOTPStep(Base):
+    """HIPAA Phase 3b (TOTP Replay / Consumed-Time-Step Protection). Not
+    part of the original PR11.5.1 MFA foundation -- added specifically to
+    close a gap that TOTP verification's own +-1 step tolerance window
+    leaves open: without this table, the *same* valid code -- correct by
+    construction for up to ~90s -- could be redeemed more than once
+    against the same device, each redemption completing a separate,
+    independent MFA challenge (a new challenge_token from a fresh login,
+    since only a *successful* challenge_token's own jti is single-use,
+    see MFAChallengeError's docstring in app/services/mfa_service.py) and
+    minting its own new session. See
+    docs/security-mfa-totp-replay-protection.md for the full threat model
+    and why this is the correct place to close it (RFC 6238's own
+    Security Considerations explicitly calls out not accepting one OTP
+    value more than once).
+
+    One row per *successfully verified* TOTP code, never per attempt --
+    app/services/mfa_service.py only ever inserts a row here after
+    independently confirming `code` is cryptographically valid for
+    `time_step`; a wrong guess never reaches this table at all, so an
+    attacker flooding failed attempts (already throttled by
+    app/services/mfa_throttle_service.py, HIPAA Phase 3) cannot grow it.
+
+    `(device_id, time_step)` is the UNIQUE pair that actually enforces
+    single-use -- `time_step` is TOTP's own RFC 6238 counter
+    (unix_time // 30), not a timestamp, so two different valid codes
+    naturally get two different rows and never collide; the *same* code
+    presented a second time (whether by an attacker who captured it, a
+    legitimate user's retried request racing on two challenge_tokens, or
+    two literally concurrent requests) always maps to the same
+    `time_step` and is rejected by this constraint at INSERT time --
+    correct and atomic across any number of horizontally-scaled
+    `omnibioai-auth` instances sharing one database, without any Redis or
+    in-process state (see app/services/mfa_service.py::_try_claim_totp_step).
+
+    No explicit expiration/cleanup job: a stale row (from a time_step no
+    device will ever present a code for again) is simply irrelevant
+    forever after, never queried again by device+time_step, so leaving it
+    in place is harmless -- the same unbounded-but-harmless-growth
+    tradeoff `RevokedToken` above already makes for exactly the same
+    reason (bounded by real successful-verification volume, not
+    attacker-controlled).
+    """
+    __tablename__ = "mfa_used_totp_steps"
+    __table_args__ = (
+        UniqueConstraint("device_id", "time_step", name="uq_mfa_used_totp_step"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    device_id = Column(Integer, ForeignKey("mfa_devices.id"), nullable=False, index=True)
+    time_step = Column(Integer, nullable=False)  # RFC 6238 counter: unix_time // period
+    consumed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class UserSession(Base):
     """Phase 4 PR-A (Session Foundation): the queryable, administrable
     shadow of one refresh-token *family* -- not a new authentication

@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core import crypto
 from app.core.jwt import decode_token
-from app.db.models import MFADevice, MFARecoveryCode, OrganizationMFAPolicy, RevokedToken, User
+from app.db.models import MFADevice, MFARecoveryCode, MFAUsedTOTPStep, OrganizationMFAPolicy, RevokedToken, User
 from app.services import audit_service, mfa_throttle_service, org_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import generate_tokens
@@ -72,7 +72,17 @@ def verify_totp_code(secret_b32: str, code: str, for_time: int | None = None) ->
     candidate in the +-1 step window -- this PR's own "constant-time
     verification comparison" requirement, preventing a timing
     side-channel from leaking how many digits an attacker has guessed
-    correctly so far."""
+    correctly so far.
+
+    Boolean-only: does not identify *which* step matched, so a caller
+    cannot enforce single-use redemption of that step from this
+    function's result alone. Still used unmodified by TOTP *enrollment*
+    (verify_totp_enrollment below), which has no replay exposure of its
+    own (a device's own verified_at/disabled_at state already makes a
+    second enrollment-confirmation attempt a no-op, see that function's
+    docstring). The MFA login challenge path
+    (verify_mfa_challenge below) uses _totp_matched_step instead -- see
+    docs/security-mfa-totp-replay-protection.md."""
     if not code or not code.isdigit() or len(code) != _DIGITS:
         return False
     if for_time is None:
@@ -82,6 +92,28 @@ def verify_totp_code(secret_b32: str, code: str, for_time: int | None = None) ->
         if hmac.compare_digest(candidate, code):
             return True
     return False
+
+
+def _totp_matched_step(secret_b32: str, code: str, for_time: int | None = None) -> int | None:
+    """HIPAA Phase 3b: same window/candidate-generation/constant-time-
+    comparison semantics as verify_totp_code above -- clock-skew handling
+    is completely unchanged -- but returns the RFC 6238 counter
+    (`candidate_time // _PERIOD`) that actually matched, instead of a
+    bare boolean, so a caller can atomically claim single-use redemption
+    of that *specific* step (see _try_claim_totp_step and
+    verify_mfa_challenge below). Returns None for a malformed or
+    non-matching code, exactly where verify_totp_code would return
+    False."""
+    if not code or not code.isdigit() or len(code) != _DIGITS:
+        return None
+    if for_time is None:
+        for_time = int(time.time())
+    for step in range(-_VERIFY_WINDOW, _VERIFY_WINDOW + 1):
+        candidate_time = for_time + step * _PERIOD
+        candidate = _totp_code_at(secret_b32, candidate_time)
+        if hmac.compare_digest(candidate, code):
+            return int(candidate_time // _PERIOD)
+    return None
 
 
 def generate_provisioning_uri(secret_b32: str, account_email: str) -> str:
@@ -329,6 +361,38 @@ class MFAThrottledError(Exception):
         super().__init__("Too many MFA verification attempts")
 
 
+def _try_claim_totp_step(db: Session, device_id: int, time_step: int) -> bool:
+    """HIPAA Phase 3b: attempts to atomically claim single-use redemption
+    of `time_step` for `device_id` by inserting a row into
+    `mfa_used_totp_steps` and committing. Returns True only for the one
+    caller whose commit actually lands first -- `UNIQUE(device_id,
+    time_step)` (app/db/models.py::MFAUsedTOTPStep) is what provides the
+    atomicity, correct across any number of horizontally-scaled instances
+    sharing this database, not any Python-level lock. Returns False for
+    every other case: the step was already claimed by an earlier or
+    concurrent request (the expected, common "this exact code was already
+    used" replay rejection), or the insert/commit failed for any other
+    reason (a transient DB error, say) -- deliberately fails *closed*
+    here: this function's only job is proving a step hasn't been used
+    before, so any outcome short of a clean, confirmed claim must be
+    treated as "cannot confirm this is fresh, therefore reject," never as
+    "silently allow it through." See
+    docs/security-mfa-totp-replay-protection.md.
+
+    Always leaves `db` in a clean, usable state for whatever the caller
+    does next (rollback on the failure path) -- the caller's own
+    subsequent queries (recovery-code fallback, audit logging) must not
+    inherit a half-failed transaction from this attempt.
+    """
+    try:
+        db.add(MFAUsedTOTPStep(device_id=device_id, time_step=time_step))
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+
+
 def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip: str | None = None) -> tuple[str, str]:
     """Completes an MFA-gated login. Validates `challenge_token` (issued
     by auth_service.generate_tokens_or_mfa_challenge), verifies `code`
@@ -374,6 +438,19 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     non-match for that candidate rather than allowed to escape and skip
     the throttle counter entirely -- HIPAA Phase 3's own "exceptions
     during verification cannot bypass the throttle" requirement.
+
+    HIPAA Phase 3b: a code that is cryptographically valid but whose
+    RFC 6238 time-step has already been redeemed (by an earlier request,
+    or by a concurrent one that committed first) is treated as a
+    non-match too -- see _try_claim_totp_step and
+    docs/security-mfa-totp-replay-protection.md. This is a *different*
+    single-use guarantee than the challenge_token's own jti consumption
+    below: jti consumption stops one challenge_token from being completed
+    twice; step consumption stops the same *code* from completing two
+    *different* challenge_tokens (e.g. two separate logins) within its
+    own ~90s validity window. Recovery-code single-use is unaffected --
+    verify_recovery_code/consume_recovery_code already enforce it via
+    `used_at`, a wholly separate mechanism this change does not touch.
     """
     try:
         payload = decode_token(challenge_token)
@@ -423,7 +500,18 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     for device in devices:
         try:
             secret = crypto.decrypt(device.encrypted_secret)
-            if verify_totp_code(secret, code):
+            step = _totp_matched_step(secret, code)
+            # HIPAA Phase 3b: cryptographically correct is not enough --
+            # only a *fresh* (never-before-claimed) step counts as a real
+            # match. _try_claim_totp_step's UNIQUE(device_id, time_step)
+            # insert is what rejects a replayed code (whether from a
+            # captured/intercepted code, a duplicated request, or two
+            # literally concurrent requests racing on the same code) --
+            # a code that's cryptographically right but whose step was
+            # already claimed falls through exactly like a wrong code,
+            # never distinguished in the response. See
+            # docs/security-mfa-totp-replay-protection.md.
+            if step is not None and _try_claim_totp_step(db, device.id, step):
                 matched_device = device
                 break
         except Exception:
@@ -521,10 +609,39 @@ def _consume_challenge_jti(db: Session, jti: str | None) -> None:
     reuse check earlier in verify_mfa_challenge and is rejected,
     defense-in-depth on top of get_current_user's own explicit
     type=="mfa_challenge" rejection (app/rbac.py) that already keeps it
-    from being usable as an access token regardless."""
-    if jti:
+    from being usable as an access token regardless.
+
+    HIPAA Phase 3b: `RevokedToken.token_jti` is UNIQUE
+    (app/db/models.py), so this INSERT is also the backstop that
+    guarantees exactly one winner when two concurrent requests both
+    reach this point for the *same* challenge_token -- on the TOTP path
+    that's already made effectively unreachable by _try_claim_totp_step
+    above (only one concurrent request can ever claim the matching
+    time_step in the first place), but the recovery-code path has no
+    analogous atomic single-winner check of its own (verify_recovery_code
+    + consume_recovery_code is a plain read-then-update, not
+    constraint-guarded -- see docs/security-mfa-totp-replay-protection.md's
+    "Recovery-code concurrency" finding), so both concurrent requests can
+    reach here. Previously uncaught: the loser's commit raised a raw
+    IntegrityError that propagated as an unhandled 500 instead of a clean
+    rejection. Now caught and re-raised as MFAChallengeError (-> 401,
+    same shape the reuse check earlier in verify_mfa_challenge already
+    uses for a stale/already-consumed token) -- and since this INSERT
+    shares its caller's not-yet-committed pending changes (matched_device/
+    user.mfa_last_verified_at updates), the rollback below cleanly
+    discards those too, leaving no partial state behind for the losing
+    request. Still exactly one session is ever minted per challenge_token,
+    regardless of which path raced to get here.
+    """
+    if not jti:
+        db.commit()
+        return
+    try:
         db.add(RevokedToken(token_jti=jti))
-    db.commit()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise MFAChallengeError("Invalid or expired challenge token")
 
 
 # ---------------------------------------------------------------------------
