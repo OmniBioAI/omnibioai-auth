@@ -36,9 +36,11 @@ MFA_ORG_POLICY_TABLES = {"organization_mfa_policies"}  # PR11.5.5 (0014)
 SESSION_TABLES = {"sessions"}  # Phase 4 PR-A (0018)
 INTERACTION_TABLES = {"interactions"}  # PR-B2 (0019)
 ORG_SAML_TABLES = {"organization_saml_configs"}  # SAML SSO PR2 (0021)
+MFA_TOTP_REPLAY_TABLES = {"mfa_used_totp_steps"}  # HIPAA Phase 3b (0024)
 ALL_TABLES = (
     BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
     | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES | INTERACTION_TABLES | ORG_SAML_TABLES
+    | MFA_TOTP_REPLAY_TABLES
 )
 
 
@@ -419,7 +421,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0023_saml_slo"
+    assert recorded == "0024_mfa_totp_replay_protection"
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -986,7 +988,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0023_saml_slo"
+    assert recorded == "0024_mfa_totp_replay_protection"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

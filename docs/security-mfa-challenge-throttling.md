@@ -405,6 +405,8 @@ No other endpoint's contract changes.
    product/security decides the defense-in-depth is worth it.
 2. **No per-device consumed-time-step replay tracking** -- see "Replay
    findings" above. Pre-existing, not introduced or worsened by this PR.
+   **Status: closed by HIPAA Phase 3b, see
+   [docs/security-mfa-totp-replay-protection.md](security-mfa-totp-replay-protection.md).**
 3. **In-process Redis-outage fallback is per-instance and shares its
    cardinality cap with the login control** -- see "Redis failure
    behavior" above.
