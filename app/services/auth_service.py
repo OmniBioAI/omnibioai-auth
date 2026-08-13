@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta
 from app.db.models import OrganizationMFAPolicy, User, RefreshToken, UserSession
 from app.core.config import settings
-from app.core.security import hash_password, needs_rehash, verify_password
+from app.core.security import DUMMY_PASSWORD_HASH, hash_password, needs_rehash, verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
 from app.services import audit_service, login_throttle_service, org_service, session_service, team_service
 from app.services.audit_service import AuditEventType
@@ -67,15 +67,35 @@ def authenticate_user(db, email, password, client_ip: str | None = None):
     caller of this function is unaffected -- today there are none besides
     routes_auth.py's /auth/login, but this keeps the signature backward
     compatible regardless.
+
+    HIPAA Phase 4: the first two failure branches below now also call
+    `verify_password` -- against `DUMMY_PASSWORD_HASH`, a fixed
+    placeholder, never a real credential -- purely to spend the same
+    bcrypt-bound CPU time the third branch's own (real) verification
+    already costs. This closes the timing side-channel identified but
+    deliberately left open by HIPAA Phase 1 PR1 (see
+    docs/security-auth-rate-limiting.md's own "Enumeration resistance"
+    section and docs/security-login-timing-side-channel.md for the full
+    discovery/threat-model/design writeup): previously, an unknown email
+    or a password-less account returned near-instantly (no hashing work
+    at all), while a real account with a merely wrong password paid a
+    full bcrypt verification first -- a measurable response-time
+    difference an attacker could use to enumerate which submitted emails
+    correspond to real, password-protected accounts, independent of
+    guessing the password itself. The dummy verification's boolean
+    result is always discarded; it changes nothing about which branch is
+    taken, only how much CPU time is spent getting there.
     """
     user = db.query(User).filter(User.email == email).first()
 
     if not user or user.status != "active":
+        verify_password(password, DUMMY_PASSWORD_HASH)
         _log_login_failure(db, email, user, "unknown_user_or_inactive")
         login_throttle_service.record_failure(db, email, client_ip)
         return None
 
     if not user.hashed_password:
+        verify_password(password, DUMMY_PASSWORD_HASH)
         _log_login_failure(db, email, user, "no_password_set")
         login_throttle_service.record_failure(db, email, client_ip)
         return None  # OAuth-only account — no password set

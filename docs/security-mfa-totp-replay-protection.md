@@ -275,7 +275,9 @@ audit secret-handling, and enrollment-confirmation unaffected.
    challenge token's jti uniqueness backstops it), but the `used_at`
    write is not exactly-once. Flagged as a follow-up, not fixed here.
 2. **The local-password login timing side channel remains unaddressed**
-   -- explicitly out of scope for this task.
+   -- explicitly out of scope for this task. **Status: closed by HIPAA
+   Phase 4, see
+   [docs/security-login-timing-side-channel.md](security-login-timing-side-channel.md).**
 3. **`MFAUsedTOTPStep` has no active pruning job** -- deliberate, bounded,
    harmless growth; see "Replay-state lifetime" above.
 

@@ -24,6 +24,29 @@ from passlib.exc import PasswordSizeError
 # the user's own next successful login, never eagerly.
 pwd_context = CryptContext(schemes=["bcrypt_sha256", "bcrypt"], deprecated="auto")
 
+# HIPAA Phase 4: login timing side-channel closure
+# (app/services/auth_service.py::authenticate_user). A fixed, precomputed
+# hash of an arbitrary placeholder string -- never a real credential,
+# never compared against anything meaningful. Its only purpose is to give
+# every login-failure branch that currently has no real user/password-
+# hash to check against (unknown email, inactive account, password-less
+# OAuth-only account) something to run a real bcrypt-cost verification
+# against, so that branch costs the same CPU time as the "real account,
+# wrong password" branch below -- see that function's own docstring and
+# docs/security-login-timing-side-channel.md for the full design.
+#
+# Computed once, at import time (this module's current CryptContext
+# default -- "bcrypt_sha256" -- same scheme/cost factor real
+# registration hashes use), not hardcoded as a literal string: this way
+# it always matches whatever this process's actual default hashing cost
+# is, including if that default is ever changed, without a second place
+# to remember to update. The one-time cost (same order of magnitude as
+# hashing any other password) is paid once per process start, the same
+# category of startup cost `_redis`/`_pub`'s own module-level connections
+# already pay elsewhere in this service -- not a per-request cost.
+DUMMY_PASSWORD_HASH = pwd_context.hash("omnibioai-timing-equalization-placeholder-not-a-real-credential")
+
+
 def hash_password(password: str):
     return pwd_context.hash(password)
 
