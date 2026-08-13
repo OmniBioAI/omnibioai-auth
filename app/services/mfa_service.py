@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.core import crypto
 from app.core.jwt import decode_token
 from app.db.models import MFADevice, MFARecoveryCode, OrganizationMFAPolicy, RevokedToken, User
-from app.services import audit_service, org_service
+from app.services import audit_service, mfa_throttle_service, org_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import generate_tokens
 
@@ -314,7 +314,22 @@ class MFAChallengeError(ValueError):
     was fine but the *code* was wrong -- mapped to 400 instead."""
 
 
-def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[str, str]:
+class MFAThrottledError(Exception):
+    """HIPAA Phase 3: raised when mfa_throttle_service reports the
+    account/IP/(account, IP) pair behind this request is currently locked
+    out. Mapped to 429 by the route, mirroring
+    login_throttle_service/routes_auth.py's own `throttle.locked` ->
+    429-with-Retry-After shape. A distinct exception, not MFAChallengeError
+    reused, so the route can tell "throttled" apart from "bad token" and
+    attach the right Retry-After -- both still reveal nothing about the
+    account beyond what the existing 401/400 responses already do."""
+
+    def __init__(self, retry_after_seconds: int):
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__("Too many MFA verification attempts")
+
+
+def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip: str | None = None) -> tuple[str, str]:
     """Completes an MFA-gated login. Validates `challenge_token` (issued
     by auth_service.generate_tokens_or_mfa_challenge), verifies `code`
     against every verified TOTP device the user holds -- not just one,
@@ -330,6 +345,35 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
     given token/user doesn't check out. Raises plain ValueError (-> 400)
     only when the token checks out fine but `code` doesn't match any
     verified device.
+
+    HIPAA Phase 3: raises MFAThrottledError (-> 429) when
+    mfa_throttle_service reports this user_id/IP/pair is currently locked
+    out of MFA verification -- see app/services/mfa_throttle_service.py
+    and docs/security-mfa-challenge-throttling.md for the full design.
+    The throttle check runs as early as possible: right after the token's
+    signature is verified and its `user_id` claim extracted (a value this
+    function already trusts completely -- it's what scopes the rest of
+    this function's own logic to one user), but before the RevokedToken/
+    user-active/mfa-enabled checks, the device query, any TOTP secret
+    decryption, or any recovery-code lookup. This means once an account
+    is throttled, *every* challenge request against it gets a uniform 429
+    -- including a request whose token would otherwise separately fail
+    with 401 -- deliberately mirroring login_throttle_service's own
+    "an already-locked account rejects even the correct credential"
+    behavior (test_account_lockout_blocks_even_the_correct_password in
+    tests/test_login_rate_limiting.py), not a gap.
+
+    A single HTTP request to this function records at most one throttle
+    failure, on its one terminal failure branch (both the TOTP-device
+    loop and the recovery-code check found no match) -- never per-device,
+    never for a request that never got past the token-validity checks
+    above (a different failure class, see mfa_throttle_service.record_failure's
+    own docstring for why those aren't counted as MFA-guessing attempts).
+    An unexpected exception while checking a device's TOTP secret or a
+    recovery code (e.g. a corrupted encrypted_secret) is treated as a
+    non-match for that candidate rather than allowed to escape and skip
+    the throttle counter entirely -- HIPAA Phase 3's own "exceptions
+    during verification cannot bypass the throttle" requirement.
     """
     try:
         payload = decode_token(challenge_token)
@@ -340,10 +384,20 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
         raise MFAChallengeError("Invalid or expired challenge token")
 
     jti = payload.get("jti")
+    user_id = payload.get("user_id")
+
+    # HIPAA Phase 3: earliest point a trusted account identifier exists
+    # (the token's signature is already verified above) -- checked before
+    # any further DB/crypto work. See this function's own docstring for
+    # the full ordering rationale.
+    if user_id is not None:
+        throttle = mfa_throttle_service.check_throttled(user_id, client_ip)
+        if throttle.locked:
+            raise MFAThrottledError(throttle.retry_after_seconds)
+
     if jti and db.query(RevokedToken).filter(RevokedToken.token_jti == jti).first():
         raise MFAChallengeError("Invalid or expired challenge token")
 
-    user_id = payload.get("user_id")
     user = db.query(User).filter(User.id == user_id).first() if user_id is not None else None
     if not user or user.status != "active":
         raise MFAChallengeError("Invalid or expired challenge token")
@@ -367,10 +421,18 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
 
     matched_device = None
     for device in devices:
-        secret = crypto.decrypt(device.encrypted_secret)
-        if verify_totp_code(secret, code):
-            matched_device = device
-            break
+        try:
+            secret = crypto.decrypt(device.encrypted_secret)
+            if verify_totp_code(secret, code):
+                matched_device = device
+                break
+        except Exception:
+            # HIPAA Phase 3: a broken/undecryptable device must not 500
+            # this request (and, more importantly, must not let it skip
+            # the throttle counter below by raising past it) -- treated
+            # as "this device doesn't match", the same outcome as a wrong
+            # code, and verification continues against any other device.
+            continue
 
     org_membership = org_service.resolve_primary_membership(db, user.id)
     organization_id = org_membership.organization_id if org_membership else None
@@ -389,6 +451,7 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
         matched_device.last_used_at = now
         user.mfa_last_verified_at = now
         _consume_challenge_jti(db, jti)
+        mfa_throttle_service.record_success(user_id, client_ip)
 
         audit_service.log_event(
             db, AuditEventType.MFA_VERIFIED,
@@ -407,12 +470,18 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
     # the code's own format (6 digits vs "AAAA-BBBB-CCCC") is what
     # disambiguates, never a separate endpoint or field. See
     # docs/pr11-mfa-recovery-codes-discovery.md SS3.
-    recovery_match = verify_recovery_code(db, user.id, code)
+    try:
+        recovery_match = verify_recovery_code(db, user.id, code)
+    except Exception:
+        # Same "treat as no-match, never let the throttle be bypassed by
+        # an unexpected error" reasoning as the TOTP loop above.
+        recovery_match = None
     if recovery_match is not None:
         now = datetime.utcnow()
         consume_recovery_code(db, recovery_match.id)
         user.mfa_last_verified_at = now
         _consume_challenge_jti(db, jti)
+        mfa_throttle_service.record_success(user_id, client_ip)
 
         audit_service.log_event(
             db, AuditEventType.MFA_RECOVERY_CODE_USED,
@@ -425,6 +494,15 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str) -> tuple[
             saml_name_id=saml_name_id, saml_session_index=saml_session_index,
             organization_saml_config_id=organization_saml_config_id,
         )
+
+    # HIPAA Phase 3: the one terminal failure branch -- exactly one
+    # record_failure call per request, regardless of how many devices
+    # were checked above. Must run before the ValueError below, not in a
+    # caller-side except block, since a plain ValueError is also how
+    # every *other* "code didn't match" case in this codebase already
+    # signals -- catching it generically at the route layer would risk
+    # conflating this with an unrelated future ValueError.
+    mfa_throttle_service.record_failure(db, user_id, client_ip, organization_id)
 
     audit_service.log_event(
         db, AuditEventType.MFA_VERIFICATION_FAILED,

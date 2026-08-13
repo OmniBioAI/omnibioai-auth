@@ -171,6 +171,79 @@ class Settings:
     # is degraded-mode-only, not the steady-state mechanism.
     RATE_LIMIT_FALLBACK_MAX_KEYS = int(os.getenv("RATE_LIMIT_FALLBACK_MAX_KEYS", 10000))
 
+    # HIPAA Phase 3: MFA/TOTP challenge brute-force protection
+    # (app/services/mfa_throttle_service.py). Reuses the same atomic Redis
+    # primitives as the login throttle above (app/core/rate_limit.py) but
+    # with its own, independently-tunable policy -- deliberately NOT the
+    # same thresholds as RATE_LIMIT_* above. A TOTP code is a 6-digit
+    # value (10^6 space, only ~3 valid values at once given the +-1 step
+    # verification window) checked against a challenge_token that is
+    # itself valid for 5 minutes and NOT single-use on a *failed* attempt
+    # (only a successful verification consumes its jti -- see
+    # mfa_service.verify_mfa_challenge) -- i.e. one challenge_token can be
+    # resubmitted with different codes until it expires. That combination
+    # calls for tighter windows and lower attempt counts than local-
+    # password login gets. See docs/security-mfa-challenge-throttling.md.
+    MFA_RATE_LIMIT_ENABLED = os.getenv("MFA_RATE_LIMIT_ENABLED", "true").lower() == "true"
+
+    # Account dimension: keyed on the challenge token's own (server-
+    # verified, signature-checked) user_id -- never a client-supplied
+    # header. Primary defense: an attacker can rotate source IP, but not
+    # the account they're trying to get past MFA for.
+    MFA_RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS = int(os.getenv("MFA_RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS", 5))
+    MFA_RATE_LIMIT_ACCOUNT_WINDOW_SECONDS = int(os.getenv("MFA_RATE_LIMIT_ACCOUNT_WINDOW_SECONDS", 300))
+    MFA_RATE_LIMIT_ACCOUNT_LOCKOUT_SECONDS = int(os.getenv("MFA_RATE_LIMIT_ACCOUNT_LOCKOUT_SECONDS", 300))
+
+    # IP dimension: secondary control only (per this PR's explicit design
+    # requirement -- never rely on IP alone). Catches one source hammering
+    # many different accounts' MFA challenges; deliberately higher than
+    # the account threshold for the same reason RATE_LIMIT_IP_* is higher
+    # than RATE_LIMIT_ACCOUNT_*: a shared/NAT'd IP can legitimately
+    # produce more attempts across many real users than one account ever
+    # should.
+    MFA_RATE_LIMIT_IP_MAX_ATTEMPTS = int(os.getenv("MFA_RATE_LIMIT_IP_MAX_ATTEMPTS", 20))
+    MFA_RATE_LIMIT_IP_WINDOW_SECONDS = int(os.getenv("MFA_RATE_LIMIT_IP_WINDOW_SECONDS", 300))
+    MFA_RATE_LIMIT_IP_LOCKOUT_SECONDS = int(os.getenv("MFA_RATE_LIMIT_IP_LOCKOUT_SECONDS", 300))
+
+    # (account, IP) pair dimension: the fast circuit-breaker for the
+    # common single-attacker-single-target case.
+    MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS = int(os.getenv("MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS", 3))
+    MFA_RATE_LIMIT_PAIR_WINDOW_SECONDS = int(os.getenv("MFA_RATE_LIMIT_PAIR_WINDOW_SECONDS", 300))
+    MFA_RATE_LIMIT_PAIR_LOCKOUT_SECONDS = int(os.getenv("MFA_RATE_LIMIT_PAIR_LOCKOUT_SECONDS", 300))
+
+    # Progressive escalation, account dimension only -- same shape as
+    # RATE_LIMIT_PROGRESSIVE_MULTIPLIER/RATE_LIMIT_MAX_LOCKOUT_SECONDS.
+    # Cap is intentionally lower than the login control's 1h: recovery
+    # codes remain a legitimate way for a genuinely locked-out user to
+    # finish signing in during an escalated lockout (see
+    # docs/security-mfa-challenge-throttling.md), so an overly long
+    # account-dimension cap buys little extra security while making a
+    # false-positive lockout (e.g. clock drift, a mistyped code a few
+    # times) more painful than necessary.
+    MFA_RATE_LIMIT_PROGRESSIVE_MULTIPLIER = int(os.getenv("MFA_RATE_LIMIT_PROGRESSIVE_MULTIPLIER", 2))
+    MFA_RATE_LIMIT_MAX_LOCKOUT_SECONDS = int(os.getenv("MFA_RATE_LIMIT_MAX_LOCKOUT_SECONDS", 1800))
+    MFA_RATE_LIMIT_STRIKE_TTL_SECONDS = int(os.getenv("MFA_RATE_LIMIT_STRIKE_TTL_SECONDS", 3600))
+
+    # Redis-unavailable behavior: same hybrid fail-soft-with-bounded-
+    # fallback strategy as RATE_LIMIT_FALLBACK_* above (see
+    # app/core/rate_limit.py's module docstring for why full fail-open and
+    # full fail-closed were both rejected there) -- re-evaluated, not
+    # blindly copied, for MFA specifically: a full fail-closed control
+    # (reject every MFA verification while Redis is down) was considered
+    # and rejected here too, for the identical reason -- it would turn a
+    # Redis outage into a total outage for every MFA-enabled user, not
+    # just degrade one control. The MFA fallback thresholds are tighter
+    # than the login ones, consistent with MFA_RATE_LIMIT_* above being
+    # tighter than RATE_LIMIT_* throughout. Shares RATE_LIMIT_FALLBACK_MAX_KEYS'
+    # single cardinality cap with the login fallback (both live in the
+    # same in-process counter, app/core/rate_limit.py::_fallback) rather
+    # than a second, separate bound -- explicitly documented in
+    # docs/security-mfa-challenge-throttling.md as a known cross-feature
+    # interaction (a burst against one can evict the other's fallback
+    # state), not an oversight.
+    MFA_RATE_LIMIT_FALLBACK_MAX_ATTEMPTS = int(os.getenv("MFA_RATE_LIMIT_FALLBACK_MAX_ATTEMPTS", 2))
+    MFA_RATE_LIMIT_FALLBACK_WINDOW_SECONDS = int(os.getenv("MFA_RATE_LIMIT_FALLBACK_WINDOW_SECONDS", 300))
+
     # HIPAA Phase 1 PR2: local-password security policy
     # (app/core/password_policy.py). Applies only to POST /auth/register --
     # the only user-facing local-password-creation endpoint this service

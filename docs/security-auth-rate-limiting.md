@@ -255,7 +255,8 @@ would be redundant and out of this PR's scope.
 2. **`POST /mfa/challenge` has no throttling** — discovered during this
    PR's work, arguably more urgent than the local-password gap given a
    6-digit TOTP keyspace, but MFA redesign is explicitly out of this PR's
-   scope. Needs its own follow-up.
+   scope. Needs its own follow-up. **Status: closed by HIPAA Phase 3, see
+   [docs/security-mfa-challenge-throttling.md](security-mfa-challenge-throttling.md).**
 3. **In-process Redis-outage fallback is per-instance** — see "Redis
    behavior" above.
 4. **The nginx `auth_limit` zone is untouched** — it's in a different

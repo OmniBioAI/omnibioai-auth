@@ -1,4 +1,13 @@
 """HIPAA Phase 1 PR1: atomic Redis primitives for login abuse protection.
+Reused, not duplicated, by HIPAA Phase 3's MFA/TOTP challenge throttle
+(`app/services/mfa_throttle_service.py`) -- every function here is generic
+over its `fail_key`/`lock_key` strings and (for the Redis path) its
+window/max-attempts/lockout arguments, so a second caller with its own
+policy and its own key namespace needs no changes to this module beyond
+the optional `fallback_*` overrides on `record_attempt` (see its
+docstring) that let that caller's in-process fallback use its own,
+independently-tuned thresholds instead of silently inheriting the login
+control's.
 
 Owns its own Redis client (`_redis`), same per-module-ownership convention
 `token_revocation._blacklist` and `routes_auth._pub` already establish in
@@ -115,10 +124,24 @@ class _InProcessFallback:
             self._counters.clear()
             self._locks.clear()
 
-    def record_attempt(self, fail_key: str, lock_key: str) -> RateLimitResult:
+    def record_attempt(
+        self,
+        fail_key: str,
+        lock_key: str,
+        window_seconds: int | None = None,
+        max_attempts: int | None = None,
+    ) -> RateLimitResult:
+        """`window_seconds`/`max_attempts` default to the login control's
+        own RATE_LIMIT_FALLBACK_* settings when omitted -- every existing
+        caller (login_throttle_service.py) is unaffected. A caller with
+        its own, independently-tuned fallback policy (e.g.
+        mfa_throttle_service.py -- see that module and
+        MFA_RATE_LIMIT_FALLBACK_* in config.py for why MFA's fallback is
+        deliberately tighter than login's) passes them explicitly instead
+        of silently inheriting login's thresholds."""
         now = time.monotonic()
-        window = settings.RATE_LIMIT_FALLBACK_WINDOW_SECONDS
-        max_attempts = settings.RATE_LIMIT_FALLBACK_MAX_ATTEMPTS
+        window = window_seconds if window_seconds is not None else settings.RATE_LIMIT_FALLBACK_WINDOW_SECONDS
+        max_attempts = max_attempts if max_attempts is not None else settings.RATE_LIMIT_FALLBACK_MAX_ATTEMPTS
         with self._lock:
             expires_at = self._locks.get(lock_key)
             if expires_at is not None and expires_at > now:
@@ -158,12 +181,21 @@ _fallback = _InProcessFallback()
 
 
 def record_attempt(
-    fail_key: str, lock_key: str, window_seconds: int, max_attempts: int, lockout_seconds: int
+    fail_key: str,
+    lock_key: str,
+    window_seconds: int,
+    max_attempts: int,
+    lockout_seconds: int,
+    fallback_window_seconds: int | None = None,
+    fallback_max_attempts: int | None = None,
 ) -> RateLimitResult:
     """Atomically increments `fail_key` and, if `max_attempts` is reached
     within `window_seconds`, sets `lock_key` for `lockout_seconds`. Falls
     back to a tighter in-process counter on Redis error -- see module
-    docstring.
+    docstring. `fallback_window_seconds`/`fallback_max_attempts` let a
+    caller with its own fallback policy (see _InProcessFallback.record_attempt)
+    override the login control's default RATE_LIMIT_FALLBACK_* settings;
+    omitted by every caller that wants those defaults, unaffected.
     """
     try:
         locked, newly_locked, count = _redis.eval(
@@ -172,7 +204,7 @@ def record_attempt(
         return RateLimitResult(locked=bool(locked), newly_locked=bool(newly_locked), count=int(count))
     except Exception:
         RATE_LIMIT_BACKEND_DEGRADED.inc()
-        return _fallback.record_attempt(fail_key, lock_key)
+        return _fallback.record_attempt(fail_key, lock_key, fallback_window_seconds, fallback_max_attempts)
 
 
 def is_locked(lock_key: str) -> tuple[bool, int]:
