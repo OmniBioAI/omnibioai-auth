@@ -101,7 +101,9 @@ PR does not add timing equalization — doing so well (constant-time dummy
 hash comparison for unknown users) is a real, separable piece of work,
 and folding it into this PR would have expanded scope past "add rate
 limiting" into "redesign login timing behavior." **Recorded here as a
-follow-up finding, not silently expanded into.**
+follow-up finding, not silently expanded into.** **Status: closed by
+HIPAA Phase 4, see
+[docs/security-login-timing-side-channel.md](security-login-timing-side-channel.md).**
 
 ## Redis behavior
 

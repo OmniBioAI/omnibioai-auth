@@ -412,7 +412,8 @@ No other endpoint's contract changes.
    behavior" above.
 4. **The local-password login timing side channel remains unaddressed**
    -- HIPAA Phase 1 PR1's own documented, still-open limitation,
-   untouched by this PR.
+   untouched by this PR. **Status: closed by HIPAA Phase 4, see
+   [docs/security-login-timing-side-channel.md](security-login-timing-side-channel.md).**
 
 ## HIPAA Phase 3 mapping
 

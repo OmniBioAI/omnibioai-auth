@@ -205,6 +205,10 @@ All in `app/core/config.py`, env-overridable, seconds:
    only, matching the existing Phase 4 PR-A scope this PR builds on.
 4. The MFA-challenge throttling gap and the unknown-user timing side
    channel (both flagged in PR1/PR2) remain open, separate follow-ups.
+   **Status: both since closed** -- MFA-challenge throttling by HIPAA
+   Phase 3 (`docs/security-mfa-challenge-throttling.md`), the timing side
+   channel by HIPAA Phase 4
+   (`docs/security-login-timing-side-channel.md`).
 
 ## HIPAA Phase 1 mapping
 
