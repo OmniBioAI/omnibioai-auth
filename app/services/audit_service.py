@@ -119,6 +119,14 @@ class AuditEventType:
     # app/services/auth_service.py's `_log_session_revoked` for the one
     # place this is emitted from.
     SESSION_REVOKED = "session_revoked"
+    # HIPAA Phase 3 (MFA/TOTP Challenge Throttling). Same "once per
+    # dimension, only on the request that newly crosses that dimension's
+    # threshold" convention as AUTH_RATE_LIMIT_TRIGGERED above -- a
+    # distinct event type, not a reuse of that one, since this is a
+    # different resource (an MFA challenge attempt, not a password login
+    # attempt) with its own dimensions/thresholds. See
+    # app/services/mfa_throttle_service.py.
+    MFA_RATE_LIMIT_TRIGGERED = "mfa_rate_limit_triggered"
 
 
 def log_event(

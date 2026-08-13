@@ -7,8 +7,13 @@ exception: POST /challenge below, which authenticates via its request
 body instead (see docs/pr11-mfa-login-challenge-discovery.md SS8). All
 mutation/audit logic lives in app/services/mfa_service.py; this module
 only translates its exceptions to HTTP status codes.
+
+HIPAA Phase 3: POST /challenge is also throttled (brute-force protection
+against TOTP/recovery-code guessing) -- see
+docs/security-mfa-challenge-throttling.md, app/services/mfa_throttle_service.py.
 """
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.routes_auth import _set_session_cookie
@@ -129,6 +134,7 @@ def regenerate_recovery_codes(
 @router.post("/challenge", response_model=TokenResponse)
 def verify_mfa_challenge(
     body: MFAChallengeVerifyIn,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
 ):
@@ -138,9 +144,27 @@ def verify_mfa_challenge(
     having one). body.challenge_token is itself the credential, already
     scoped to exactly one user by construction (see
     app/core/jwt.py::create_mfa_challenge_token) -- there is no
-    cross-user ambiguity for get_current_user to resolve here."""
+    cross-user ambiguity for get_current_user to resolve here.
+
+    HIPAA Phase 3: `request.client.host` (never a client-suppliable
+    header) is threaded through to mfa_service.verify_mfa_challenge for
+    its throttle check -- same source-of-truth convention
+    routes_auth.py::login already uses for its own IP-based login
+    throttle. `request.client` is None in some test-transport
+    configurations, same guard as that route.
+    """
+    client_ip = request.client.host if request.client else None
     try:
-        access, refresh = mfa_service.verify_mfa_challenge(db, body.challenge_token, body.code)
+        access, refresh = mfa_service.verify_mfa_challenge(db, body.challenge_token, body.code, client_ip=client_ip)
+    except mfa_service.MFAThrottledError as e:
+        # Same 429 + Retry-After shape as routes_auth.py::login's own
+        # throttle response -- deliberately generic, revealing neither
+        # the current attempt count nor the configured threshold.
+        return JSONResponse(
+            status_code=429,
+            content={"error": "too_many_attempts", "message": "Too many MFA verification attempts. Try again later."},
+            headers={"Retry-After": str(e.retry_after_seconds)},
+        )
     except mfa_service.MFAChallengeError as e:
         raise HTTPException(401, str(e))
     except ValueError as e:
