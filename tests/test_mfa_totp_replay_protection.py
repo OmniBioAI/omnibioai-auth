@@ -363,18 +363,17 @@ def test_consume_challenge_jti_raises_clean_error_on_jti_collision(client):
 
 
 def test_concurrent_recovery_code_race_yields_exactly_one_success_not_500(client, mfa_user):
-    """The recovery-code path's own read-then-write (verify_recovery_code
-    + consume_recovery_code) has no atomic single-winner mechanism of its
-    own -- see docs/security-mfa-totp-replay-protection.md's
-    "Recovery-code concurrency finding". This proves the *outcome* users
-    and operators actually care about still holds regardless of exactly
-    how the race interleaves: exactly one session is ever minted, and
-    every other request gets a clean, pre-existing error shape (401 if it
-    lost the jti race in _consume_challenge_jti, hardened above; 400 if
-    consume_recovery_code's used_at had already landed by the time its
-    own verify_recovery_code read ran) -- never an unhandled 500, even
-    though the recovery code's own `used_at` may be written more than
-    once as a side effect."""
+    """Same shared-challenge_token race shape as
+    test_concurrent_attempts_cannot_bypass_atomic_counter above, applied
+    to the recovery-code path -- both the recovery-code claim itself
+    (`try_consume_recovery_code`, HIPAA Phase 5, see
+    docs/security-mfa-recovery-code-atomicity.md) and the challenge
+    token's own jti uniqueness are now atomic single-winner checks, so
+    this asserts the *outcome* regardless of exactly how the race
+    interleaves: exactly one session is ever minted, and every other
+    request gets a clean, pre-existing error shape (401 if it lost the
+    jti race in _consume_challenge_jti; 400 if it lost the recovery-code
+    claim itself) -- never an unhandled 500, never a second 200."""
     headers = _auth_header(mfa_user["access_token"])
     recovery_code = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"][0]
     token = _fresh_challenge_token(client, mfa_user)
@@ -389,11 +388,11 @@ def test_concurrent_recovery_code_race_yields_exactly_one_success_not_500(client
     assert statuses.count(200) == 1
     assert 500 not in statuses
     # Every non-winner lands on one of two clean, pre-existing response
-    # shapes depending on how the race actually interleaved: 401 (lost
-    # the jti race in _consume_challenge_jti, hardened above) or 400
-    # (consume_recovery_code's used_at had already landed by the time
-    # this thread's own verify_recovery_code read ran, so it found no
-    # unused match at all) -- never a 500, and never a second 200.
+    # shapes depending on which atomic check it lost: 401 (lost the jti
+    # race in _consume_challenge_jti) or 400 (lost the recovery-code
+    # claim in try_consume_recovery_code, so verify_mfa_challenge's own
+    # "no match" fallthrough applied) -- never a 500, and never a second
+    # 200.
     assert all(s in (200, 401, 400) for s in statuses)
 
 

@@ -448,9 +448,10 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     below: jti consumption stops one challenge_token from being completed
     twice; step consumption stops the same *code* from completing two
     *different* challenge_tokens (e.g. two separate logins) within its
-    own ~90s validity window. Recovery-code single-use is unaffected --
-    verify_recovery_code/consume_recovery_code already enforce it via
-    `used_at`, a wholly separate mechanism this change does not touch.
+    own ~90s validity window. Recovery-code single-use is enforced by
+    the wholly separate `try_consume_recovery_code` mechanism below
+    (HIPAA Phase 5) -- same atomic-claim shape, different table/
+    predicate, not touched by this TOTP-specific change.
     """
     try:
         payload = decode_token(challenge_token)
@@ -564,9 +565,16 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
         # Same "treat as no-match, never let the throttle be bypassed by
         # an unexpected error" reasoning as the TOTP loop above.
         recovery_match = None
-    if recovery_match is not None:
+    # HIPAA Phase 5: cryptographically/hash-correct is not enough here
+    # either -- same "match, then atomically claim" shape as the TOTP
+    # loop above. try_consume_recovery_code's own UPDATE ... WHERE
+    # used_at IS NULL is what rejects a genuinely concurrent duplicate
+    # (two different challenge_tokens racing to redeem the same code) --
+    # a code that verify_recovery_code found but whose claim is lost
+    # falls through exactly like a wrong code, never distinguished in
+    # the response. See docs/security-mfa-recovery-code-atomicity.md.
+    if recovery_match is not None and try_consume_recovery_code(db, recovery_match.id):
         now = datetime.utcnow()
-        consume_recovery_code(db, recovery_match.id)
         user.mfa_last_verified_at = now
         _consume_challenge_jti(db, jti)
         mfa_throttle_service.record_success(user_id, client_ip)
@@ -612,26 +620,26 @@ def _consume_challenge_jti(db: Session, jti: str | None) -> None:
     from being usable as an access token regardless.
 
     HIPAA Phase 3b: `RevokedToken.token_jti` is UNIQUE
-    (app/db/models.py), so this INSERT is also the backstop that
+    (app/db/models.py), so this INSERT is also a backstop that
     guarantees exactly one winner when two concurrent requests both
-    reach this point for the *same* challenge_token -- on the TOTP path
-    that's already made effectively unreachable by _try_claim_totp_step
-    above (only one concurrent request can ever claim the matching
-    time_step in the first place), but the recovery-code path has no
-    analogous atomic single-winner check of its own (verify_recovery_code
-    + consume_recovery_code is a plain read-then-update, not
-    constraint-guarded -- see docs/security-mfa-totp-replay-protection.md's
-    "Recovery-code concurrency" finding), so both concurrent requests can
-    reach here. Previously uncaught: the loser's commit raised a raw
-    IntegrityError that propagated as an unhandled 500 instead of a clean
-    rejection. Now caught and re-raised as MFAChallengeError (-> 401,
-    same shape the reuse check earlier in verify_mfa_challenge already
-    uses for a stale/already-consumed token) -- and since this INSERT
-    shares its caller's not-yet-committed pending changes (matched_device/
-    user.mfa_last_verified_at updates), the rollback below cleanly
-    discards those too, leaving no partial state behind for the losing
-    request. Still exactly one session is ever minted per challenge_token,
-    regardless of which path raced to get here.
+    reach this point for the *same* challenge_token -- both the TOTP path
+    (`_try_claim_totp_step`) and the recovery-code path
+    (`try_consume_recovery_code`, HIPAA Phase 5) already make that
+    same-token race effectively unreachable on their own, at the point
+    each one claims its own resource, so in practice this now mostly
+    guards against the same challenge_token being raced by two requests
+    where *neither* code path's own claim was ever contested (e.g. a
+    plain duplicated/retried HTTP request presenting the exact same
+    already-correct code twice). Kept as defense-in-depth regardless --
+    still caught and re-raised as MFAChallengeError (-> 401, same shape
+    the reuse check earlier in verify_mfa_challenge already uses for a
+    stale/already-consumed token) rather than left as an unhandled 500,
+    and since this INSERT shares its caller's not-yet-committed pending
+    changes (matched_device/user.mfa_last_verified_at updates), the
+    rollback below cleanly discards those too, leaving no partial state
+    behind for the losing request. Still exactly one session is ever
+    minted per challenge_token, regardless of which path raced to get
+    here.
     """
     if not jti:
         db.commit()
@@ -758,20 +766,67 @@ def verify_recovery_code(db: Session, user_id: int, code: str) -> MFARecoveryCod
     )
 
 
-def consume_recovery_code(db: Session, code_id: int) -> None:
-    """Marks a specific MFARecoveryCode row as used (one-time use).
-    Separate from verify_recovery_code so a caller can check-then-decide
-    before committing to consumption, mirroring TOTP verification's own
-    "check first, then update state" shape. No audit event here -- the
-    caller (verify_mfa_challenge) owns the actual MFA_RECOVERY_CODE_USED
-    event, since it has the auth_method/organization context this
-    function's own single-argument signature deliberately doesn't
-    carry."""
-    row = db.query(MFARecoveryCode).filter(MFARecoveryCode.id == code_id).first()
-    if row is None:
-        return
-    row.used_at = datetime.utcnow()
+def try_consume_recovery_code(db: Session, code_id: int) -> bool:
+    """HIPAA Phase 5: atomically claims single-use consumption of the
+    MFARecoveryCode row `code_id` -- one UPDATE, with the single-use
+    precondition (`used_at IS NULL`) baked into its own WHERE clause,
+    not a separate read beforehand. Returns True only for the caller
+    whose UPDATE is the one that actually transitions the row from
+    unused -> used; False if it was already used (by an earlier request,
+    or a genuinely concurrent one whose UPDATE committed first) or no
+    such row exists.
+
+    Replaces the old consume_recovery_code, which unconditionally set
+    `used_at` with no precondition at all -- verify_recovery_code (still
+    unchanged, still a plain read) and the old consume_recovery_code
+    together were a classic read-then-write TOCTOU: two concurrent
+    requests could each independently see the same row as unused (their
+    reads racing before either write), and the old consume had nothing
+    to reject a second write with, so both would "succeed". Each request
+    in that race carries its own, independently-issued challenge_token
+    (a fresh login -> a fresh jti each time) -- `RevokedToken.token_jti`'s
+    own UNIQUE constraint, which backstops the analogous same-jti race
+    on the *token*, does not apply across two *different* jtis, so it
+    could not catch this: two different valid recovery-code-completed
+    challenge_tokens meant two independently-mintable sessions from one
+    recovery code. Deterministically reproduced against this exact
+    pre-fix code during discovery -- see
+    docs/security-mfa-recovery-code-atomicity.md.
+
+    The database's own row-level locking during the UPDATE (MySQL/InnoDB
+    in production; SQLite's whole-database write lock in tests) is what
+    provides the atomicity here -- not any Python-level lock, and correct
+    across any number of horizontally-scaled `omnibioai-auth` instances
+    sharing this database, the same guarantee
+    `_try_claim_totp_step` (HIPAA Phase 3b) already provides for TOTP
+    steps and `RevokedToken.token_jti`'s UNIQUE constraint already
+    provides for challenge tokens -- same `db.query(...).filter(...).update(...)`
+    shape `auth_service._revoke_family` already uses elsewhere in this
+    service, applied here with an added precondition instead of an
+    unconditional one.
+
+    Commits immediately, independently of the caller's own later
+    `_consume_challenge_jti` commit -- deliberately not bundled into one
+    transaction with it (same separate-commit shape the old
+    consume_recovery_code already had): a recovery code that this call
+    genuinely, atomically claimed is spent, permanently, regardless of
+    what an unrelated later step in the same request does -- rolling
+    that back to make the code available again if a *different*
+    single-use check fails afterward for an unrelated reason would
+    reopen exactly the kind of "is this code still valid" ambiguity this
+    fix exists to close, and is deliberately out of this fix's scope.
+
+    No audit event here -- the caller (verify_mfa_challenge) owns the
+    actual MFA_RECOVERY_CODE_USED event, only ever emitted once this
+    function has already returned True, so a lost race never emits one.
+    """
+    claimed = (
+        db.query(MFARecoveryCode)
+        .filter(MFARecoveryCode.id == code_id, MFARecoveryCode.used_at.is_(None))
+        .update({"used_at": datetime.utcnow()})
+    )
     db.commit()
+    return claimed == 1
 
 
 def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None:
