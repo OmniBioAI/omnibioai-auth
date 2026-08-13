@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.jwt import decode_token
 from app.core.oauth_providers import PROVIDERS, is_configured
-from app.core.security import verify_password
+from app.core.security import DUMMY_PASSWORD_HASH, verify_password
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody, OAuthLinkConfirmRequest
 from app.services import oauth_service, org_service, sso_discovery_service
@@ -152,9 +152,20 @@ def confirm_oauth_link(body: OAuthLinkConfirmRequest, db: Session = Depends(get_
 
     user = oauth_service.find_user_by_email(db, payload["email"])
     if not user or user.id != payload["user_id"]:
+        # HIPAA Phase 4 follow-up: same dummy-hash equalization
+        # auth_service.authenticate_user's own "unknown user" branch uses
+        # (docs/security-login-timing-side-channel.md) -- see
+        # docs/security-link-confirm-timing-equalization.md for why this
+        # branch and the no-password branch below are this route's own
+        # equivalent of that function's first two failure branches, and
+        # why the token-decode/type-check branches above are deliberately
+        # left as-is. Result always discarded -- doesn't change which
+        # branch is taken, only how much CPU time is spent getting there.
+        verify_password(body.password, DUMMY_PASSWORD_HASH)
         raise HTTPException(404, "Account not found")
 
     if not user.hashed_password:
+        verify_password(body.password, DUMMY_PASSWORD_HASH)
         raise HTTPException(
             409,
             "This account has no password set — sign in with its original provider "
