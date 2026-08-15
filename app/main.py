@@ -34,7 +34,12 @@ from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
 from app.db.schema_guard import assert_schema_matches_models
-from app.db.init_admin import create_admin, ensure_default_organization, ensure_platform_admin_role
+from app.db.init_admin import (
+    create_admin,
+    ensure_default_organization,
+    ensure_platform_admin_role,
+    ensure_platform_owner,
+)
 from app.services.org_service import ensure_default_org_roles, ensure_org_admin_permissions
 from app.services.role_service import assert_no_unregistered_permissions
 from app.core.config import settings
@@ -66,6 +71,11 @@ assert_schema_matches_models(engine, Base.metadata)
 db = SessionLocal()
 create_admin(db)
 ensure_platform_admin_role(db)
+# Opt-in only -- a no-op unless the operator has set PLATFORM_OWNER_EMAIL.
+# Must run after ensure_platform_admin_role (needs the Role to exist) and
+# after create_admin (in case the designated owner IS the bootstrap admin
+# account created just above). See ensure_platform_owner's own docstring.
+ensure_platform_owner(db)
 ensure_default_organization(db)
 ensure_org_admin_permissions(db)
 ensure_default_org_roles(db)
