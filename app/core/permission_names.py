@@ -379,6 +379,36 @@ _register(
         legacy=False,
     )
 )
+# Read/use split for omnibioai-model-registry, same "reading vs. doing"
+# shape workflow.read/workflow.execute and runs.read already established
+# above -- catalog visibility (GET /v1/models and the other genuinely
+# read-only routes an authorization audit confirmed: /v1/aliases,
+# /v1/compare, /v1/metrics, /v1/runs/get, /v1/runs/list) is a materially
+# lower-privilege action than resolving a model to a usable artifact path
+# (GET /v1/resolve) or verifying one before use (POST /v1/verify), both
+# of which stay model.use-only, same as every write route. BOTH-scoped
+# for the same reason model.use is -- not inherently global- or org-only.
+# Deliberately does NOT replace or narrow model.use anywhere: every
+# existing model.use holder keeps every route they already had: model.use
+# is still sufficient (checked as model.use OR model.read) for every read
+# route below, this only adds a second, narrower way to reach them.
+_register(
+    PermissionDef(
+        name="model.read",
+        resource="model",
+        action="read",
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.MODEL,
+        description=(
+            "List and view Model Registry catalog metadata -- registered "
+            "models, versions, aliases, comparisons, metrics, and "
+            "experiment-tracking runs (omnibioai-model-registry). Does not "
+            "grant resolving a model to its artifact path (model.use) or "
+            "any write/mutation route."
+        ),
+        legacy=False,
+    )
+)
 # omnibioai-model-registry Phase 2E: a deliberately SEPARATE permission
 # from model.use, not layered on top of it -- resolving a
 # status="legacy_unowned" model's ownership (assigning it, once, to the

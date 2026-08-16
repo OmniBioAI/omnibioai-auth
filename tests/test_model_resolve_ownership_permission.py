@@ -211,7 +211,12 @@ def test_model_resolve_ownership_does_not_imply_model_use(client):
 def test_existing_scientist_permission_set_unchanged():
     # SCIENTIST_PERMISSIONS (the role that carries model.use) must not have
     # gained model.resolve_ownership as a side effect of this change.
-    assert org_service.SCIENTIST_PERMISSIONS == ["workflow.execute", "dataset.read", "model.use"]
+    # model.read was added later by the Model Registry read/use
+    # authorization split audit (a real, intentional addition to this
+    # list, unrelated to model.resolve_ownership) -- included here so this
+    # assertion tracks the actual current list rather than pinning a
+    # stale snapshot.
+    assert org_service.SCIENTIST_PERMISSIONS == ["workflow.execute", "dataset.read", "model.use", "model.read"]
     assert "model.resolve_ownership" not in org_service.SCIENTIST_PERMISSIONS
 
 
