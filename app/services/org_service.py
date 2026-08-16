@@ -44,6 +44,15 @@ ORG_ADMIN_PERMISSIONS = [
     # ownership of orphaned ones. See permission_names.py's
     # model.resolve_ownership entry for the full design rationale.
     "model.resolve_ownership",
+    # Model Registry read/use split audit: same "administer this org's
+    # own resources" character as workflow.read/runs.read above -- an
+    # org_admin can see its org's registered models/versions without
+    # also being able to resolve one to a usable artifact path
+    # (model.use, deliberately not added here for the same reason
+    # workflow.execute isn't: that's an operator capability, not an
+    # org-administration one). See permission_names.py's model.read
+    # entry for the exact route list this grants.
+    "model.read",
 ]
 ORG_MEMBER_ROLE = "org_member"
 
@@ -53,8 +62,16 @@ ORG_MEMBER_ROLE = "org_member"
 # platform-wide (organization_id=None), same as org_admin/org_member
 # above -- any org can assign either to its own members, but only a
 # Platform Admin can edit/delete the role definitions themselves.
+#
+# Model Registry read/use split audit: model.read is added alongside
+# model.use here even though model.use alone already reaches every route
+# model.read does (model-registry checks "model.use OR model.read" on
+# its read routes, see that repo's auth.py) -- a scientist should hold
+# read as its own explicit, real grant, not merely benefit from
+# model.use's superset behavior, the same way SCIENTIST_PERMISSIONS
+# already lists dataset.read explicitly rather than leaving it implicit.
 SCIENTIST_ROLE = "scientist"
-SCIENTIST_PERMISSIONS = ["workflow.execute", "dataset.read", "model.use"]
+SCIENTIST_PERMISSIONS = ["workflow.execute", "dataset.read", "model.use", "model.read"]
 VIEWER_ROLE = "viewer"
 VIEWER_PERMISSIONS = ["dataset.read", "workflow.read"]
 

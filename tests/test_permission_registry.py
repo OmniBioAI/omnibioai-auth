@@ -78,6 +78,19 @@ MODEL_REGISTRY_OWNERSHIP_NAMES = {
     "model.resolve_ownership": PermissionCategory.MODEL,
 }
 
+# Model Registry read/use authorization split audit: same "real,
+# immediately-enforced" shape as MODEL_REGISTRY_OWNERSHIP_NAMES above --
+# gates that repo's genuinely read-only catalog routes (GET /v1/models,
+# /v1/aliases, /v1/compare, /v1/metrics, /v1/runs/get, /v1/runs/list),
+# checked as "model.use OR model.read" so no existing model.use holder
+# loses access. Not a FUTURE_NAMES-style unenforced placeholder, and not
+# layered into MODEL_REGISTRY_OWNERSHIP_NAMES above -- that set is
+# specifically the Phase 2E ownership-resolution permission, an unrelated
+# administrative capability.
+MODEL_REGISTRY_READ_NAMES = {
+    "model.read": PermissionCategory.MODEL,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -225,6 +238,41 @@ def test_model_registry_ownership_names_are_not_marked_reserved():
         assert "not yet enforced" not in REGISTRY[name].description.lower()
 
 
+def test_all_model_registry_read_names_are_known_not_legacy_scope_both():
+    for name, category in MODEL_REGISTRY_READ_NAMES.items():
+        assert is_known_permission(name), f"{name} missing from registry"
+        entry = REGISTRY[name]
+        assert entry.legacy is False
+        assert entry.scope == PermissionScope.BOTH
+        assert entry.category == category
+        assert entry.deprecated is False
+
+
+def test_all_model_registry_read_names_pass_format_validation():
+    for name in MODEL_REGISTRY_READ_NAMES:
+        assert is_valid_permission_format(name), name
+
+
+def test_model_registry_read_names_are_not_marked_reserved():
+    # Real, immediately-enforced permission (Model Registry read/use split
+    # audit), same shape as MODEL_REGISTRY_OWNERSHIP_NAMES above -- must
+    # not carry the FUTURE_NAMES "Reserved -- not yet enforced" description.
+    for name in MODEL_REGISTRY_READ_NAMES:
+        assert "not yet enforced" not in REGISTRY[name].description.lower()
+
+
+def test_model_read_is_independent_of_model_use():
+    # model.read must not imply model.use, or vice versa -- two separate
+    # registry entries with no relationship encoded anywhere in the
+    # registry itself. model-registry's own enforcement (checked as
+    # "model.use OR model.read") is what makes model.use a superset in
+    # practice; the vocabulary layer here encodes no such relationship.
+    assert "model.use" in REGISTRY
+    assert "model.read" in REGISTRY
+    assert REGISTRY["model.use"].name != REGISTRY["model.read"].name
+    assert REGISTRY["model.read"].description != REGISTRY["model.use"].description
+
+
 def test_model_resolve_ownership_is_independent_of_model_use():
     # model.use must not imply model.resolve_ownership, or vice versa --
     # they are two separate registry entries with no relationship encoded
@@ -250,6 +298,7 @@ def test_registry_contains_exactly_the_expected_names():
     assert set(REGISTRY.keys()) == (
         LEGACY_NAMES | set(FUTURE_NAMES.keys()) | set(WORKFLOW_BUNDLES_NAMES.keys())
         | set(TES_NAMES.keys()) | set(MODEL_REGISTRY_OWNERSHIP_NAMES.keys())
+        | set(MODEL_REGISTRY_READ_NAMES.keys())
     )
 
 
@@ -376,7 +425,7 @@ def test_registry_stats_totals_match_registry_size():
     assert stats["legacy_permissions"] == len(LEGACY_NAMES)
     assert stats["future_permissions"] == (
         len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
-        + len(MODEL_REGISTRY_OWNERSHIP_NAMES)
+        + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
     )
 
 
@@ -392,8 +441,10 @@ def test_registry_stats_by_scope_sums_to_total():
     # 11 pre-runs.read + 1 (runs.read, added by the omnibioai-tes IAM
     # integration -- see TES_NAMES above) + 1 (model.resolve_ownership,
     # added by the omnibioai-model-registry Phase 2E integration -- see
-    # MODEL_REGISTRY_OWNERSHIP_NAMES above).
-    assert stats["by_scope"]["both"] == 13
+    # MODEL_REGISTRY_OWNERSHIP_NAMES above) + 1 (model.read, added by the
+    # Model Registry read/use authorization split audit -- see
+    # MODEL_REGISTRY_READ_NAMES above).
+    assert stats["by_scope"]["both"] == 14
 
 
 def test_registry_stats_by_category_sums_to_total():
