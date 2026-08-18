@@ -5,6 +5,8 @@ app/schemas/__pycache__/
 __pycache__/
 *.pyc
 
+test.db
+
 # Local mysqldump backups taken before running migrations against a real
 # database (see docs/MIGRATIONS.md) -- contain real data, never commit.
 db_backups/
