@@ -271,3 +271,80 @@ def test_service_token_missing_scope_rejected_by_require_service_scope(client):
         assert False, "expected require_service_scope to reject an insufficient scope"
     except HTTPException as e:
         assert e.status_code == 403
+
+# ── First-party platform-owner authorization-code flow ───────────────────────
+
+
+def test_first_party_owner_authorize_returns_opaque_single_use_code(client, monkeypatch):
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    from app.main import app
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    import fakeredis
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+
+    response = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "lims-test-client",
+            "redirect_uri": "https://lims.test/sso/callback",
+            "response_type": "code",
+            "state": "state-value-123456",
+            "nonce": "nonce-value-123456",
+        },
+        headers=_auth_header(token),
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    location = response.headers["location"]
+    code = location.split("code=", 1)[1].split("&", 1)[0]
+    assert "." not in code  # opaque; no signed JWT in the browser URL
+    assert "state=state-value-123456" in location
+    assert codes.scan_iter(match="oauth:first-party:*")
+
+
+def _grant_platform_admin_for_sso(email: str) -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db.models import Role, User
+    db = sessionmaker(bind=create_engine("sqlite:///./test.db"))()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        role = db.query(Role).filter(Role.name == "platform_admin").first()
+        user.roles.append(role)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_first_party_code_redemption_is_single_use_and_returns_state(client, monkeypatch):
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    import fakeredis
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-2")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-2")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+    authorize = client.get(
+        "/oauth/authorize",
+        params={"client_id": "lims-test-client-2", "redirect_uri": "https://lims.test/sso/callback", "response_type": "code", "state": "state-value-234567"},
+        headers=_auth_header(token), follow_redirects=False,
+    )
+    code = authorize.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": "https://lims.test/sso/callback"}
+    redeemed = client.post("/oauth/token/authorization-code", data=form, auth=("lims-test-client-2", "lims-test-secret-2"))
+    assert redeemed.status_code == 200
+    assert redeemed.json()["state"] == "state-value-234567"
+    assert client.post("/oauth/token/authorization-code", data=form, auth=("lims-test-client-2", "lims-test-secret-2")).status_code == 400
