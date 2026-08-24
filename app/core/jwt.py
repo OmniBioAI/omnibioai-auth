@@ -109,36 +109,6 @@ def create_oauth_state_token(provider: str, code_verifier: str | None = None):
     return _sign(payload)
 
 
-def create_first_party_authorization_code(
-    *, user: dict, client_id: str, redirect_uri: str, state: str, nonce: str | None = None
-):
-    """Create a short-lived, signed first-party authorization code.
-
-    The code is only a signed envelope; the issuing route also records its
-    ``jti`` in Redis and the token endpoint atomically consumes that marker.
-    This keeps the code single-use across Auth instances without introducing
-    a new database table or treating a code as an access token.
-    """
-    return _sign(
-        {
-            "type": "first_party_authorization_code",
-            "sub": str(user.get("sub")),
-            "email": user.get("email"),
-            "roles": user.get("roles", []),
-            "permissions": user.get("permissions", []),
-            "org_id": user.get("org_id"),
-            "org_role": user.get("org_role", []),
-            "auth_method": user.get("auth_method"),
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "nonce": nonce,
-            "exp": datetime.utcnow() + timedelta(seconds=settings.LIMS_SSO_CODE_TTL_SECONDS),
-            "jti": str(uuid.uuid4()),
-        }
-    )
-
-
 def create_sso_state_token(
     organization_id: int, organization_sso_config_id: int, code_verifier: str, nonce: str
 ):
