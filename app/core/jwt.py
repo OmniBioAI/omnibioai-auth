@@ -28,10 +28,20 @@ def _sign(payload: dict) -> str:
 
 
 def create_access_token(data: dict):
+    # Was hardcoded to a literal 15 minutes regardless of this setting --
+    # settings.ACCESS_TOKEN_EXPIRE_MINUTES (app/core/config.py) existed but
+    # was never actually read here, so an operator changing it had no
+    # effect on the real token lifetime. That drift is what let
+    # /oauth/token/authorization-code's expires_in=settings.
+    # ACCESS_TOKEN_EXPIRE_MINUTES*60 (app/api/routes_oauth_token.py) silently
+    # lie about a token's real expiry the moment the setting was ever
+    # changed from its default (15, so undetectable there today). Reading
+    # the setting here instead means the two can never drift apart again,
+    # for every caller of this function -- not just that one endpoint.
     to_encode = data.copy()
 
     to_encode.update({
-        "exp": datetime.utcnow() + timedelta(minutes=15),
+        "exp": datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
         "type": "access",
         "jti": str(uuid.uuid4())   # 👈 IMPORTANT
     })
