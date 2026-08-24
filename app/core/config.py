@@ -93,6 +93,16 @@ class Settings:
     # (carries the token, or a link-confirmation prompt, as query params).
     FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://webstudio.omnibioai.org")
 
+    # Platform-owner SSO into first-party services (opt-in).  The LIMS
+    # client is deliberately environment-registered for the first rollout;
+    # no browser authorization-code endpoint is enabled unless all three
+    # values are configured.  The secret is compared server-side and is
+    # never returned to a browser.
+    LIMS_SSO_CLIENT_ID = os.getenv("LIMS_SSO_CLIENT_ID", "")
+    LIMS_SSO_CLIENT_SECRET = os.getenv("LIMS_SSO_CLIENT_SECRET", "")
+    LIMS_SSO_REDIRECT_URI = os.getenv("LIMS_SSO_REDIRECT_URI", "")
+    LIMS_SSO_CODE_TTL_SECONDS = int(os.getenv("LIMS_SSO_CODE_TTL_SECONDS", "60"))
+
     # GHCR credential returned by /license/pull-token to a licensed Electron
     # client right before it `docker pull`s a private image -- same secret
     # the now-decommissioned license_server.py exposed (Phase 1 PR4 cutover).

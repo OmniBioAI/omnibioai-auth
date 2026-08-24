@@ -327,4 +327,3 @@ def create_link_token(
             "jti": str(uuid.uuid4()),
         }
     )
-

@@ -32,3 +32,11 @@ class ClientCredentialsTokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     scope: str
+
+
+class AuthorizationCodeTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    scope: str = "openid"
+    state: str | None = None

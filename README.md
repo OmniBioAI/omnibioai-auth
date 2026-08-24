@@ -447,6 +447,10 @@ before it starts. An admin user is bootstrapped automatically on first startup.
 | `MICROSOFT_OAUTH_CLIENT_ID` / `_SECRET` | — | Microsoft OAuth login; unset disables that provider (503) |
 | `OAUTH_REDIRECT_BASE_URL` | `https://webstudio.omnibioai.org` | Must match each provider's registered redirect URI |
 | `FRONTEND_BASE_URL` | `https://webstudio.omnibioai.org` | Where the browser lands after an OAuth/SSO callback completes |
+| `LIMS_SSO_CLIENT_ID` | — | Registered confidential first-party LIMS client; empty disables the flow |
+| `LIMS_SSO_CLIENT_SECRET` | — | Secret for the registered LIMS authorization-code client; never expose to browsers |
+| `LIMS_SSO_REDIRECT_URI` | — | Exact HTTPS LIMS callback URI; must match the registered client |
+| `LIMS_SSO_CODE_TTL_SECONDS` | `60` | Lifetime of an opaque, single-use LIMS authorization code |
 | `REQUIRE_HTTPS_FOR_SSO_ISSUER` | `true` | Require HTTPS for an org's configured Enterprise OIDC issuer URL |
 | `REDIS_URL` | `redis://redis:6379` | Redis connection URL (jti blacklist, `policy:invalidate` pub/sub) |
 

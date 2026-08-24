@@ -271,3 +271,260 @@ def test_service_token_missing_scope_rejected_by_require_service_scope(client):
         assert False, "expected require_service_scope to reject an insufficient scope"
     except HTTPException as e:
         assert e.status_code == 403
+
+# ── First-party platform-owner authorization-code flow ───────────────────────
+
+
+def test_first_party_owner_authorize_returns_opaque_single_use_code(client, monkeypatch):
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    from app.main import app
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    import fakeredis
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+
+    response = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "lims-test-client",
+            "redirect_uri": "https://lims.test/sso/callback",
+            "response_type": "code",
+            "state": "state-value-123456",
+            "nonce": "nonce-value-123456",
+        },
+        headers=_auth_header(token),
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    location = response.headers["location"]
+    code = location.split("code=", 1)[1].split("&", 1)[0]
+    assert "." not in code  # opaque; no signed JWT in the browser URL
+    assert "state=state-value-123456" in location
+    assert codes.scan_iter(match="oauth:first-party:*")
+
+
+def _grant_platform_admin_for_sso(email: str) -> None:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.db.models import Role, User
+    db = sessionmaker(bind=create_engine("sqlite:///./test.db"))()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        role = db.query(Role).filter(Role.name == "platform_admin").first()
+        user.roles.append(role)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_first_party_code_redemption_is_single_use_and_returns_state(client, monkeypatch):
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    import fakeredis
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-2")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-2")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+    authorize = client.get(
+        "/oauth/authorize",
+        params={"client_id": "lims-test-client-2", "redirect_uri": "https://lims.test/sso/callback", "response_type": "code", "state": "state-value-234567"},
+        headers=_auth_header(token), follow_redirects=False,
+    )
+    code = authorize.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": "https://lims.test/sso/callback"}
+    redeemed = client.post("/oauth/token/authorization-code", data=form, auth=("lims-test-client-2", "lims-test-secret-2"))
+    assert redeemed.status_code == 200
+    assert redeemed.json()["state"] == "state-value-234567"
+    # Replay: the same code, redeemed a second time, must fail -- getdel()
+    # already consumed it on the first redemption above.
+    assert client.post("/oauth/token/authorization-code", data=form, auth=("lims-test-client-2", "lims-test-secret-2")).status_code == 400
+
+
+# ── First-party flow: negative paths (previously verified by hand in review,
+#    never captured as permanent coverage) ───────────────────────────────────
+
+
+def test_authorize_rejects_unauthenticated_request(client, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-3")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-3")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+
+    response = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "lims-test-client-3",
+            "redirect_uri": "https://lims.test/sso/callback",
+            "response_type": "code",
+            "state": "state-value-345678",
+        },
+        follow_redirects=False,
+        # deliberately no Authorization header
+    )
+    assert response.status_code == 401
+
+
+def test_authorize_rejects_ordinary_user_without_manage_all_orgs(client, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-4")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-4")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+
+    ordinary = _register_and_login(client)  # no platform_admin role granted
+    response = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "lims-test-client-4",
+            "redirect_uri": "https://lims.test/sso/callback",
+            "response_type": "code",
+            "state": "state-value-456789",
+        },
+        headers=_auth_header(ordinary["access_token"]),
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+
+def test_authorize_disabled_when_sso_unconfigured(client, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "")
+
+    ordinary = _register_and_login(client)
+    response = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "anything",
+            "redirect_uri": "https://lims.test/sso/callback",
+            "response_type": "code",
+            "state": "state-value-567890",
+        },
+        headers=_auth_header(ordinary["access_token"]),
+        follow_redirects=False,
+    )
+    assert response.status_code == 503
+
+
+def test_redemption_rejects_mismatched_redirect_uri(client, monkeypatch):
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    import fakeredis
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-5")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-5")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+
+    authorize = client.get(
+        "/oauth/authorize",
+        params={"client_id": "lims-test-client-5", "redirect_uri": "https://lims.test/sso/callback", "response_type": "code", "state": "state-value-678901"},
+        headers=_auth_header(token), follow_redirects=False,
+    )
+    code = authorize.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+    # Same code, but redeemed against a *different* redirect_uri than the one
+    # it was issued for -- must be rejected, not silently accepted.
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": "https://attacker.test/callback"}
+    response = client.post("/oauth/token/authorization-code", data=form, auth=("lims-test-client-5", "lims-test-secret-5"))
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid_grant"
+    # And the code must still be single-use -- rejected on redirect_uri
+    # mismatch still consumes it (getdel already ran), so even the
+    # *correct* redirect_uri can't be tried again afterward.
+    retry = {"grant_type": "authorization_code", "code": code, "redirect_uri": "https://lims.test/sso/callback"}
+    assert client.post("/oauth/token/authorization-code", data=retry, auth=("lims-test-client-5", "lims-test-secret-5")).status_code == 400
+
+
+def test_redemption_of_expired_code_fails_clean(client, monkeypatch):
+    """A code whose Redis TTL has lapsed is indistinguishable, by design,
+    from one that never existed -- getdel() returns nil either way. This
+    directly simulates that (rather than sleeping past a real TTL) by never
+    writing the code to Redis at all, and separately proves the code's own
+    embedded `exp` claim is checked too (defense in depth against a code
+    that's still physically present in Redis past its logical expiry)."""
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    import fakeredis
+    import json
+    import time
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-6")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-6")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+
+    # Case A: code never issued / already evicted by Redis's own TTL --
+    # getdel() sees nothing.
+    never_issued = {"grant_type": "authorization_code", "code": "never-issued", "redirect_uri": "https://lims.test/sso/callback"}
+    resp = client.post("/oauth/token/authorization-code", data=never_issued, auth=("lims-test-client-6", "lims-test-secret-6"))
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "invalid_grant"
+
+    # Case B: code still physically present in Redis, but its own embedded
+    # exp claim is already in the past (clock-skew edge case) -- the
+    # redundant in-payload check must reject it too, and still consume it.
+    payload = {
+        "jti": "x", "sub": "1", "email": "owner@example.org", "roles": [],
+        "permissions": ["manage_all_orgs"], "org_id": None, "org_role": [],
+        "auth_method": "password", "client_id": "lims-test-client-6",
+        "redirect_uri": "https://lims.test/sso/callback", "state": "x" * 16, "nonce": None,
+        "exp": int(time.time()) - 5,
+    }
+    codes.setex("oauth:first-party:stale-but-present", 60, json.dumps(payload))
+    stale = {"grant_type": "authorization_code", "code": "stale-but-present", "redirect_uri": "https://lims.test/sso/callback"}
+    resp2 = client.post("/oauth/token/authorization-code", data=stale, auth=("lims-test-client-6", "lims-test-secret-6"))
+    assert resp2.status_code == 400
+    assert resp2.json()["detail"] == "invalid_grant"
+    assert codes.get("oauth:first-party:stale-but-present") is None  # consumed even though rejected
+
+
+def test_redemption_rejects_wrong_client_secret(client, monkeypatch):
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    import fakeredis
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-7")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-7")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+
+    authorize = client.get(
+        "/oauth/authorize",
+        params={"client_id": "lims-test-client-7", "redirect_uri": "https://lims.test/sso/callback", "response_type": "code", "state": "state-value-789012"},
+        headers=_auth_header(token), follow_redirects=False,
+    )
+    code = authorize.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+    form = {"grant_type": "authorization_code", "code": code, "redirect_uri": "https://lims.test/sso/callback"}
+    # Right client_id, wrong secret -- must be rejected before the code is
+    # even looked up (a guessed/leaked code alone must never be enough).
+    response = client.post("/oauth/token/authorization-code", data=form, auth=("lims-test-client-7", "wrong-secret"))
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid_client"
+    # The code must still be redeemable afterward -- a wrong-secret attempt
+    # must not itself consume someone else's valid code.
+    ok_form = {"grant_type": "authorization_code", "code": code, "redirect_uri": "https://lims.test/sso/callback"}
+    assert client.post("/oauth/token/authorization-code", data=ok_form, auth=("lims-test-client-7", "lims-test-secret-7")).status_code == 200
