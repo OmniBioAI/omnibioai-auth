@@ -4,16 +4,18 @@
 
 Central identity layer for the OmniBioAI zero-trust security plane.
 Handles user registration, login, token issuance, refresh, logout,
-and validation across all platform services.
+and the shared identity contract used by all platform services.
 
 ---
 
 ## Architecture Role
 
 `omnibioai-auth` runs as a containerized service inside the OmniBioAI Docker
-Compose stack. All platform services — TES (workflow execution), Studio
-(Electron UI), LIMS (data management), and Control Center — delegate token
-validation to this service rather than implementing their own auth logic.
+Compose stack. This service is the central issuer and revocation authority.
+Downstream services may call `POST /auth/validate`, while services that need
+low-latency request authorization verify JWTs locally using the shared token
+contract and Redis revocation state rather than making a network call for
+every request.
 
 ```
 Studio / TES / LIMS / Control Center / SDK
@@ -39,6 +41,7 @@ flush any cached token state immediately.
 | `POST` | `/auth/register` | Create a new user account |
 | `POST` | `/auth/login` | Authenticate and issue access + refresh tokens; sets the `omnibioai_session` cookie |
 | `POST` | `/auth/refresh` | Exchange a valid refresh token (body or `omnibioai_session` cookie) for a new access + refresh token pair |
+| `POST` | `/auth/switch-team` | Switch the active organization/team context and issue updated tokens |
 | `POST` | `/auth/logout` | Revoke refresh token; blacklist access token in Redis; clears the `omnibioai_session` cookie |
 | `POST` | `/auth/validate` | Validate a token and return user identity, roles, and org context |
 | `GET`  | `/auth/{provider}/login` | Redirect to `google`/`github`/`microsoft` OAuth2.1+PKCE authorize URL |
@@ -48,15 +51,20 @@ flush any cached token state immediately.
 | `GET`  | `/auth/sso/{org_slug}/login` | Redirect to the organization's configured Enterprise OIDC IdP |
 | `GET`/`POST` | `/auth/sso/{org_slug}/callback` | Complete an Enterprise OIDC login for that organization |
 | `GET`  | `/auth/saml/{org_slug}/metadata` | This SP's SAML 2.0 metadata for that organization (entity ID, ACS URL, NameID format) |
-| `GET`  | `/auth/saml/{org_slug}/login` | SP-initiated SAML login: redirects to the organization's configured IdP with a SAMLRequest + signed RelayState — no ACS endpoint exists yet |
+| `GET`  | `/auth/saml/{org_slug}/login` | SP-initiated SAML login: redirects to the organization's configured IdP with a SAMLRequest and signed RelayState |
+| `POST` | `/auth/saml/{org_slug}/acs` | SAML assertion consumer endpoint |
+| `POST` | `/auth/saml/{org_slug}/logout` | SAML logout endpoint |
+| `GET`  | `/auth/saml/{org_slug}/slo` | SAML single logout completion endpoint |
+| `GET`  | `/oauth/authorize` | Begin the authorization-code flow for a registered OAuth client |
 | `POST` | `/oauth/token` | `client_credentials` grant — issues a service-identity access token |
+| `POST` | `/oauth/token/authorization-code` | Exchange a single-use authorization code for an access token |
 | `GET`/`POST`/`DELETE` | `/orgs/{org_id}/oauth-clients` | Manage an organization's `client_credentials` clients |
 | `GET`  | `/.well-known/jwks.json` | RS256 public-key set (JWKS), for future RS256 verifiers |
 | `GET`  | `/health` | Liveness check — returns `{"status": "ok"}` |
 | `GET`  | `/metrics` | Prometheus metrics (jwt_auth_total counter) |
 
-This is the core identity/session surface. The service also registers 18
-more routers covering organization management, platform administration,
+This is the core identity/session surface. The service also registers
+additional routers covering organization management, platform administration,
 MFA, and service credentials — grouped below rather than flattened into
 one table, since each group has its own permission model.
 
@@ -67,6 +75,7 @@ one table, since each group has its own permission model.
 | `routes_orgs.py` | `/orgs` | Create/list/get/update an org, invite a member, list/assign/revoke a member's org-scoped roles | `manage_org` (org-scoped) or `platform_admin` |
 | `routes_teams.py` | `/orgs/{org_id}/teams` | Create/list teams, manage team membership, delete a team | `manage_teams` (org-scoped) or `platform_admin` |
 | `routes_organization_roles.py` | `/organizations/{organization_id}` | Org-scoped custom role CRUD (`/roles`), org permission catalog (`/permissions`), member role assignment (`/members/{user_id}/roles`) — PR13's dynamic RBAC activation | `manage_org` (org-scoped) or `platform_admin` |
+| `routes_org_saml.py` | `/orgs/{org_id}/saml` | Organization SAML configuration CRUD and break-glass override | `manage_sso` (org-scoped) or platform-admin override |
 
 ### Platform Administration
 
@@ -110,6 +119,7 @@ Full design trail: `docs/pr11-mfa-database-foundation-discovery.md`,
 | `routes_apikeys.py` | `/orgs/{org_id}/api-keys` | Create/list/revoke an org's API keys | `manage_api_keys` (org-scoped) or `platform_admin` |
 | `routes_oauth_clients.py` | `/orgs/{org_id}/oauth-clients` | Create/list/revoke an org's `client_credentials` OAuth clients | `manage_oauth_clients` (org-scoped) or `platform_admin` |
 | `routes_service_identity.py` | `/service/me`, `/platform/services/{client_id}` | A service-identity token's own claims; platform-admin lookup of a registered service client | `require_service_identity()` / `manage_all_orgs` |
+| `routes_sessions.py` | `/sessions` | List, inspect, and revoke the caller's sessions | Authenticated caller |
 
 ### Config, License & Identity
 
@@ -118,6 +128,7 @@ Full design trail: `docs/pr11-mfa-database-foundation-discovery.md`,
 | `routes_config.py` | `/auth/config` (`GET`/`PUT`) | Platform-wide global config (LLM/cloud credentials) — the exact endpoint Control Center's Admin Console Settings page reads | `manage_config` |
 | `routes_license.py` | `/license` | Validate/pull-token/generate/status/revoke | `manage_licenses` |
 | `routes_identity.py` | `/me`, `/platform/users/{user_id}/identity` | The caller's own resolved identity; platform-admin lookup of another user's | self / `manage_all_orgs` |
+| `routes_platform_interactions.py` | `/interactions` | Platform interaction records used by the control plane | `manage_all_orgs` |
 
 ### Login
 
@@ -212,7 +223,7 @@ login JIT-provisions org membership and issues `auth_method="sso"` with
 password and generic OAuth login are both blocked for that org's domains —
 Enterprise OIDC becomes the only way in.
 
-### Enterprise SAML (in progress)
+### Enterprise SAML
 
 A second enterprise SSO protocol, additive to — not a replacement for —
 Enterprise OIDC above; `OrganizationSAMLConfig` (its own table, not a
@@ -225,8 +236,9 @@ created. `GET /auth/saml/{org_slug}/login` is the SP-initiated login
 redirect: 404 unless the org has an `active` `OrganizationSAMLConfig`,
 then redirects to that IdP's `sso_url` with a SAMLRequest and a signed,
 opaque RelayState binding the resolved `organization_id`/
-`organization_saml_config_id` server-side. No ACS, assertion validation,
-identity linking, CRUD API, admin UI, or SLO endpoint exists yet.
+`organization_saml_config_id` server-side. ACS, SLO, assertion validation,
+identity linking, and organization configuration routes are implemented;
+production rollout still requires a configured IdP and end-to-end validation.
 
 ### Organization-aware authentication
 
@@ -423,7 +435,15 @@ docker compose up omnibioai-auth
 ```
 
 The service depends on `mysql` and `redis` compose services being healthy
-before it starts. An admin user is bootstrapped automatically on first startup.
+before it starts. The `admin@omnibioai` account and baseline roles are
+bootstrapped automatically on first startup. Set `ADMIN_BOOTSTRAP_PASSWORD`
+before the first start to control its initial password; otherwise a random
+password is printed once to the startup log. A cross-tenant `platform_admin`
+grant is opt-in via `PLATFORM_OWNER_EMAIL`.
+
+Apply database migrations before starting a deployed instance. For a fresh
+database, run `alembic upgrade head`; for an existing pre-Alembic database,
+follow `docs/MIGRATIONS.md` and stamp the baseline before upgrading.
 
 ---
 
@@ -452,7 +472,7 @@ before it starts. An admin user is bootstrapped automatically on first startup.
 | `LIMS_SSO_REDIRECT_URI` | — | Exact HTTPS LIMS callback URI; must match the registered client |
 | `LIMS_SSO_CODE_TTL_SECONDS` | `60` | Lifetime of an opaque, single-use LIMS authorization code |
 | `REQUIRE_HTTPS_FOR_SSO_ISSUER` | `true` | Require HTTPS for an org's configured Enterprise OIDC issuer URL |
-| `REDIS_URL` | `redis://redis:6379` | Redis connection URL (jti blacklist, `policy:invalidate` pub/sub) |
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL (jti blacklist, `policy:invalidate` pub/sub) |
 
 ---
 
@@ -460,7 +480,7 @@ before it starts. An admin user is bootstrapped automatically on first startup.
 
 ```
 app/
-├── main.py                  # FastAPI entrypoint — registers all 24 routers, admin
+├── main.py                  # FastAPI entrypoint — registers all 27 routers, admin
 │                             # bootstrap, Permission Registry drift check at startup,
 │                             # /metrics, /health
 ├── rbac.py                  # Role + permission dependency helpers (require_permission,
@@ -471,7 +491,7 @@ app/
 │   ├── routes_oauth_token.py     # /oauth/token (client_credentials grant)
 │   ├── routes_sso.py             # /auth/sso/discover, /{org_slug}/login, /{org_slug}/callback
 │   ├── routes_org_sso.py         # /orgs/{org_id}/sso config CRUD + override
-│   ├── routes_saml.py            # /auth/saml/{org_slug}/metadata, /login -- no ACS yet
+│   ├── routes_saml.py            # /auth/saml/{org_slug}: metadata, login, ACS, SLO
 │   ├── routes_jwks.py            # /.well-known/jwks.json
 │   ├── routes_orgs.py            # /orgs — org CRUD, invite, member roles
 │   ├── routes_teams.py           # /orgs/{org_id}/teams
@@ -548,8 +568,7 @@ app/
 pytest tests/
 ```
 
-**701 tests** across 52 files (`pytest --collect-only`). Core coverage —
-auth flows (`test_auth.py`), RBAC (`test_rbac.py`), security primitives
+The test suite covers auth flows (`test_auth.py`), RBAC (`test_rbac.py`), security primitives
 (`test_security.py`), health check (`test_health.py`) — plus dedicated
 suites per feature area:
 
