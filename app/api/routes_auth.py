@@ -162,6 +162,23 @@ def login(req: LoginRequest, request: Request, response: Response, db: Session =
             },
         )
 
+    # #263: per-org SAML enforcement, same "checked before any credential
+    # verification, not just short-circuited after a failed check" and
+    # "unaffected by login throttling" reasoning as the OIDC check above
+    # -- an org enforcing SAML never reaches authenticate_user either, and
+    # its own IdP is the correct place for brute-force protection.
+    enforced_saml_config = sso_discovery_service.find_enforced_saml_org_for_email(db, req.email)
+    if enforced_saml_config:
+        org = org_service.get_organization(db, enforced_saml_config.organization_id)
+        raise HTTPException(
+            403,
+            detail={
+                "reason": "sso_required",
+                "org_slug": org.slug,
+                "sso_login_url": f"/auth/saml/{org.slug}/login",
+            },
+        )
+
     # HIPAA Phase 1 PR1: peek-only, no DB/bcrypt work yet. Keyed off a
     # hash of whatever email string was submitted, real account or not --
     # see login_throttle_service.py's module docstring for why this

@@ -389,6 +389,51 @@ def test_enforcement_change_emits_event_after_a_completed_sso_login(client, org,
     assert event["metadata"]["enforced_after"] is True
 
 
+def test_saml_enforcement_change_emits_event_after_a_completed_saml_login(client, org):
+    """#263: SAML sibling of test_enforcement_change_emits_event_after_a_
+    completed_sso_login above -- same reasoning (a full SAML ACS
+    round-trip is out of scope for this file; tests/test_saml_enforcement.py
+    already covers that flow for real), simulated the same way: insert an
+    OAuthAccount row linked to the config directly, mirroring
+    has_completed_saml_login's own query.
+    """
+    from app.db.models import OAuthAccount, OrganizationSAMLConfig
+
+    client.post(
+        f"/orgs/{org['id']}/saml",
+        json={
+            "entity_id": "https://idp.audit-saml-test.example.com/entity",
+            "sso_url": "https://idp.audit-saml-test.example.com/sso",
+            "x509_certificate": "-----BEGIN CERTIFICATE-----\nMII...\n-----END CERTIFICATE-----",
+            "allowed_domains": [],
+        },
+        headers=org["owner_headers"],
+    )
+
+    db = _DirectSession()
+    try:
+        config = db.query(OrganizationSAMLConfig).filter(OrganizationSAMLConfig.organization_id == org["id"]).first()
+        owner_id = _user_id(client, org["owner"]["access_token"])
+        db.add(OAuthAccount(
+            user_id=owner_id, provider="saml", provider_user_id=f"nameid-{uuid.uuid4().hex[:8]}@example.com",
+            organization_saml_config_id=config.id,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    resp = client.patch(f"/orgs/{org['id']}/saml", json={"enforced": True}, headers=org["owner_headers"])
+    assert resp.status_code == 200
+
+    events = _events(event_type="saml_enforcement_changed", organization_id=org["id"])
+    assert len(events) == 1
+    event = events[0]
+    assert event["before_state"]["enforced"] is False
+    assert event["after_state"]["enforced"] is True
+    assert event["metadata"]["enforced_before"] is False
+    assert event["metadata"]["enforced_after"] is True
+
+
 def _sso_config_id(organization_id: int) -> int | None:
     from app.db.models import OrganizationSSOConfig
 

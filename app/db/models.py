@@ -535,6 +535,11 @@ class OrganizationSAMLConfig(Base):
     confirmed link to a matching email) -- auto-creating a brand-new user
     purely from an unrecognized SAML identity (JIT provisioning) is still
     PR7 scope, not implemented here.
+
+    #263: enforced/allowed_domains added -- see those columns' own
+    comments. Login paths (routes_auth.py password login, routes_oauth.py
+    OAuth callback) now read this table too, the same way they already
+    read OrganizationSSOConfig.enforced for OIDC.
     """
     __tablename__ = "organization_saml_configs"
 
@@ -549,6 +554,17 @@ class OrganizationSAMLConfig(Base):
     entity_id = Column(String(500), nullable=False)  # IdP Entity ID
     sso_url = Column(String(500), nullable=False)  # IdP SSO (AuthnRequest destination) endpoint
     x509_certificate = Column(Text, nullable=False)  # IdP signing certificate, PEM -- Text, not String, since a chain can exceed a few hundred bytes
+    # #263: per-org SAML enforcement. Mirrors OrganizationSSOConfig's own
+    # allowed_domains/enforced pair exactly (0004_org_sso_schema) --
+    # allowed_domains is the domain-to-org lookup find_enforced_saml_org_
+    # for_email needs (this table had no such mechanism before #263;
+    # OrganizationSAMLConfig.enabled is a separate, older, currently-
+    # unread-by-any-login-path field -- see OrgSAMLConfigOut's own
+    # comment -- not to be confused with this one). No sso_override_at-
+    # style break-glass override for SAML (deliberately out of scope for
+    # #263 -- see org_saml_service.set_enforced's own docstring).
+    allowed_domains = Column(JSON, nullable=True)  # e.g. ["acme.com"]
+    enforced = Column(Boolean, default=False)
     # PR11 (SLO): the IdP's SingleLogoutService endpoint -- a genuinely
     # distinct URL from sso_url above. python3-saml's own settings schema
     # (onelogin/saml2/settings.py) requires idp.singleLogoutService.url as

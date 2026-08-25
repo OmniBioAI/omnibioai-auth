@@ -13,6 +13,9 @@ class OrgSAMLConfigCreate(BaseModel):
     # login at all. See OrganizationSAMLConfig.slo_url's own comment for
     # why this is a genuinely separate field from sso_url.
     slo_url: str | None = None
+    # #263: same shape/default as OrgSSOConfigCreate.allowed_domains --
+    # the domain-to-org lookup per-org SAML enforcement needs.
+    allowed_domains: list[str] = []
 
 
 class OrgSAMLConfigUpdate(BaseModel):
@@ -28,6 +31,12 @@ class OrgSAMLConfigUpdate(BaseModel):
     # re-enable a config without deleting it.
     status: str | None = None
     slo_url: str | None = None
+    # #263: same shape as OrgSSOConfigUpdate.allowed_domains.
+    allowed_domains: list[str] | None = None
+    # #263: same shape as OrgSSOConfigUpdate.enforced -- setting True is
+    # rejected (400) unless the org has at least one completed SAML login
+    # already, see org_saml_service.set_enforced's lockout guard.
+    enforced: bool | None = None
 
 
 class OrgSAMLConfigOut(BaseModel):
@@ -43,9 +52,16 @@ class OrgSAMLConfigOut(BaseModel):
     # own enabled/enforced-shaped column), but not currently read by any
     # SAML login/ACS code path -- only `status` gates whether a login can
     # succeed. See app/services/org_saml_service.py's create/update
-    # docstrings for this discovered, disclosed gap.
+    # docstrings for this discovered, disclosed gap. NOT to be confused
+    # with `enforced` below (#263) -- a separate, genuinely-read field.
     enabled: bool
     status: str
     slo_url: str | None
+    # #263: same shape as OrgSSOConfigOut.allowed_domains/enforced. No
+    # sso_override_active-equivalent field -- SAML has no break-glass
+    # override mechanism (out of scope for #263, see org_saml_service.py's
+    # own section comment on set_enforced).
+    allowed_domains: list[str]
+    enforced: bool
     created_at: datetime | None
     updated_at: datetime | None

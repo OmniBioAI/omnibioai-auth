@@ -138,9 +138,15 @@ def test_org_scoped_route_inventory_matches_expected_count():
     or_platform_admin(MANAGE_SSO) -- reuses the existing manage_sso
     permission rather than a new manage_saml (same precedent PR11.5.5's
     MFA policy routes already set for reusing manage_sso beyond its
-    original OIDC-only name). No break-glass override route added here
-    (unlike SSO/MFA policy): OrganizationSAMLConfig has no `enforced`-
-    style flag with a lockout guard for an override to suspend, so there
+    original OIDC-only name). Still 41 as of #263 (per-org SAML
+    enforcement) -- OrganizationSAMLConfig gained an `enforced`-style
+    flag with a lockout guard (mirroring OrganizationSSOConfig/
+    OrganizationMFAPolicy), applied through this same existing PATCH
+    route, not a new one. No break-glass override route added for it,
+    though (unlike SSO/MFA policy): SAML enforcement has no
+    override-suspension mechanism at all, a deliberate, disclosed scope
+    boundary (see app/services/org_saml_service.py's own comment on
+    set_enforced) rather than something merely not-yet-built, so there
     is nothing analogous to add to the global-permission-exception set
     test_sso_and_mfa_policy_override_routes_are_the_only_global_
     permission_exception locks in below.
