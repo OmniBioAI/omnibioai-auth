@@ -91,7 +91,7 @@ from sqlalchemy.orm import Session
 
 from app.core import token_revocation
 from app.core.config import settings
-from app.db.models import OrganizationSAMLConfig
+from app.db.models import OAuthAccount, OrganizationSAMLConfig
 from app.services import audit_service
 from app.services.audit_service import AuditEventType
 
@@ -326,6 +326,7 @@ def create_saml_config(
     sso_url: str,
     x509_certificate: str,
     attribute_mapping: dict | None,
+    allowed_domains: list[str],
     actor_user_id: int,
     slo_url: str | None = None,
 ) -> OrganizationSAMLConfig:
@@ -345,6 +346,14 @@ def create_saml_config(
     url structural check sso_url itself gets, same reasoning: both are
     admin-supplied IdP endpoint URLs, and this is the one validation
     boundary either needs.
+
+    allowed_domains (#263): required, no default here -- same shape as
+    configure_sso's identical parameter for OIDC (the schema layer,
+    OrgSAMLConfigCreate.allowed_domains, supplies the []-default, never
+    None reaches this function). The domain-to-org lookup
+    find_enforced_saml_org_for_email needs; no structural validation
+    beyond what the schema layer already does (plain strings), mirroring
+    configure_sso's identical lack of per-domain validation for OIDC.
     """
     if get_saml_config(db, organization_id) is not None:
         raise ValueError("this organization already has a SAML configuration")
@@ -365,6 +374,7 @@ def create_saml_config(
         attribute_mapping=attribute_mapping,
         status="active",
         slo_url=slo_url,
+        allowed_domains=allowed_domains,
         created_at=now,
         updated_at=now,
         updated_by_user_id=actor_user_id,
@@ -395,6 +405,7 @@ def update_saml_config(
     enabled: bool | None = None,
     status: str | None = None,
     slo_url: str | None = None,
+    allowed_domains: list[str] | None = None,
 ) -> OrganizationSAMLConfig:
     """Only touches fields actually supplied (None = leave unchanged),
     same convention as org_sso_service.update_sso_config /
@@ -408,6 +419,15 @@ def update_saml_config(
     follows from it: there is no way to explicitly clear slo_url back to
     NULL once set, the same limitation attribute_mapping already has.
     Not a new gap introduced by PR11, the established convention.
+
+    enforced (#263) is deliberately NOT a parameter here -- same split
+    update_sso_config/set_enforced already establish for OIDC: enforcement
+    changes go through set_enforced below (which enforces the lockout
+    guard), never through this general-purpose field setter, so a caller
+    can never accidentally bypass the guard by routing an enforced=True
+    change through here instead. allowed_domains follows the ordinary
+    None-means-leave-unchanged convention like every other field in this
+    function -- it carries no such guard.
     """
     if entity_id is not None and not entity_id.strip():
         raise SAMLConfigValidationError("entity_id must not be empty")
@@ -436,6 +456,8 @@ def update_saml_config(
         config.slo_url = slo_url
     if status is not None:
         config.status = status
+    if allowed_domains is not None:
+        config.allowed_domains = allowed_domains
 
     config.updated_at = datetime.utcnow()
     config.updated_by_user_id = actor_user_id
@@ -462,6 +484,72 @@ def delete_saml_config(db: Session, config: OrganizationSAMLConfig) -> None:
     # report for this finding.
     db.delete(config)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# #263: per-org SAML enforcement. Mirrors org_sso_service.py's
+# has_completed_sso_login/set_enforced pair exactly, swapped onto
+# OAuthAccount.organization_saml_config_id (PR6) instead of
+# organization_sso_config_id. Deliberately does NOT include an
+# OIDC-style sso_override_at-backed break-glass override -- that's a
+# separate, bigger feature (a second global-admin bypass route, its own
+# audit events) that was never in scope for #263; this module has no
+# override mechanism to check, so find_enforced_saml_org_for_email
+# (app/services/sso_discovery_service.py) only ever checks `enforced`
+# itself, one condition narrower than its OIDC sibling.
+# ---------------------------------------------------------------------------
+
+
+def has_completed_saml_login(db: Session, config_id: int) -> bool:
+    """True once at least one real user has actually authenticated through
+    this config -- an OAuthAccount row with this organization_saml_
+    config_id only ever gets created by a *successful* SAML login
+    completion (_complete_saml_login's link/JIT paths, routes_saml.py),
+    never by configuring the IdP alone. Same lockout-guard signal
+    org_sso_service.has_completed_sso_login provides for OIDC."""
+    return (
+        db.query(OAuthAccount)
+        .filter(OAuthAccount.organization_saml_config_id == config_id)
+        .first()
+        is not None
+    )
+
+
+def set_enforced(
+    db: Session, config: OrganizationSAMLConfig, enforced: bool, actor_user_id: int
+) -> OrganizationSAMLConfig:
+    """Raises ValueError (-> 400 at the route layer) if turning enforcement
+    *on* without the lockout guard being satisfied. Turning it back off is
+    always allowed unconditionally -- there's no lockout risk in relaxing
+    a restriction, only in adding one. Identical shape and reasoning to
+    org_sso_service.set_enforced; see this module's own section comment
+    above for the one deliberate difference (no override suspension to
+    consider here).
+    """
+    if enforced and not config.enforced and not has_completed_saml_login(db, config.id):
+        raise ValueError(
+            "cannot enforce SAML for this organization until at least one member has "
+            "completed a successful SAML login"
+        )
+
+    before_enforced = config.enforced
+    config.enforced = enforced
+    config.updated_at = datetime.utcnow()
+    config.updated_by_user_id = actor_user_id
+    db.commit()
+    db.refresh(config)
+    # Only emitted on an actual flip -- same reasoning org_sso_service.
+    # set_enforced's identical guard gives: a resubmission of the same
+    # value is a no-op the caller already allows unconditionally, not a
+    # real enforcement change worth a ledger entry.
+    if before_enforced != enforced:
+        audit_service.log_event(
+            db, AuditEventType.SAML_ENFORCEMENT_CHANGED, actor_user_id=actor_user_id,
+            organization_id=config.organization_id, resource_type="organization_saml_config", resource_id=config.id,
+            before_state={"enforced": before_enforced}, after_state={"enforced": enforced},
+            metadata={"enforced_before": before_enforced, "enforced_after": enforced},
+        )
+    return config
 
 
 def _authn_request_settings_dict(org_slug: str, config: OrganizationSAMLConfig) -> dict:

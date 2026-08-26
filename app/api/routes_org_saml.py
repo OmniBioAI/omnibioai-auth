@@ -3,10 +3,18 @@ app/api/routes_org_sso.py deliberately closely -- same permission
 (manage_sso, reused rather than a parallel manage_saml -- see
 app/core/permission_names.py's own comment on that entry), same
 platform-admin-aware dependency, same 404/409 shape, same "never expose
-internal DB errors" posture. No override/break-glass endpoint here:
-OrganizationSAMLConfig has no `enforced`-style enforcement flag with a
-lockout guard the way OrganizationSSOConfig/OrganizationMFAPolicy do, so
-there is nothing for a break-glass bypass to suspend.
+internal DB errors" posture.
+
+#263: OrganizationSAMLConfig now has an `enforced`-style enforcement
+flag with a lockout guard (org_saml_service.set_enforced), the same as
+OrganizationSSOConfig/OrganizationMFAPolicy -- this module's own PATCH
+endpoint below applies it, mirroring routes_org_sso.py's identical
+"call set_enforced only if changed" pattern. Still no override/break-
+glass endpoint here, though: unlike OIDC/MFA policy, SAML enforcement
+has no sso_override_at-backed suspension mechanism at all (a separate,
+bigger feature deliberately out of scope for #263 -- see
+org_saml_service.py's own section comment on set_enforced) -- there is
+still nothing for a break-glass bypass to suspend.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -35,6 +43,8 @@ def _to_out(config: OrganizationSAMLConfig) -> OrgSAMLConfigOut:
         enabled=bool(config.enabled),
         status=config.status,
         slo_url=config.slo_url,
+        allowed_domains=config.allowed_domains or [],
+        enforced=bool(config.enforced),
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -57,7 +67,8 @@ def create_saml_config(
     try:
         config = org_saml_service.create_saml_config(
             db, org_id, body.entity_id, body.sso_url, body.x509_certificate,
-            body.attribute_mapping, membership.user_id, slo_url=body.slo_url,
+            body.attribute_mapping, body.allowed_domains, membership.user_id,
+            slo_url=body.slo_url,
         )
     except org_saml_service.SAMLConfigValidationError as e:
         raise HTTPException(422, str(e))
@@ -93,9 +104,18 @@ def update_saml_config(
             enabled=body.enabled,
             status=body.status,
             slo_url=body.slo_url,
+            allowed_domains=body.allowed_domains,
         )
+        # #263: applied after the other fields, on the freshest config row
+        # -- same ordering/reasoning routes_org_sso.py's identical PATCH
+        # endpoint already established for OIDC.
+        if body.enforced is not None and body.enforced != config.enforced:
+            config = org_saml_service.set_enforced(db, config, body.enforced, membership.user_id)
     except org_saml_service.SAMLConfigValidationError as e:
         raise HTTPException(422, str(e))
+    except ValueError as e:
+        # set_enforced's lockout guard.
+        raise HTTPException(400, str(e))
     return _to_out(config)
 
 

@@ -60,6 +60,11 @@ class AuditEventType:
     # than introducing asymmetric coverage between the two protocols.
     SAML_CONFIGURATION_CREATED = "saml_configuration_created"
     SAML_CONFIGURATION_UPDATED = "saml_configuration_updated"
+    # #263 (per-org SAML enforcement). Own event type, not a reuse of
+    # SSO_ENFORCEMENT_CHANGED -- same "genuinely separate table/resource"
+    # reasoning SAML_CONFIGURATION_CREATED/UPDATED already established
+    # above, applied to enforcement changes too.
+    SAML_ENFORCEMENT_CHANGED = "saml_enforcement_changed"
     # PR11.4c (Break-Glass Audit Completion). See
     # docs/pr11-breakglass-audit-discovery.md (omnibioai-control-center).
     SSO_OVERRIDE_CREATED = "sso_override_created"

@@ -79,6 +79,21 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
             },
         )
 
+    # #263: per-org SAML enforcement -- same "before find_linked_user, so
+    # an enforcing org's member can't bypass enforcement by using Google/
+    # GitHub/Microsoft instead" reasoning as the OIDC check above.
+    enforced_saml_config = sso_discovery_service.find_enforced_saml_org_for_email(db, email)
+    if enforced_saml_config:
+        org = org_service.get_organization(db, enforced_saml_config.organization_id)
+        raise HTTPException(
+            403,
+            detail={
+                "reason": "sso_required",
+                "org_slug": org.slug,
+                "sso_login_url": f"/auth/saml/{org.slug}/login",
+            },
+        )
+
     linked_user = oauth_service.find_linked_user(db, provider, provider_user_id)
     if linked_user:
         # PR11.5.3: single shared MFA decision point, see
