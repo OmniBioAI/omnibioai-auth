@@ -25,6 +25,7 @@ from app.api.routes_platform_audit import router as platform_audit_router
 from app.api.routes_organization_roles import router as organization_roles_router
 from app.api.routes_identity import router as identity_router
 from app.api.routes_service_identity import router as service_identity_router
+from app.api.routes_service_mint import router as service_mint_router
 from app.api.routes_jwks import router as jwks_router
 from app.api.routes_mfa import router as mfa_router
 from app.api.routes_org_mfa import router as org_mfa_router
@@ -36,6 +37,7 @@ from app.db.session import SessionLocal
 from app.db.schema_guard import assert_schema_matches_models
 from app.db.init_admin import (
     create_admin,
+    ensure_bio_agent_service_role,
     ensure_default_organization,
     ensure_platform_admin_role,
     ensure_platform_owner,
@@ -76,6 +78,10 @@ ensure_platform_admin_role(db)
 # after create_admin (in case the designated owner IS the bootstrap admin
 # account created just above). See ensure_platform_owner's own docstring.
 ensure_platform_owner(db)
+# #443: same opt-in shape as ensure_platform_owner immediately above --
+# a no-op unless the operator has set BIO_AGENT_SVC_EMAIL. No ordering
+# dependency on the calls above (it creates its own role/permission).
+ensure_bio_agent_service_role(db)
 ensure_default_organization(db)
 ensure_org_admin_permissions(db)
 ensure_default_org_roles(db)
@@ -107,6 +113,7 @@ app.include_router(platform_audit_router)
 app.include_router(organization_roles_router)
 app.include_router(identity_router)
 app.include_router(service_identity_router)
+app.include_router(service_mint_router)
 app.include_router(jwks_router)
 app.include_router(mfa_router)
 app.include_router(org_mfa_router)

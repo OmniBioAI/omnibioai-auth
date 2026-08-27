@@ -298,3 +298,62 @@ def ensure_default_organization(db):
         )
         db.add(org)
         db.commit()
+
+
+def ensure_bio_agent_service_role(db):
+    """#443: grants `service_token.mint` to exactly one operator-
+    designated, already-existing account, mirroring `ensure_platform_
+    owner`'s exact shape (opt-in env var, exact-email match, additive,
+    idempotent, audit-logged) rather than any of that function's own
+    rejected broader alternatives.
+
+    Why an env var rather than the hardcoded "admin@omnibioai" pattern
+    `create_admin` uses: unlike the bootstrap admin account (a fixed
+    identity this service itself creates), the bio-agent-service account
+    is created and owned by a *different* deployment
+    (`omnibioai-workbench`'s own `BIO_AGENT_SVC_EMAIL`/`BIO_AGENT_SVC_
+    PASSWORD`, already env-configurable there with no hardcoded default)
+    -- this service has no fixed identity to assume for it. Reuses the
+    exact same env var name (`BIO_AGENT_SVC_EMAIL`) an operator already
+    sets on the workbench side, so both services point at the same real
+    account under one name, not two independently-named knobs for the
+    same concept.
+
+    Deliberately its own role ("bio_agent_service"), not a grant onto the
+    existing org-scoped "scientist" role that account also holds --
+    service_token.mint is GLOBAL-scoped (see its own registry entry)
+    and, per that entry's comment, must never be something an ordinary
+    "scientist" holder incidentally gains. Unset (the default): a
+    complete no-op, identical in spirit to `ensure_platform_owner`
+    unset -- this function grants nothing to anyone until an operator
+    opts in.
+    """
+    svc_email = os.environ.get("BIO_AGENT_SVC_EMAIL", "").strip()
+    if not svc_email:
+        return
+
+    # Same get_or_create_role primitive every other bootstrap role in this
+    # module uses -- idempotent, doesn't commit, creates the permission
+    # too. "service_token.mint" is the registry name (app/core/permission_
+    # names.py); GLOBAL-scoped like override_sso_enforcement.
+    role = get_or_create_role(db, "bio_agent_service", ["service_token.mint"])
+
+    svc_user = db.query(User).filter(User.email == svc_email).first()
+    if not svc_user:
+        logger.warning(
+            "BIO_AGENT_SVC_EMAIL=%s does not match any existing user; skipping. "
+            "This is not an error -- the account may not have been created yet. "
+            "Safe to retry on the next startup once it exists.",
+            svc_email,
+        )
+        return
+
+    if role not in svc_user.roles:
+        svc_user.roles.append(role)
+        db.commit()
+        audit_service.log_event(
+            db, AuditEventType.ROLE_ASSIGNED,
+            actor_user_id=None, target_user_id=svc_user.id,
+            resource_type="role", resource_id=role.id,
+            metadata={"role": "bio_agent_service", "source": "bootstrap.bio_agent_svc_email", "email": svc_email},
+        )

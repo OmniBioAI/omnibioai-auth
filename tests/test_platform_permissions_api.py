@@ -31,6 +31,14 @@ FUTURE_NAMES = {
     "marketplace.install",
 }
 
+# #443: kept separate from FUTURE_NAMES above -- that set's own
+# test_future_permissions_present_and_correctly_flagged asserts every
+# member is scope=="both", which service_token.mint genuinely isn't (see
+# test_permission_registry.py's SERVICE_MINT_NAMES for the GLOBAL-scope
+# assertion). Still a non-legacy entry, so it still counts toward
+# `future_permissions` in registry_stats() -- see the stats test below.
+SERVICE_MINT_NAMES = {"service_token.mint"}
+
 LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -100,10 +108,11 @@ def test_response_contains_all_registered_permissions(client):
     # repo instead of sitting unenforced, + runs.read)
     # + 1 omnibioai-model-registry Phase 2E entry (model.resolve_ownership)
     # + 1 Model Registry read/use authorization split audit entry
-    # (model.read).
+    # (model.read)
+    # + 1 #443 entry (service_token.mint).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 27
+    assert len(REGISTRY) == 28
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -143,6 +152,18 @@ def test_future_permissions_present_and_correctly_flagged(client):
         assert name in by_name, f"{name} missing from response"
         assert by_name[name]["legacy"] is False
         assert by_name[name]["scope"] == "both"
+        assert by_name[name]["deprecated"] is False
+
+
+def test_service_mint_permission_present_and_correctly_flagged(client):
+    # #443: kept separate from the loop above -- GLOBAL-scoped, not BOTH.
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    by_name = {p["name"]: p for p in resp.json()}
+    for name in SERVICE_MINT_NAMES:
+        assert name in by_name, f"{name} missing from response"
+        assert by_name[name]["legacy"] is False
+        assert by_name[name]["scope"] == "global"
         assert by_name[name]["deprecated"] is False
 
 
@@ -249,7 +270,7 @@ def test_platform_admin_can_get_registry_stats(client):
     body = resp.json()
     assert body["total_permissions"] == len(REGISTRY)
     assert body["legacy_permissions"] == len(LEGACY_NAMES)
-    assert body["future_permissions"] == len(FUTURE_NAMES)
+    assert body["future_permissions"] == len(FUTURE_NAMES) + len(SERVICE_MINT_NAMES)
     assert body["deprecated_permissions"] == 0
     assert sum(body["by_scope"].values()) == len(REGISTRY)
     assert sum(body["by_category"].values()) == len(REGISTRY)

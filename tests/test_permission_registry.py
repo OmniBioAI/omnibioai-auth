@@ -91,6 +91,15 @@ MODEL_REGISTRY_READ_NAMES = {
     "model.read": PermissionCategory.MODEL,
 }
 
+# #443 (session/allauth users have no JWT to forward to TES): same "real,
+# immediately-enforced" shape as MODEL_REGISTRY_OWNERSHIP_NAMES above --
+# gates POST /service/mint-user-token, granted to exactly one dedicated
+# role/account (bio_agent_service / svc-bio-agent), never to "scientist".
+# Not a FUTURE_NAMES-style unenforced placeholder.
+SERVICE_MINT_NAMES = {
+    "service_token.mint": PermissionCategory.PLATFORM,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -273,6 +282,31 @@ def test_model_read_is_independent_of_model_use():
     assert REGISTRY["model.read"].description != REGISTRY["model.use"].description
 
 
+def test_all_service_mint_names_are_known_not_legacy_scope_global():
+    # Unlike every other non-legacy group above (all BOTH-scoped),
+    # service_token.mint is GLOBAL -- checked purely via require_permission
+    # against the JWT permissions claim, never against a live org
+    # membership, since the calling service has no org-scoped relationship
+    # to the target user's organization.
+    for name, category in SERVICE_MINT_NAMES.items():
+        assert is_known_permission(name), f"{name} missing from registry"
+        entry = REGISTRY[name]
+        assert entry.legacy is False
+        assert entry.scope == PermissionScope.GLOBAL
+        assert entry.category == category
+        assert entry.deprecated is False
+
+
+def test_all_service_mint_names_pass_format_validation():
+    for name in SERVICE_MINT_NAMES:
+        assert is_valid_permission_format(name), name
+
+
+def test_service_mint_names_are_not_marked_reserved():
+    for name in SERVICE_MINT_NAMES:
+        assert "not yet enforced" not in REGISTRY[name].description.lower()
+
+
 def test_model_resolve_ownership_is_independent_of_model_use():
     # model.use must not imply model.resolve_ownership, or vice versa --
     # they are two separate registry entries with no relationship encoded
@@ -298,7 +332,7 @@ def test_registry_contains_exactly_the_expected_names():
     assert set(REGISTRY.keys()) == (
         LEGACY_NAMES | set(FUTURE_NAMES.keys()) | set(WORKFLOW_BUNDLES_NAMES.keys())
         | set(TES_NAMES.keys()) | set(MODEL_REGISTRY_OWNERSHIP_NAMES.keys())
-        | set(MODEL_REGISTRY_READ_NAMES.keys())
+        | set(MODEL_REGISTRY_READ_NAMES.keys()) | set(SERVICE_MINT_NAMES.keys())
     )
 
 
@@ -406,8 +440,10 @@ def test_filter_registry_combines_filters_with_and_semantics():
     assert {p.name for p in results} == {
         "usage.read", "billing.read", "billing.manage", "subscription.manage",
     }
+    # #443: service_token.mint is the first non-legacy PLATFORM entry --
+    # every other PLATFORM-category permission predates the registry.
     results2 = filter_registry(category=PermissionCategory.PLATFORM, legacy=False)
-    assert results2 == []  # every PLATFORM-category entry is legacy today
+    assert {p.name for p in results2} == {"service_token.mint"}
 
 
 def test_filter_registry_results_stay_sorted():
@@ -426,6 +462,7 @@ def test_registry_stats_totals_match_registry_size():
     assert stats["future_permissions"] == (
         len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
         + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
+        + len(SERVICE_MINT_NAMES)
     )
 
 
@@ -437,7 +474,11 @@ def test_registry_stats_by_scope_sums_to_total():
     stats = registry_stats()
     assert sum(stats["by_scope"].values()) == stats["total_permissions"]
     assert stats["by_scope"]["org"] == 5
-    assert stats["by_scope"]["global"] == 8
+    # 7 pre-#443 GLOBAL entries (all legacy) + 1 (service_token.mint,
+    # #443's own new non-legacy GLOBAL entry -- see SERVICE_MINT_NAMES
+    # above, the first non-legacy permission in this registry that isn't
+    # BOTH-scoped).
+    assert stats["by_scope"]["global"] == 9
     # 11 pre-runs.read + 1 (runs.read, added by the omnibioai-tes IAM
     # integration -- see TES_NAMES above) + 1 (model.resolve_ownership,
     # added by the omnibioai-model-registry Phase 2E integration -- see
