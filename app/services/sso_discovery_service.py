@@ -68,13 +68,12 @@ def find_saml_org_for_email(db: Session, email: str) -> OrganizationSAMLConfig |
 def find_enforced_saml_org_for_email(db: Session, email: str) -> OrganizationSAMLConfig | None:
     """#263: SAML sibling of find_enforced_org_for_email -- same role,
     same domain-matching signal, same "the only one available before any
-    identity is proven" reasoning. One deliberate difference: no
-    `config.sso_override_at is None`-style check -- OrganizationSAMLConfig
-    has no break-glass override mechanism (out of scope for #263, see
-    org_saml_service.py's own section comment on set_enforced), so there
-    is nothing here to check beyond `enforced` itself.
+    identity is proven" reasoning. #67: now fully symmetric with its OIDC
+    sibling -- OrganizationSAMLConfig gained the same sso_override_at-
+    backed break-glass override (org_saml_service.set_saml_override/
+    clear_saml_override), so this checks it the same way.
     """
     config = find_saml_org_for_email(db, email)
-    if config and config.enforced:
+    if config and config.enforced and config.sso_override_at is None:
         return config
     return None

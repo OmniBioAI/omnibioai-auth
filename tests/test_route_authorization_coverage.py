@@ -23,9 +23,10 @@ from app.main import app
 # route that deliberately must never allow the cross-tenant bypass.
 # require_permission's and require_role's wrappers check the JWT's global
 # permissions/roles claim -- the deliberate pattern routes_org_sso.py's
-# break-glass override endpoints use instead of org membership (Phase 2
-# PR5: it must work even when the org's own admin is the one locked out),
-# so they count as "protected" too, not as a gap.
+# (and, since #67, routes_org_saml.py's) break-glass override endpoints
+# use instead of org membership (Phase 2 PR5: it must work even when the
+# org's own admin is the one locked out), so they count as "protected"
+# too, not as a gap.
 ORG_MEMBERSHIP_QUALNAMES = {
     "get_org_membership",
     "require_org_permission.<locals>.wrapper",
@@ -142,16 +143,25 @@ def test_org_scoped_route_inventory_matches_expected_count():
     enforcement) -- OrganizationSAMLConfig gained an `enforced`-style
     flag with a lockout guard (mirroring OrganizationSSOConfig/
     OrganizationMFAPolicy), applied through this same existing PATCH
-    route, not a new one. No break-glass override route added for it,
-    though (unlike SSO/MFA policy): SAML enforcement has no
-    override-suspension mechanism at all, a deliberate, disclosed scope
-    boundary (see app/services/org_saml_service.py's own comment on
-    set_enforced) rather than something merely not-yet-built, so there
-    is nothing analogous to add to the global-permission-exception set
-    test_sso_and_mfa_policy_override_routes_are_the_only_global_
+    route, not a new one.
+
+    41 -> 43 as of #67 (SAML break-glass override): POST/DELETE
+    /orgs/{org_id}/saml/override, reusing require_permission(
+    OVERRIDE_SSO_ENFORCEMENT) verbatim -- not a new SAML-specific
+    permission -- same break-glass reasoning as the SSO/MFA-policy
+    override routes (must work even if the org's own admin is locked
+    out). #263's own note above ("no break-glass override route added
+    for it... a deliberate, disclosed scope boundary") was reassessed:
+    the lockout risk turned out to be identical in shape to OIDC's, not
+    genuinely lower, so this closes that gap rather than leaving it
+    open. See app/api/routes_org_saml.py's own module docstring for why
+    the permission/schema are shared while the audit events
+    (SAML_OVERRIDE_CREATED/REMOVED) stay provider-specific. This is now
+    a third entry in the global-permission-exception set
+    test_sso_mfa_policy_and_saml_override_routes_are_the_only_global_
     permission_exception locks in below.
     """
-    assert len(list(_org_scoped_routes())) == 41
+    assert len(list(_org_scoped_routes())) == 43
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
@@ -185,18 +195,23 @@ def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
     )
 
 
-def test_sso_and_mfa_policy_override_routes_are_the_only_global_permission_exception():
+def test_sso_mfa_policy_and_saml_override_routes_are_the_only_global_permission_exception():
     """Locks in *which* routes are allowed to skip org-membership checking
     in favor of a global permission -- so a future route reusing this
     pattern for the wrong reason (convenience, not a genuine break-glass
     need) shows up as a diff to this test, not a silent precedent.
 
-    PR11.5.5 adds the second deliberate exception here,
+    PR11.5.5 added the second deliberate exception here,
     /orgs/{org_id}/mfa-policy/override -- same break-glass reasoning as
     the SSO override route (must work even if the org's own admin is
     locked out), reusing the existing manage_all_orgs permission rather
-    than a new one. SSO's override route is no longer the *only*
-    exception, just the first.
+    than a new one.
+
+    #67 adds the third: /orgs/{org_id}/saml/override, reusing
+    override_sso_enforcement (SSO's own permission) verbatim rather than
+    a new SAML-specific one -- see app/api/routes_org_saml.py's module
+    docstring for why permissions are deliberately shared across SSO
+    mechanisms even though audit events are not.
     """
     global_permission_only = []
     for route in _org_scoped_routes():
@@ -209,4 +224,5 @@ def test_sso_and_mfa_policy_override_routes_are_the_only_global_permission_excep
     assert set(global_permission_only) == {
         "/orgs/{org_id}/sso/override",
         "/orgs/{org_id}/mfa-policy/override",
+        "/orgs/{org_id}/saml/override",
     }

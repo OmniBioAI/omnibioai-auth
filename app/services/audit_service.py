@@ -69,6 +69,17 @@ class AuditEventType:
     # docs/pr11-breakglass-audit-discovery.md (omnibioai-control-center).
     SSO_OVERRIDE_CREATED = "sso_override_created"
     SSO_OVERRIDE_REMOVED = "sso_override_removed"
+    # #67 (SAML break-glass override). Own event types, not a reuse of
+    # SSO_OVERRIDE_CREATED/REMOVED -- same "genuinely separate table/
+    # resource_type" reasoning SAML_CONFIGURATION_CREATED/UPDATED and
+    # SAML_ENFORCEMENT_CHANGED already established above: an audit event
+    # needs to identify which config (and therefore which provider) was
+    # affected, so it stays provider-specific even though the permission
+    # (override_sso_enforcement) and request schema (SSOOverrideRequest)
+    # gating this action are deliberately shared across both providers --
+    # see app/api/routes_org_saml.py's override endpoints for that rule.
+    SAML_OVERRIDE_CREATED = "saml_override_created"
+    SAML_OVERRIDE_REMOVED = "saml_override_removed"
     # PR11.5.2 (Enterprise TOTP MFA Enrollment). See
     # docs/pr11-totp-enrollment-discovery.md. MFA_RESET_BY_ADMIN and
     # MFA_RECOVERY_USED (named in PR11.5.1's own roadmap) are deliberately

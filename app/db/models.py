@@ -560,11 +560,25 @@ class OrganizationSAMLConfig(Base):
     # for_email needs (this table had no such mechanism before #263;
     # OrganizationSAMLConfig.enabled is a separate, older, currently-
     # unread-by-any-login-path field -- see OrgSAMLConfigOut's own
-    # comment -- not to be confused with this one). No sso_override_at-
-    # style break-glass override for SAML (deliberately out of scope for
-    # #263 -- see org_saml_service.set_enforced's own docstring).
+    # comment -- not to be confused with this one).
     allowed_domains = Column(JSON, nullable=True)  # e.g. ["acme.com"]
     enforced = Column(Boolean, default=False)
+
+    # #67: break-glass bypass for `enforced`, ported from
+    # OrganizationSSOConfig's identical fields (Phase 2 PR5) -- same
+    # column names verbatim, same "genuinely the same concept, different
+    # provider" reasoning that kept allowed_domains/enforced identical
+    # above rather than prefixing them saml_*. Deliberately NOT a new
+    # OVERRIDE_SAML_ENFORCEMENT permission or a SAMLOverrideRequest
+    # schema -- see routes_org_saml.py's override endpoints for why
+    # permissions/request shapes are shared across SSO mechanisms while
+    # audit events stay provider-specific. Same suspend-without-clearing
+    # semantics: non-null sso_override_at means enforcement is currently
+    # suspended for this org regardless of `enforced`, and clearing the
+    # override resumes enforcement exactly as configured.
+    sso_override_at = Column(DateTime, nullable=True)
+    sso_override_reason = Column(String(500), nullable=True)
+    sso_override_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     # PR11 (SLO): the IdP's SingleLogoutService endpoint -- a genuinely
     # distinct URL from sso_url above. python3-saml's own settings schema
     # (onelogin/saml2/settings.py) requires idp.singleLogoutService.url as

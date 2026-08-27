@@ -57,11 +57,14 @@ class OrgSAMLConfigOut(BaseModel):
     enabled: bool
     status: str
     slo_url: str | None
-    # #263: same shape as OrgSSOConfigOut.allowed_domains/enforced. No
-    # sso_override_active-equivalent field -- SAML has no break-glass
-    # override mechanism (out of scope for #263, see org_saml_service.py's
-    # own section comment on set_enforced).
+    # #263: same shape as OrgSSOConfigOut.allowed_domains/enforced.
     allowed_domains: list[str]
     enforced: bool
+    # #67: same shape/meaning as OrgSSOConfigOut.sso_override_active --
+    # SAML gained the same break-glass override, and deliberately reuses
+    # the OIDC field name here too rather than a saml_override_active
+    # variant (see OrganizationSAMLConfig.sso_override_at's own comment
+    # for why the underlying column keeps the identical name).
+    sso_override_active: bool
     created_at: datetime | None
     updated_at: datetime | None

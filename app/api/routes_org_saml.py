@@ -9,24 +9,35 @@ internal DB errors" posture.
 flag with a lockout guard (org_saml_service.set_enforced), the same as
 OrganizationSSOConfig/OrganizationMFAPolicy -- this module's own PATCH
 endpoint below applies it, mirroring routes_org_sso.py's identical
-"call set_enforced only if changed" pattern. Still no override/break-
-glass endpoint here, though: unlike OIDC/MFA policy, SAML enforcement
-has no sso_override_at-backed suspension mechanism at all (a separate,
-bigger feature deliberately out of scope for #263 -- see
-org_saml_service.py's own section comment on set_enforced) -- there is
-still nothing for a break-glass bypass to suspend.
+"call set_enforced only if changed" pattern.
+
+#67: this module now also has a break-glass override endpoint, ported
+from routes_org_sso.py's identical one. Deliberately reuses that
+module's OVERRIDE_SSO_ENFORCEMENT permission and SSOOverrideRequest
+schema as-is rather than minting SAML-specific equivalents -- the rule
+being followed, made explicit here so the next IdP type has a clear
+precedent to extend: permissions and request/response shapes are
+shared across SSO mechanisms (they're provider-agnostic capabilities --
+"suspend enforcement, org-scoped, global-admin-only" means the same
+thing regardless of protocol), while audit events stay provider-
+specific (SAML_OVERRIDE_CREATED/REMOVED, not a reuse of
+SSO_OVERRIDE_CREATED/REMOVED -- see audit_service.py's own comment),
+since an audit trail needs to identify which config was actually
+affected.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.routes_org_sso import OVERRIDE_SSO_ENFORCEMENT
 from app.db.models import OrganizationMembership, OrganizationSAMLConfig
 from app.db.session import get_db
-from app.rbac import require_org_permission_or_platform_admin
+from app.rbac import require_org_permission_or_platform_admin, require_permission
 from app.schemas.org_saml import (
     OrgSAMLConfigCreate,
     OrgSAMLConfigOut,
     OrgSAMLConfigUpdate,
 )
+from app.schemas.org_sso import SSOOverrideRequest
 from app.services import org_saml_service
 
 router = APIRouter(prefix="/orgs/{org_id}/saml", tags=["org-saml"])
@@ -45,6 +56,7 @@ def _to_out(config: OrganizationSAMLConfig) -> OrgSAMLConfigOut:
         slo_url=config.slo_url,
         allowed_domains=config.allowed_domains or [],
         enforced=bool(config.enforced),
+        sso_override_active=config.sso_override_at is not None,
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -127,3 +139,32 @@ def delete_saml_config(
 ):
     config = _get_or_404(db, org_id)
     org_saml_service.delete_saml_config(db, config)
+
+
+# ---------------- BREAK-GLASS OVERRIDE (global-admin only) ----------------
+# #67: mirrors routes_org_sso.py's identical endpoints -- same permission,
+# same request schema, same response shape. See this module's own
+# docstring for the shared-permission/provider-specific-audit-event rule.
+
+
+@router.post("/override", response_model=OrgSAMLConfigOut)
+def override_saml_enforcement(
+    org_id: int,
+    body: SSOOverrideRequest,
+    db: Session = Depends(get_db),
+    user=Depends(require_permission(OVERRIDE_SSO_ENFORCEMENT)),
+):
+    config = _get_or_404(db, org_id)
+    config = org_saml_service.set_saml_override(db, config, body.reason, int(user["sub"]))
+    return _to_out(config)
+
+
+@router.delete("/override", response_model=OrgSAMLConfigOut)
+def clear_saml_override(
+    org_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(require_permission(OVERRIDE_SSO_ENFORCEMENT)),
+):
+    config = _get_or_404(db, org_id)
+    config = org_saml_service.clear_saml_override(db, config, actor_user_id=int(user["sub"]))
+    return _to_out(config)
