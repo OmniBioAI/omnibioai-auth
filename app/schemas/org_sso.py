@@ -39,5 +39,12 @@ class OrgSSOConfigOut(BaseModel):
     # app/services/org_sso_service.py and routes_org_sso.py's _to_out.
 
 
+# #67: reused verbatim by routes_org_saml.py's override endpoints too,
+# not forked into a SAML-specific schema -- a break-glass reason string
+# is a provider-agnostic shape, the same rule that keeps
+# override_sso_enforcement (app/api/routes_org_sso.py) as the one
+# permission gating both. See routes_org_saml.py's module docstring for
+# the full reasoning, including why audit events are the one thing that
+# stays provider-specific.
 class SSOOverrideRequest(BaseModel):
     reason: str

@@ -490,13 +490,17 @@ def delete_saml_config(db: Session, config: OrganizationSAMLConfig) -> None:
 # #263: per-org SAML enforcement. Mirrors org_sso_service.py's
 # has_completed_sso_login/set_enforced pair exactly, swapped onto
 # OAuthAccount.organization_saml_config_id (PR6) instead of
-# organization_sso_config_id. Deliberately does NOT include an
-# OIDC-style sso_override_at-backed break-glass override -- that's a
-# separate, bigger feature (a second global-admin bypass route, its own
-# audit events) that was never in scope for #263; this module has no
-# override mechanism to check, so find_enforced_saml_org_for_email
-# (app/services/sso_discovery_service.py) only ever checks `enforced`
-# itself, one condition narrower than its OIDC sibling.
+# organization_sso_config_id.
+#
+# #67: set_saml_override/clear_saml_override below port OIDC's
+# sso_override_at-backed break-glass override onto this table too --
+# the omission above was reassessed and found to be a genuine lockout
+# risk, not a safely-skippable one: an org enforcing SAML has exactly
+# the same single-IdP-dependency failure mode as one enforcing OIDC (see
+# routes_auth.py's identical, unconditional 403 sso_required for both),
+# so find_enforced_saml_org_for_email (app/services/
+# sso_discovery_service.py) now checks sso_override_at just like its
+# OIDC sibling.
 # ---------------------------------------------------------------------------
 
 
@@ -548,6 +552,63 @@ def set_enforced(
             organization_id=config.organization_id, resource_type="organization_saml_config", resource_id=config.id,
             before_state={"enforced": before_enforced}, after_state={"enforced": enforced},
             metadata={"enforced_before": before_enforced, "enforced_after": enforced},
+        )
+    return config
+
+
+def set_saml_override(
+    db: Session, config: OrganizationSAMLConfig, reason: str, actor_user_id: int
+) -> OrganizationSAMLConfig:
+    """#67: SAML sibling of org_sso_service.set_sso_override -- identical
+    shape and semantics (global-admin break-glass bypass: suspends the
+    *effect* of `enforced` for this org without changing `enforced`
+    itself, idempotent/re-triggerable). Logs SAML_OVERRIDE_CREATED, not a
+    reuse of SSO_OVERRIDE_CREATED -- see audit_service.py's own comment
+    on that pair for why."""
+    was_active = config.sso_override_at is not None
+    config.sso_override_at = datetime.utcnow()
+    config.sso_override_reason = reason
+    config.sso_override_by_user_id = actor_user_id
+    db.commit()
+    db.refresh(config)
+    audit_service.log_event(
+        db, AuditEventType.SAML_OVERRIDE_CREATED, actor_user_id=actor_user_id,
+        organization_id=config.organization_id, resource_type="organization_saml_config", resource_id=config.id,
+        before_state={"sso_override_active": was_active, "enforced": config.enforced},
+        after_state={"sso_override_active": True, "enforced": config.enforced},
+        metadata={
+            "action": "override_created", "override_reason": reason,
+            "enforced_before": config.enforced, "timestamp": config.sso_override_at.isoformat(),
+        },
+    )
+    return config
+
+
+def clear_saml_override(
+    db: Session, config: OrganizationSAMLConfig, actor_user_id: int | None = None,
+) -> OrganizationSAMLConfig:
+    """#67: SAML sibling of org_sso_service.clear_sso_override -- same
+    "only audit an actual clear, not a no-op DELETE" convention."""
+    was_active = config.sso_override_at is not None
+    before_reason = config.sso_override_reason
+    before_by_user_id = config.sso_override_by_user_id
+
+    config.sso_override_at = None
+    config.sso_override_reason = None
+    config.sso_override_by_user_id = None
+    db.commit()
+    db.refresh(config)
+
+    if was_active:
+        audit_service.log_event(
+            db, AuditEventType.SAML_OVERRIDE_REMOVED, actor_user_id=actor_user_id,
+            organization_id=config.organization_id, resource_type="organization_saml_config", resource_id=config.id,
+            before_state={
+                "sso_override_active": True, "sso_override_reason": before_reason,
+                "sso_override_by_user_id": before_by_user_id,
+            },
+            after_state={"sso_override_active": False},
+            metadata={"action": "override_removed", "timestamp": datetime.utcnow().isoformat()},
         )
     return config
 

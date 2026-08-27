@@ -2,15 +2,21 @@
 (Phase 2 PR5's OIDC enforcement suite) as closely as possible -- same
 lockout-guard, password-rejection, OAuth-bypass, and tenant-isolation
 coverage, ported to SAML's real signed-SAMLResponse login flow instead of
-OIDC's id_token flow. Deliberately does NOT mirror that file's break-glass
-override tests: OrganizationSAMLConfig has no override mechanism at all,
-a disclosed, out-of-scope difference (see app/services/org_saml_service.py's
-own section comment on set_enforced) -- there is nothing for a bypass to
-suspend or a test to exercise.
+OIDC's id_token flow.
+
+#67 adds this file's break-glass override coverage, mirroring
+test_sso_enforcement.py's identical block below -- OrganizationSAMLConfig
+gained the same sso_override_at-backed mechanism (org_saml_service.
+set_saml_override/clear_saml_override), reusing SSO's own
+override_sso_enforcement permission and /override request shape verbatim
+(see app/api/routes_org_saml.py's module docstring for why), so these
+tests hit /orgs/{org_id}/saml/override rather than a SAML-specific path,
+but otherwise assert the exact same behavior.
 """
 
 import base64
 import datetime
+import os
 import uuid
 from urllib.parse import parse_qs, urlparse
 
@@ -36,6 +42,25 @@ def _register_and_login(client, email=None, password="TestPassword123!"):
     client.post("/auth/register", json={"email": email, "password": password})
     login = client.post("/auth/login", json={"email": email, "password": password})
     return {"email": email, "password": password, "access_token": login.json()["access_token"]}
+
+
+@pytest.fixture(scope="session")
+def admin_token(client):
+    """Same fixture as test_sso_enforcement.py's own -- pytest fixtures
+    are per-file, but the admin bootstrap account is the same real global
+    admin either way, so this is a deliberate, harmless duplication
+    rather than a shared conftest.py fixture."""
+    resp = client.post(
+        "/auth/login",
+        json={"email": "admin@omnibioai", "password": os.environ["ADMIN_BOOTSTRAP_PASSWORD"]},
+    )
+    assert resp.status_code == 200
+    return resp.json()["access_token"]
+
+
+@pytest.fixture
+def admin_headers(admin_token):
+    return _auth_header(admin_token)
 
 
 # ── Real IdP keypair/cert + signed-response fixture builder ────────────
@@ -358,3 +383,81 @@ def test_login_unaffected_before_allowed_domains_configured(client):
     member = _register_and_login(client, email=f"nomatch-{uuid.uuid4().hex[:8]}@no-org-claims-this.test")
     resp = client.post("/auth/login", json={"email": member["email"], "password": member["password"]})
     assert resp.status_code == 200
+
+
+# ── Break-glass override (#67) ──────────────────────────────────────────────
+# Mirrors test_sso_enforcement.py's identical block -- same assertions,
+# same /override request shape (SSOOverrideRequest, reused verbatim), just
+# against /orgs/{org_id}/saml/override and organization_saml_configs.
+
+
+def test_saml_override_requires_global_permission_not_org_admin(client, org_with_saml):
+    _enable_enforcement(client, org_with_saml)
+
+    resp = client.post(
+        f"/orgs/{org_with_saml['org_id']}/saml/override",
+        json={"reason": "IdP outage"},
+        headers=org_with_saml["owner_headers"],  # org admin, not global admin
+    )
+    assert resp.status_code == 403
+
+
+def test_saml_override_bypasses_enforcement_and_clear_restores_it(client, org_with_saml, admin_headers):
+    member = _register_and_login(client, email=f"grace-{uuid.uuid4().hex[:8]}@{org_with_saml['domain']}")
+    _enable_enforcement(client, org_with_saml)
+
+    blocked = client.post("/auth/login", json={"email": member["email"], "password": member["password"]})
+    assert blocked.status_code == 403
+
+    override = client.post(
+        f"/orgs/{org_with_saml['org_id']}/saml/override",
+        json={"reason": "IdP outage, unblocking pending fix"},
+        headers=admin_headers,
+    )
+    assert override.status_code == 200
+    assert override.json()["enforced"] is True  # org's own setting untouched
+    assert override.json()["sso_override_active"] is True
+
+    unblocked = client.post("/auth/login", json={"email": member["email"], "password": member["password"]})
+    assert unblocked.status_code == 200
+
+    cleared = client.delete(f"/orgs/{org_with_saml['org_id']}/saml/override", headers=admin_headers)
+    assert cleared.status_code == 200
+    assert cleared.json()["sso_override_active"] is False
+
+    reblocked = client.post("/auth/login", json={"email": member["email"], "password": member["password"]})
+    assert reblocked.status_code == 403
+
+
+def test_saml_override_is_recorded_with_reason_and_actor(client, org_with_saml, admin_headers):
+    """Same "durably persisted with who/why/when, retrievable" standard
+    test_sso_enforcement.py's identical test applies -- verified here
+    rather than just asserted."""
+    _enable_enforcement(client, org_with_saml)
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+    direct_engine = create_engine("sqlite:///./test.db")
+    DirectSession = sessionmaker(bind=direct_engine)
+
+    client.post(
+        f"/orgs/{org_with_saml['org_id']}/saml/override",
+        json={"reason": "scheduled IdP maintenance window"},
+        headers=admin_headers,
+    )
+
+    db = DirectSession()
+    try:
+        row = db.execute(
+            text(
+                "SELECT sso_override_reason, sso_override_by_user_id, sso_override_at "
+                "FROM organization_saml_configs WHERE organization_id = :oid"
+            ),
+            {"oid": org_with_saml["org_id"]},
+        ).fetchone()
+    finally:
+        db.close()
+
+    assert row[0] == "scheduled IdP maintenance window"
+    assert row[1] is not None
+    assert row[2] is not None
