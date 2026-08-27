@@ -174,6 +174,41 @@ _register(
         legacy=True,
     )
 )
+# #443: a deliberately SEPARATE, narrow permission -- not layered onto
+# model.use/workflow.execute or any other capability the calling service
+# (svc-bio-agent) already holds via its "scientist" role. Minting a real
+# access token for an arbitrary other user is a strictly more powerful
+# action than anything "scientist" grants (it produces a credential, not
+# just a capability), so it gets its own permission, granted to its own
+# dedicated role (app/db/init_admin.py::ensure_bio_agent_service_role),
+# never folded into "scientist" -- same "never to scientist, so an
+# ordinary [holder] does not incidentally gain it" discipline
+# model.resolve_ownership's own comment above already established.
+# GLOBAL-scoped like override_sso_enforcement: checked via require_permission
+# against the JWT permissions claim, not tied to any one org's membership,
+# since the calling service has no org-scoped relationship to the target
+# user's organization at all.
+#
+# name="service_token.mint", not the "mint_user_service_token" shape
+# override_sso_enforcement/manage_all_orgs use -- those are legacy=True,
+# exempt from the resource.action format this entry (legacy=False) must
+# satisfy (enforced at import time, below in this file).
+_register(
+    PermissionDef(
+        name="service_token.mint",
+        resource="service_token",
+        action="mint",
+        scope=PermissionScope.GLOBAL,
+        category=PermissionCategory.PLATFORM,
+        description=(
+            "Mint a short-lived access token on behalf of an already-"
+            "authenticated user, for a trusted internal service to use "
+            "when forwarding that user's real identity to a downstream "
+            "system (#443) instead of the service's own shared identity."
+        ),
+        legacy=False,
+    )
+)
 _register(
     PermissionDef(
         name=PLATFORM_MANAGE_INFRA,
