@@ -48,7 +48,7 @@ from app.core.config import settings
 
 import app.db.models
 
-app = FastAPI(title="OmniBioAI Auth Service")
+app = FastAPI(title="OmniBioAI Auth Service", root_path="/_svc/auth")
 
 # Electron itself runs with webSecurity disabled and ignores CORS entirely;
 # this only matters for the web build, so the allowlist is scoped to known
