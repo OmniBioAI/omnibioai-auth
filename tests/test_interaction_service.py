@@ -18,6 +18,10 @@ import redis as redis_lib
 
 from app.schemas.interaction import InteractionEvent
 from app.services import interaction_service
+from _redis_integration_guard import (
+    MissingTestRedisEndpoint,
+    validate_test_redis_url,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -123,11 +127,21 @@ def test_create_interaction_returns_event_even_if_redis_fails():
 # Real Redis integration -- skipped (not failed) when unreachable
 # ---------------------------------------------------------------------------
 
-TEST_REDIS_URL = os.getenv("B2_TEST_REDIS_URL", "redis://localhost:6380")
+try:
+    # PHI P1-5 test-isolation fix: no implicit localhost:6380 default --
+    # ProductionRedisEndpointRejected is deliberately NOT caught here, so
+    # a misconfigured production endpoint fails collection loudly instead
+    # of silently running against the shared, real Redis instance. See
+    # tests/_redis_integration_guard.py.
+    TEST_REDIS_URL = validate_test_redis_url(os.environ.get("B2_TEST_REDIS_URL"), "B2_TEST_REDIS_URL")
+except MissingTestRedisEndpoint:
+    TEST_REDIS_URL = None
 TEST_STREAM = f"interactions:events:b2-test-{uuid.uuid4().hex[:8]}"
 
 
 def _real_redis_available() -> bool:
+    if TEST_REDIS_URL is None:
+        return False
     try:
         r = redis_lib.from_url(TEST_REDIS_URL, socket_connect_timeout=2)
         r.ping()
