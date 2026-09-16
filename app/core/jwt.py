@@ -60,6 +60,10 @@ def create_refresh_token(data: dict):
 
 
 def decode_token(token: str):
+    return decode_token_for_audience(token, settings.JWT_AUDIENCE)
+
+
+def decode_token_for_audience(token: str, audience: str):
     """Verifies either algorithm, dispatched by the token's own `alg`
     header rather than by settings.JWT_ALGORITHM -- a migration window
     means already-issued HS256 tokens must keep validating for their full
@@ -83,15 +87,27 @@ def decode_token(token: str):
         alg = None
 
     if alg == "RS256":
-        claims = jwt.decode(token, PUBLIC_KEY_PEM, algorithms=["RS256"], audience=settings.JWT_AUDIENCE)
+        claims = jwt.decode(token, PUBLIC_KEY_PEM, algorithms=["RS256"], audience=audience)
     else:
-        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"], audience=settings.JWT_AUDIENCE)
+        claims = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"], audience=audience)
 
     issuer = claims.get("iss")
     if issuer is not None and issuer != settings.JWT_ISSUER:
         raise JWTClaimsError(f"Invalid issuer: {issuer!r}")
 
     return claims
+
+
+def create_delegated_execution_token(*, client_id: str, user_id: int, organization_id: int, permissions: list[str], delegation_id: str) -> str:
+    """Issue a ToolServer-only credential with separate service and user principals."""
+    now = datetime.utcnow()
+    return _sign({
+        "sub": str(user_id), "client_id": client_id, "org_id": organization_id,
+        "permissions": sorted(set(permissions)), "delegation_id": delegation_id,
+        "type": "delegated_execution", "iat": now,
+        "exp": now + timedelta(minutes=settings.DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES),
+        "jti": delegation_id, "aud": "omnibioai-toolserver",
+    })
 
 
 def create_oauth_state_token(provider: str, code_verifier: str | None = None):

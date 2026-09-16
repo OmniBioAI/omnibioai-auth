@@ -117,6 +117,16 @@ def _register(perm: PermissionDef) -> None:
     REGISTRY[perm.name] = perm
 
 
+_register(
+    PermissionDef(
+        name="toolserver.delegate", resource="toolserver", action="delegate",
+        scope=PermissionScope.BOTH, category=PermissionCategory.WORKFLOW,
+        description="Authorize a registered service identity to request narrowly scoped ToolServer execution delegations.",
+        legacy=False,
+    )
+)
+
+
 # --- Platform (global) permissions -- legacy -------------------------------
 
 _register(
@@ -490,6 +500,34 @@ _register(
         scope=PermissionScope.BOTH,
         category=PermissionCategory.DATASET,
         description="Reserved -- not yet enforced by any route.",
+        legacy=False,
+    )
+)
+_register(
+    PermissionDef(
+        name="dataset.write",
+        resource="dataset",
+        action="write",
+        # BOTH, mirroring dataset.read directly above: RAG enforces this
+        # purely against the JWT `permissions` claim today (GLOBAL-style,
+        # via omnibioai-rag/ragbio/api/iam.py::require_permission), but an
+        # org-scoped grant path (ORG) is equally legitimate for a
+        # per-organization dataset-ingest capability, and nothing here
+        # should pre-commit to one enforcement style before that's
+        # decided. Pure vocabulary/registry addition only -- see this
+        # module's own docstring: it does not touch the Permission/Role
+        # DB schema, does not seed any row, and does not itself grant
+        # this to any role. HIPAA-V2-001 RAG R1: this is the prerequisite
+        # that makes "dataset.write" an assignable name at all via the
+        # existing role-management APIs (role_service.py's
+        # is_known_permission gate); which roles/organizations actually
+        # receive it (e.g. whether the default "scientist" role should
+        # include it, mirroring SCIENTIST_PERMISSIONS' existing
+        # dataset.read) is a separate grant/product decision, deliberately
+        # not made here.
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.DATASET,
+        description="Ingest/write access to RAG-managed datasets/studies. Enforced by omnibioai-rag's /v1/ingest and /v1/embed.",
         legacy=False,
     )
 )

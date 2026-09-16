@@ -33,7 +33,7 @@ def get_current_user(token=Depends(security), db: Session = Depends(get_db)):
     # everywhere (e.g. routes_license.py's `int(user["sub"])`), rather than
     # relying on every individual route to remember to check auth_method
     # itself.
-    if payload.get("auth_method") == "client_credentials":
+    if payload.get("auth_method") == "client_credentials" or payload.get("type") == "delegated_execution":
         raise HTTPException(401, "Invalid token")
 
     # PR11.5.3: an MFA challenge token (app/core/jwt.py's

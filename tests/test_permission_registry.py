@@ -100,6 +100,31 @@ SERVICE_MINT_NAMES = {
     "service_token.mint": PermissionCategory.PLATFORM,
 }
 
+# HIPAA-V2-019 delegated execution (TES -> ToolServer): same "real,
+# immediately-enforced" shape as the sets above -- authorizes a registered
+# service identity (via omnibioai-auth's own
+# POST /service/delegations/toolserver) to request narrowly scoped
+# ToolServer execution delegations. Not a FUTURE_NAMES-style unenforced
+# placeholder. This registry entry predates this test file's own update
+# for it (added alongside the delegated-execution feature itself, in an
+# earlier, still-uncommitted change) -- added here now rather than left
+# silently failing this suite's exact-membership/stats assertions below.
+DELEGATED_EXECUTION_NAMES = {
+    "toolserver.delegate": PermissionCategory.WORKFLOW,
+}
+
+# HIPAA-V2-001 RAG R1 (authoritative write identity for /v1/ingest,
+# /v1/embed): same "real, immediately-enforced" shape as the sets above --
+# gates omnibioai-rag's write path via that repo's existing
+# ragbio/api/iam.py::require_permission, the same mechanism dataset.read
+# already uses for /v1/query. Not a FUTURE_NAMES-style unenforced
+# placeholder: unlike dataset.read (registered ahead of any route
+# requiring it), dataset.write is registered specifically because RAG's
+# /v1/ingest and /v1/embed now enforce it immediately.
+RAG_NAMES = {
+    "dataset.write": PermissionCategory.DATASET,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -333,6 +358,7 @@ def test_registry_contains_exactly_the_expected_names():
         LEGACY_NAMES | set(FUTURE_NAMES.keys()) | set(WORKFLOW_BUNDLES_NAMES.keys())
         | set(TES_NAMES.keys()) | set(MODEL_REGISTRY_OWNERSHIP_NAMES.keys())
         | set(MODEL_REGISTRY_READ_NAMES.keys()) | set(SERVICE_MINT_NAMES.keys())
+        | set(DELEGATED_EXECUTION_NAMES.keys()) | set(RAG_NAMES.keys())
     )
 
 
@@ -462,7 +488,7 @@ def test_registry_stats_totals_match_registry_size():
     assert stats["future_permissions"] == (
         len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
         + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
-        + len(SERVICE_MINT_NAMES)
+        + len(SERVICE_MINT_NAMES) + len(DELEGATED_EXECUTION_NAMES) + len(RAG_NAMES)
     )
 
 
@@ -484,8 +510,10 @@ def test_registry_stats_by_scope_sums_to_total():
     # added by the omnibioai-model-registry Phase 2E integration -- see
     # MODEL_REGISTRY_OWNERSHIP_NAMES above) + 1 (model.read, added by the
     # Model Registry read/use authorization split audit -- see
-    # MODEL_REGISTRY_READ_NAMES above).
-    assert stats["by_scope"]["both"] == 14
+    # MODEL_REGISTRY_READ_NAMES above) + 1 (toolserver.delegate -- see
+    # DELEGATED_EXECUTION_NAMES above) + 1 (dataset.write -- see
+    # RAG_NAMES above).
+    assert stats["by_scope"]["both"] == 16
 
 
 def test_registry_stats_by_category_sums_to_total():

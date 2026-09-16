@@ -29,6 +29,12 @@ FUTURE_NAMES = {
     "billing.manage",
     "subscription.manage",
     "marketplace.install",
+    # HIPAA-V2-019: authorizes a registered service identity to request
+    # ToolServer execution delegations (see
+    # app/core/permission_names.py::DELEGATED_EXECUTION_NAMES equivalent).
+    "toolserver.delegate",
+    # HIPAA-V2-001 RAG R1: gates omnibioai-rag's /v1/ingest and /v1/embed.
+    "dataset.write",
 }
 
 # #443: kept separate from FUTURE_NAMES above -- that set's own
@@ -109,10 +115,12 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 omnibioai-model-registry Phase 2E entry (model.resolve_ownership)
     # + 1 Model Registry read/use authorization split audit entry
     # (model.read)
-    # + 1 #443 entry (service_token.mint).
+    # + 1 #443 entry (service_token.mint)
+    # + 1 HIPAA-V2-019 entry (toolserver.delegate)
+    # + 1 HIPAA-V2-001 RAG R1 entry (dataset.write).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 28
+    assert len(REGISTRY) == 30
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -244,6 +252,7 @@ def test_filter_combines_category_and_scope(client):
     assert resp.status_code == 200
     assert {p["name"] for p in resp.json()} == {
         "workflow.execute", "workflow.read", "workflow.publish", "workflow.manage", "runs.read",
+        "toolserver.delegate",
     }
 
 

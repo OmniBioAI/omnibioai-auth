@@ -26,6 +26,7 @@ from app.api.routes_organization_roles import router as organization_roles_route
 from app.api.routes_identity import router as identity_router
 from app.api.routes_service_identity import router as service_identity_router
 from app.api.routes_service_mint import router as service_mint_router
+from app.api.routes_delegated_execution import router as delegated_execution_router
 from app.api.routes_jwks import router as jwks_router
 from app.api.routes_mfa import router as mfa_router
 from app.api.routes_org_mfa import router as org_mfa_router
@@ -114,6 +115,7 @@ app.include_router(organization_roles_router)
 app.include_router(identity_router)
 app.include_router(service_identity_router)
 app.include_router(service_mint_router)
+app.include_router(delegated_execution_router)
 app.include_router(jwks_router)
 app.include_router(mfa_router)
 app.include_router(org_mfa_router)

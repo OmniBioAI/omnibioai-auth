@@ -43,6 +43,7 @@ class Settings:
     # above.
     JWT_ISSUER = os.getenv("JWT_ISSUER", "omnibioai-auth")
     JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "omnibioai-platform")
+    DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES = int(os.getenv("DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES", "5"))
 
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))

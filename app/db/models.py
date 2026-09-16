@@ -455,6 +455,22 @@ class OAuthClient(Base):
     revoked_reason = Column(String(255), nullable=True)
 
 
+class DelegatedExecutionGrant(Base):
+    """Revocable authoritative record behind a ToolServer delegation JWT."""
+    __tablename__ = "delegated_execution_grants"
+
+    delegation_id = Column(String(36), primary_key=True)
+    client_id = Column(String(64), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    permissions = Column(JSON, nullable=False)
+    audience = Column(String(255), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_reason = Column(String(255), nullable=True)
+
+
 class OrganizationSSOConfig(Base):
     """Phase 2 PR2: schema only -- no CRUD exists yet (Phase 2 PR3) and no
     login path reads it yet (Phase 2 PR4). One row per org (org-scoped
