@@ -6,6 +6,8 @@ and tests/test_token_revocation.py -- a second connection to the same
 physical sqlite file conftest.py's `client` fixture uses, for setup
 (org/membership creation, direct expiry manipulation) no HTTP route
 exposes a way to do.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -79,6 +81,8 @@ def _set_session_expired(session_id: str) -> None:
 
 
 def test_login_creates_exactly_one_session(client):
+    """A login creates exactly one active session with auth_method "password" and mfa_verified true.
+    """
     user = _register_and_login(client)
     resp = _list_sessions(client, user["access_token"])
     assert resp.status_code == 200
@@ -90,6 +94,7 @@ def test_login_creates_exactly_one_session(client):
 
 
 def test_session_id_is_a_real_row_in_the_sessions_table(client):
+    """The session_id reported for a login is an active row in the sessions table."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     row = _get_session_row(session_id)
@@ -101,6 +106,9 @@ def test_session_id_is_a_real_row_in_the_sessions_table(client):
 
 
 def test_session_belongs_to_correct_user(client):
+    """A user cannot read or revoke another user's session by id (404), and the owner's session
+    survives the attempt.
+    """
     user_a = _register_and_login(client)
     user_b = _register_and_login(client)
 
@@ -123,6 +131,7 @@ def test_session_belongs_to_correct_user(client):
 
 
 def test_session_belongs_to_correct_organization(client):
+    """A session created after the user joined an organization records that organization's id."""
     user = _register_and_login(client)
     org_id = _create_org_membership(user["email"], f"org-{uuid.uuid4().hex[:8]}")
 
@@ -139,6 +148,7 @@ def test_session_belongs_to_correct_organization(client):
 
 
 def test_organization_isolation_between_two_users(client):
+    """Sessions of two users in different organizations carry only their own organization's id."""
     user_a = _register_and_login(client)
     user_b = _register_and_login(client)
     org_a = _create_org_membership(user_a["email"], f"org-a-{uuid.uuid4().hex[:8]}")
@@ -160,6 +170,9 @@ def test_organization_isolation_between_two_users(client):
 
 
 def test_refresh_preserves_session_identity(client):
+    """Refreshing keeps the same single session (same session_id) and moves its last-activity and
+    expiry times forward.
+    """
     user = _register_and_login(client)
     before = _list_sessions(client, user["access_token"]).json()[0]
     session_id = before["session_id"]
@@ -176,6 +189,7 @@ def test_refresh_preserves_session_identity(client):
 
 
 def test_refresh_rotation_chain_does_not_create_unnecessary_sessions(client):
+    """A chain of rotating refreshes leaves exactly one session."""
     user = _register_and_login(client)
 
     r1 = _refresh(client, user["refresh_token"])
@@ -204,6 +218,7 @@ def test_different_logins_produce_different_sessions(client):
 
 
 def test_logout_revokes_the_correct_session(client):
+    """Logout marks the user's session revoked with reason "user_logout" and a revoked_at time."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
 
@@ -217,6 +232,7 @@ def test_logout_revokes_the_correct_session(client):
 
 
 def test_logout_does_not_revoke_a_different_users_session(client):
+    """Logging one user out leaves another user's session active."""
     user_a = _register_and_login(client)
     user_b = _register_and_login(client)
     session_b_id = _list_sessions(client, user_b["access_token"]).json()[0]["session_id"]
@@ -231,6 +247,9 @@ def test_logout_does_not_revoke_a_different_users_session(client):
 
 
 def test_revoked_session_cannot_be_reused_via_refresh(client):
+    """After a session is revoked through /sessions/{id}/revoke (reason "user_revoked"), refreshing
+    with its token returns 401.
+    """
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
 
@@ -244,6 +263,8 @@ def test_revoked_session_cannot_be_reused_via_refresh(client):
 
 
 def test_revoke_session_endpoint_is_idempotent(client):
+    """Revoking a session twice returns 200 both times and the original revoked_at does not change.
+    """
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
 
@@ -282,6 +303,7 @@ def test_reuse_detection_also_revokes_the_session(client):
 
 
 def test_expired_session_is_inactive(client):
+    """A session past its expiry is reported with status "expired"."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _set_session_expired(session_id)
@@ -309,6 +331,7 @@ def test_expired_session_blocks_refresh_even_though_the_refresh_token_row_itself
 
 
 def test_active_session_remains_usable(client):
+    """An active session is reported "active" and can still be refreshed."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
 
@@ -382,6 +405,7 @@ def test_concurrent_refresh_of_the_same_token_does_not_corrupt_the_session(clien
 
 
 def test_session_response_never_exposes_token_shaped_fields(client):
+    """Session list responses never include token-shaped fields."""
     user = _register_and_login(client)
     resp = _list_sessions(client, user["access_token"])
     forbidden = {"token", "access_token", "refresh_token", "password", "hashed_password", "jti"}
@@ -393,6 +417,7 @@ def test_session_response_never_exposes_token_shaped_fields(client):
 
 
 def test_session_service_get_by_family_id_handles_falsy_input():
+    """get_by_family_id returns None for a None or empty family id."""
     from app.services import session_service
 
     db = _DirectSession()
@@ -404,6 +429,9 @@ def test_session_service_get_by_family_id_handles_falsy_input():
 
 
 def test_session_service_is_usable_true_for_missing_session():
+    """is_usable treats a missing session (None) as usable, so tokens issued before sessions existed
+    keep working.
+    """
     from app.services import session_service
 
     # No session row exists for this family at all (e.g. a pre-PR-A
@@ -412,6 +440,7 @@ def test_session_service_is_usable_true_for_missing_session():
 
 
 def test_session_service_is_usable_false_for_revoked_session(client):
+    """is_usable returns False for a revoked session."""
     from app.services import session_service
 
     user = _register_and_login(client)
@@ -423,6 +452,7 @@ def test_session_service_is_usable_false_for_revoked_session(client):
 
 
 def test_session_service_touch_is_a_noop_on_a_revoked_session(client):
+    """touch leaves a revoked session's status, revoked_at and expiry unchanged."""
     from app.services import session_service
 
     user = _register_and_login(client)

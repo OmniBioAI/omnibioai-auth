@@ -7,6 +7,8 @@ tests/test_login_rate_limiting.py/tests/test_mfa_login_challenge.py: real
 routes/services against the shared sqlite test DB, rows/audit events read
 back via a second, direct session. Self-contained (local helpers), same
 per-file duplication convention every other test file here already uses.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import urllib.parse
@@ -153,6 +155,7 @@ def tight_limits(monkeypatch):
 
 
 def _wrong_code(correct: str) -> str:
+    """Return a code that differs from the given correct code in its first digit."""
     return ("1" if correct[0] != "1" else "2") + correct[1:]
 
 
@@ -160,6 +163,9 @@ def _wrong_code(correct: str) -> str:
 
 
 def test_existing_valid_mfa_flow_still_succeeds(client, mfa_user, tight_limits):
+    """A correct TOTP code at /users/me/mfa/challenge still returns 200 with an access token while
+    the tight limits are active.
+    """
     token = _fresh_challenge_token(client, mfa_user)
     code = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
     resp = client.post("/users/me/mfa/challenge", json={"challenge_token": token, "code": code})
@@ -168,6 +174,7 @@ def test_existing_valid_mfa_flow_still_succeeds(client, mfa_user, tight_limits):
 
 
 def test_existing_non_mfa_login_unchanged(client, tight_limits):
+    """Login for a user without MFA still returns 200 with no mfa_required marker."""
     user = _register_and_login(client)
     resp = client.post("/auth/login", json={"email": user["email"], "password": user["password"]})
     assert resp.status_code == 200
@@ -178,6 +185,9 @@ def test_existing_non_mfa_login_unchanged(client, tight_limits):
 
 
 def test_first_failed_totp_attempt_is_counted(client, mfa_user, tight_limits):
+    """A single wrong TOTP code returns 400, records one mfa_verification_failed event and does not
+    lock the account.
+    """
     correct = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
     token = _fresh_challenge_token(client, mfa_user)
     resp = client.post("/users/me/mfa/challenge", json={"challenge_token": token, "code": _wrong_code(correct)})
@@ -190,6 +200,9 @@ def test_first_failed_totp_attempt_is_counted(client, mfa_user, tight_limits):
 
 
 def test_repeated_failed_attempts_eventually_throttle(client, mfa_user, tight_limits):
+    """Repeated wrong codes return 400 at first and eventually 429, and none of the attempts
+    succeeds.
+    """
     correct = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
     wrong = _wrong_code(correct)
 
@@ -215,6 +228,9 @@ def test_repeated_failed_attempts_eventually_throttle(client, mfa_user, tight_li
 
 
 def test_account_locked_after_max_attempts_across_different_ips(client, mfa_user, tight_limits):
+    """Wrong codes spread over different IPs still lock the account: attempts up to the account
+    threshold return 400 and the next returns 429.
+    """
     correct = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
     wrong = _wrong_code(correct)
 
@@ -234,6 +250,8 @@ def test_account_locked_after_max_attempts_across_different_ips(client, mfa_user
 
 
 def test_account_lockout_blocks_even_the_correct_code(client, mfa_user, tight_limits):
+    """While the account is locked, even the correct TOTP code from a fresh IP is refused with 429.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     for i in range(settings.MFA_RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS):
         token = _fresh_challenge_token(_client_at(f"10.10.1.{i}"), mfa_user)
@@ -247,6 +265,9 @@ def test_account_lockout_blocks_even_the_correct_code(client, mfa_user, tight_li
 
 
 def test_account_lockout_expires_after_window(client, mfa_user, tight_limits):
+    """Once the account lockout window elapses, a correct code from a fresh IP succeeds again with
+    200.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     for i in range(settings.MFA_RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS):
         token = _fresh_challenge_token(_client_at(f"10.10.2.{i}"), mfa_user)
@@ -271,6 +292,9 @@ def test_account_lockout_expires_after_window(client, mfa_user, tight_limits):
 
 
 def test_ip_locked_after_many_failures_across_different_accounts(client, configured_crypto, tight_limits):
+    """Many wrong codes from one IP across different accounts lock that IP: 400 up to the IP
+    threshold, then 429.
+    """
     attacker = _client_at("203.0.113.77")
     users = []
     for _ in range(settings.MFA_RATE_LIMIT_IP_MAX_ATTEMPTS + 1):
@@ -293,6 +317,9 @@ def test_ip_locked_after_many_failures_across_different_accounts(client, configu
 
 
 def test_pair_locks_faster_than_account_or_ip_alone(client, mfa_user, tight_limits):
+    """The account-plus-IP pair threshold is lower than the account and IP thresholds, and repeated
+    wrong codes for one pair reach 429 at the pair threshold.
+    """
     assert settings.MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS < settings.MFA_RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS
     assert settings.MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS < settings.MFA_RATE_LIMIT_IP_MAX_ATTEMPTS
 
@@ -309,6 +336,9 @@ def test_pair_locks_faster_than_account_or_ip_alone(client, mfa_user, tight_limi
 
 
 def test_successful_verification_resets_account_failure_counter(client, mfa_user, tight_limits):
+    """A successful MFA verification resets the account failure counter, so a further batch of wrong
+    codes just under the threshold does not lock the account.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     for i in range(settings.MFA_RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS - 1):
         token = _fresh_challenge_token(_client_at(f"10.10.3.{i}"), mfa_user)
@@ -335,6 +365,9 @@ def test_successful_verification_resets_account_failure_counter(client, mfa_user
 
 
 def test_throttled_account_cannot_continue_unlimited_attempts(client, mfa_user, tight_limits):
+    """Once the account is locked, every further attempt in the run stays 429 and never reverts to
+    400.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.5.1"
     statuses = []
@@ -352,6 +385,9 @@ def test_throttled_account_cannot_continue_unlimited_attempts(client, mfa_user, 
 
 
 def test_429_response_has_retry_after_and_generic_body(client, mfa_user, tight_limits):
+    """A throttled MFA challenge returns 429 with a positive Retry-After header and the generic
+    error "too_many_attempts", without exposing the configured threshold.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.6.1"
     last = None
@@ -372,6 +408,9 @@ def test_429_response_has_retry_after_and_generic_body(client, mfa_user, tight_l
 
 
 def test_malformed_code_is_throttled_and_cannot_bypass_counter(client, mfa_user, tight_limits):
+    """Malformed codes (empty, non-numeric, too short, oversized) count toward the throttle, so the
+    last of four attempts is refused with 429.
+    """
     ip = "10.10.7.1"
     statuses = []
     for garbage in ["", "abcdef", "12", "1" * 500]:
@@ -410,6 +449,9 @@ def test_exception_during_verification_cannot_bypass_throttle(client, mfa_user, 
 
 
 def test_redis_unavailable_falls_back_and_still_throttles(client, mfa_user, tight_limits, monkeypatch):
+    """With Redis unavailable, MFA throttling falls back to in-process counters: attempts within the
+    fallback budget return 400 and 429 follows once the fallback threshold is crossed.
+    """
     class _Broken:
         def __getattr__(self, name):
             raise ConnectionError("simulated redis outage")
@@ -432,6 +474,7 @@ def test_redis_unavailable_falls_back_and_still_throttles(client, mfa_user, tigh
 
 
 def test_redis_unavailable_does_not_block_a_correct_verification(client, mfa_user, tight_limits, monkeypatch):
+    """A correct TOTP code still succeeds with 200 while Redis is unavailable."""
     class _Broken:
         def __getattr__(self, name):
             raise ConnectionError("simulated redis outage")
@@ -461,6 +504,9 @@ def test_redis_fallback_in_process_state_is_bounded(client, tight_limits, monkey
 
 
 def test_expired_pair_window_starts_fresh_without_locking(client, mfa_user, tight_limits):
+    """Wrong codes just under the pair threshold followed by an expired window start a fresh count:
+    the next wrong code is still a plain 400.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.11.1"
     for _ in range(settings.MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS - 1):
@@ -478,6 +524,9 @@ def test_expired_pair_window_starts_fresh_without_locking(client, mfa_user, tigh
 
 
 def test_rate_limit_trigger_emits_audit_event_with_expected_fields(client, mfa_user, tight_limits):
+    """Reaching the pair threshold emits one pair-dimension audit event carrying the IP and pair
+    lockout seconds.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.12.1"
     for _ in range(settings.MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS):
@@ -493,6 +542,9 @@ def test_rate_limit_trigger_emits_audit_event_with_expected_fields(client, mfa_u
 
 
 def test_audit_events_never_contain_secrets_codes_or_tokens(client, mfa_user, tight_limits):
+    """MFA throttle audit events never contain the TOTP secret, the submitted code, encrypted_secret
+    or any challenge token.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.13.1"
     tokens_used = []
@@ -513,6 +565,9 @@ def test_audit_events_never_contain_secrets_codes_or_tokens(client, mfa_user, ti
 
 
 def test_no_duplicate_audit_events_while_lockout_still_active(client, mfa_user, tight_limits):
+    """Further wrong codes during an active MFA pair lockout still yield exactly one pair-dimension
+    audit event.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.14.1"
     for _ in range(settings.MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS + 4):
@@ -528,6 +583,9 @@ def test_no_duplicate_audit_events_while_lockout_still_active(client, mfa_user, 
 
 
 def test_spoofed_organization_header_does_not_influence_throttle(client, mfa_user, tight_limits):
+    """A forged organization header on each request does not avoid the lockout: the account (keyed
+    by the challenge token's user) is still throttled with 429.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.15.1"
     for i in range(settings.MFA_RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS + 1):
@@ -549,6 +607,9 @@ def test_spoofed_organization_header_does_not_influence_throttle(client, mfa_use
 
 
 def test_spoofed_user_id_header_cannot_reset_or_redirect_the_counter(client, mfa_user, configured_crypto, tight_limits):
+    """A forged user-id header does not redirect the counter: the real token-embedded account is
+    locked while the account named only in the header is not.
+    """
     other = _register_and_login(client)
     other_headers = _auth_header(other["access_token"])
     other["secret"] = _enable_mfa(client, other_headers)
@@ -579,6 +640,9 @@ def test_spoofed_user_id_header_cannot_reset_or_redirect_the_counter(client, mfa
 
 
 def test_concurrent_attempts_cannot_bypass_atomic_counter(client, mfa_user, tight_limits):
+    """Concurrent wrong-code attempts for one account and IP pair record exactly one pair-dimension
+    lockout audit event.
+    """
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.17.1"
     tokens = [_fresh_challenge_token(_client_at(ip), mfa_user) for _ in range(settings.MFA_RATE_LIMIT_PAIR_MAX_ATTEMPTS + 5)]
@@ -604,6 +668,9 @@ def test_concurrent_attempts_cannot_bypass_atomic_counter(client, mfa_user, tigh
 
 
 def test_mfa_rate_limiting_disableable_via_settings(client, mfa_user, tight_limits, monkeypatch):
+    """With MFA_RATE_LIMIT_ENABLED set to false, repeated wrong codes keep returning 400 and are
+    never throttled.
+    """
     monkeypatch.setattr(settings, "MFA_RATE_LIMIT_ENABLED", False)
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.18.1"

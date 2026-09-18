@@ -1,3 +1,11 @@
+"""Shared pytest configuration and fixtures for the omnibioai-auth unit-test
+suite. Sets the environment (SECRET_KEY, admin bootstrap password) before app
+import, swaps the database for a throwaway SQLite file, and replaces
+Redis-backed services (token blacklist, rate limiter, pub/sub) and the Pwned
+Passwords lookup with in-process fakes so no test touches real infrastructure.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import os
 import pytest
 from unittest.mock import patch
@@ -39,6 +47,7 @@ from fastapi.testclient import TestClient
 
 
 def override_get_db():
+    """Yield a session on the SQLite test engine in place of the production get_db dependency."""
     db = TestingSessionLocal()
     try:
         yield db
@@ -48,6 +57,9 @@ def override_get_db():
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_db():
+    """Create every table on the SQLite test engine for the session and drop it (and the test.db
+    file) afterwards.
+    """
     Base.metadata.create_all(bind=test_engine)
     yield
     Base.metadata.drop_all(bind=test_engine)
@@ -57,6 +69,9 @@ def setup_db():
 
 @pytest.fixture(scope="session")
 def client(setup_db):
+    """Session-wide TestClient with DB, token-blacklist, rate-limit Redis, pub/sub and breach-lookup
+    dependencies replaced by test doubles.
+    """
     app.dependency_overrides[get_db] = override_get_db
 
     _blacklisted = {}

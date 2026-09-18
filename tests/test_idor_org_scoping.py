@@ -17,6 +17,8 @@ just of a different organization than the one the resource belongs to.
 That's the actual IDOR shape: not "do you have access to anything," but
 "does a real, valid credential for Org B let you reach Org A's resource
 via Org B's URL."
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -66,6 +68,9 @@ def two_orgs(client):
 
 
 def test_team_in_org_a_not_reachable_via_org_b_url_for_member_update(client, two_orgs):
+    """Updating org A's team members through org B's URL returns 404 and leaves the team unchanged
+    under org A.
+    """
     org_a, org_b = two_orgs["a"], two_orgs["b"]
     team = client.post(
         f"/orgs/{org_a['id']}/teams", json={"name": "Wet Lab"}, headers=org_a["owner_headers"]
@@ -84,6 +89,9 @@ def test_team_in_org_a_not_reachable_via_org_b_url_for_member_update(client, two
 
 
 def test_team_in_org_a_not_deletable_via_org_b_url(client, two_orgs):
+    """Deleting org A's team through org B's URL as B's owner returns 404 and the team remains
+    listed under org A.
+    """
     org_a, org_b = two_orgs["a"], two_orgs["b"]
     team = client.post(
         f"/orgs/{org_a['id']}/teams", json={"name": "Dry Lab"}, headers=org_a["owner_headers"]
@@ -102,6 +110,9 @@ def test_team_in_org_a_not_deletable_via_org_b_url(client, two_orgs):
 
 
 def test_api_key_in_org_a_not_revocable_via_org_b_url(client, two_orgs):
+    """Revoking org A's API key through org B's URL returns 404 and the key stays active under org
+    A.
+    """
     org_a, org_b = two_orgs["a"], two_orgs["b"]
     key = client.post(
         f"/orgs/{org_a['id']}/api-keys",
@@ -124,6 +135,9 @@ def test_api_key_in_org_a_not_revocable_via_org_b_url(client, two_orgs):
 
 
 def test_oauth_client_in_org_a_not_revocable_via_org_b_url(client, two_orgs):
+    """Revoking org A's OAuth client through org B's URL returns 404 and the client stays active
+    under org A.
+    """
     org_a, org_b = two_orgs["a"], two_orgs["b"]
     oauth_client = client.post(
         f"/orgs/{org_a['id']}/oauth-clients",
@@ -152,6 +166,9 @@ def test_oauth_client_in_org_a_not_revocable_via_org_b_url(client, two_orgs):
 
 
 def test_team_service_get_team_scoped_query_rejects_cross_org_id(client, two_orgs):
+    """team_service.get_team returns a team for its own organization id but None for another
+    organization's id.
+    """
     from app.services import team_service
 
     org_a, org_b = two_orgs["a"], two_orgs["b"]
@@ -168,6 +185,9 @@ def test_team_service_get_team_scoped_query_rejects_cross_org_id(client, two_org
 
 
 def test_apikey_service_get_api_key_scoped_query_rejects_cross_org_id(client, two_orgs):
+    """apikey_service.get_api_key returns a key for its own organization id but None for another
+    organization's id.
+    """
     from app.services import apikey_service
 
     org_a, org_b = two_orgs["a"], two_orgs["b"]
@@ -185,6 +205,9 @@ def test_apikey_service_get_api_key_scoped_query_rejects_cross_org_id(client, tw
 
 
 def test_oauth_client_service_get_oauth_client_scoped_query_rejects_cross_org_id(client, two_orgs):
+    """oauth_client_service.get_oauth_client returns a client for its own organization id but None
+    for another organization's id.
+    """
     from app.services import oauth_client_service
 
     org_a, org_b = two_orgs["a"], two_orgs["b"]

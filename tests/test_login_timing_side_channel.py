@@ -16,6 +16,8 @@ effect was verified empirically during discovery (unpatched `main`:
 branch: ~1.00x) and is described in
 docs/security-login-timing-side-channel.md, not re-asserted here as a
 duration-based regression test.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import uuid
@@ -100,12 +102,18 @@ def test_dummy_password_hash_is_a_real_verifiable_hash():
 
 
 def test_nonexistent_user_invokes_one_dummy_hash_verification(client, verify_password_spy):
+    """Login for a nonexistent user returns 401 after exactly one verification against the dummy
+    hash.
+    """
     resp = client.post("/auth/login", json={"email": _unique_email(), "password": "whatever-guess"})
     assert resp.status_code == 401
     assert verify_password_spy == [DUMMY_PASSWORD_HASH]
 
 
 def test_existing_user_wrong_password_invokes_one_real_hash_verification(client, verify_password_spy):
+    """A wrong password for an existing user returns 401 after exactly one verification against the
+    account's real hash.
+    """
     user = _register(client, _unique_email())
     resp = client.post("/auth/login", json={"email": user["email"], "password": "wrong-password"})
     assert resp.status_code == 401
@@ -132,6 +140,9 @@ def test_password_less_oauth_only_account_invokes_one_dummy_hash_verification(cl
 
 
 def test_inactive_account_invokes_one_dummy_hash_verification(client, verify_password_spy):
+    """Login for an inactive account returns 401 after exactly one verification against the dummy
+    hash.
+    """
     user = _register(client, _unique_email())
     db = _DirectSession()
     try:
@@ -150,6 +161,9 @@ def test_inactive_account_invokes_one_dummy_hash_verification(client, verify_pas
 
 
 def test_existing_user_correct_password_invokes_one_real_hash_verification_and_succeeds(client, verify_password_spy):
+    """The correct password logs in with 200 and an access token after exactly one real-hash
+    verification.
+    """
     user = _register(client, _unique_email())
     resp = client.post("/auth/login", json={"email": user["email"], "password": user["password"]})
     assert resp.status_code == 200
@@ -236,6 +250,9 @@ def test_oversized_password_against_unknown_user_still_invokes_verification(clie
 
 
 def test_oversized_password_against_real_account_still_invokes_verification(client, verify_password_spy):
+    """A 10,000-character password against a real account returns 401 and still triggers exactly one
+    real-hash verification.
+    """
     user = _register(client, _unique_email())
     resp = client.post("/auth/login", json={"email": user["email"], "password": "x" * 10000})
     assert resp.status_code == 401
@@ -244,6 +261,7 @@ def test_oversized_password_against_real_account_still_invokes_verification(clie
 
 
 def test_malformed_login_request_returns_validation_error_not_crash(client, verify_password_spy):
+    """A login request without a password returns 422 with no password verification."""
     resp = client.post("/auth/login", json={"email": "missing-password@omnibioai.test"})
     assert resp.status_code == 422
     assert verify_password_spy == []
@@ -313,6 +331,9 @@ def test_sso_enforced_login_still_bypasses_password_verification_entirely(client
 
 
 def test_audit_events_unchanged_and_leak_no_password_or_dummy_hash(client, verify_password_spy):
+    """A failed login for an unknown user writes one audit event with reason
+    "unknown_user_or_inactive" that contains neither the password nor the dummy hash.
+    """
     email = _unique_email()
     password = "S3cretGuessPassword!"
     client.post("/auth/login", json={"email": email, "password": password})

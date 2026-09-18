@@ -10,6 +10,8 @@ compliant cookie jar won't store it -- inspecting the header is the
 correct, unambiguous way to verify what the server actually sent,
 independent of jar/domain-matching behavior. The cookie-fallback tests
 inject the cookie explicitly per-request instead of relying on the jar.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 
@@ -42,6 +44,7 @@ def test_login_json_response_unchanged(client, registered_user):
 
 
 def test_login_sets_session_cookie(client, registered_user):
+    """Login sets an omnibioai_session cookie in the Set-Cookie header."""
     resp = client.post("/auth/login", json=registered_user)
     set_cookie = resp.headers.get("set-cookie")
     assert set_cookie is not None
@@ -50,6 +53,9 @@ def test_login_sets_session_cookie(client, registered_user):
 
 
 def test_login_cookie_value_matches_refresh_token(client, registered_user):
+    """The omnibioai_session cookie value equals the refresh token returned in the login response
+    body.
+    """
     resp = client.post("/auth/login", json=registered_user)
     attrs = _parse_cookie_attrs(resp.headers["set-cookie"])
     assert attrs["_value"] == resp.json()["refresh_token"]
@@ -58,24 +64,28 @@ def test_login_cookie_value_matches_refresh_token(client, registered_user):
 # ── Security requirements (Task 4) ──────────────────────────────────────────
 
 def test_session_cookie_is_httponly(client, registered_user):
+    """The session cookie is set HttpOnly."""
     resp = client.post("/auth/login", json=registered_user)
     attrs = _parse_cookie_attrs(resp.headers["set-cookie"])
     assert attrs.get("httponly") is True
 
 
 def test_session_cookie_is_secure(client, registered_user):
+    """The session cookie is set with the Secure attribute."""
     resp = client.post("/auth/login", json=registered_user)
     attrs = _parse_cookie_attrs(resp.headers["set-cookie"])
     assert attrs.get("secure") is True
 
 
 def test_session_cookie_domain_is_parent_domain(client, registered_user):
+    """The session cookie's Domain is the parent domain ".omnibioai.org"."""
     resp = client.post("/auth/login", json=registered_user)
     attrs = _parse_cookie_attrs(resp.headers["set-cookie"])
     assert attrs.get("domain") == ".omnibioai.org"
 
 
 def test_session_cookie_samesite_lax_and_path_root(client, registered_user):
+    """The session cookie uses SameSite=Lax and Path "/"."""
     resp = client.post("/auth/login", json=registered_user)
     attrs = _parse_cookie_attrs(resp.headers["set-cookie"])
     assert attrs.get("samesite", "").lower() == "lax"
@@ -147,6 +157,9 @@ def test_refresh_body_token_takes_priority_over_cookie(client, registered_user, 
 
 
 def test_refresh_returns_rotated_cookie(client, auth_tokens):
+    """Refreshing sets a new omnibioai_session cookie carrying the rotated refresh token, not the
+    old one.
+    """
     resp = client.post("/auth/refresh", json={"refresh_token": auth_tokens["refresh_token"]})
     attrs = _parse_cookie_attrs(resp.headers["set-cookie"])
     assert attrs["_name"] == "omnibioai_session"
@@ -156,11 +169,13 @@ def test_refresh_returns_rotated_cookie(client, auth_tokens):
 
 
 def test_refresh_no_token_anywhere_returns_401(client):
+    """Refreshing with neither a body token nor a cookie returns 401."""
     resp = client.post("/auth/refresh", json={})
     assert resp.status_code == 401
 
 
 def test_refresh_invalid_cookie_only_returns_401(client):
+    """Refreshing with only an invalid session cookie returns 401."""
     resp = client.post(
         "/auth/refresh", json={}, cookies={"omnibioai_session": "not.a.valid.token"}
     )
@@ -170,6 +185,7 @@ def test_refresh_invalid_cookie_only_returns_401(client):
 # ── Logout: revocation unchanged, cookie cleared ────────────────────────────
 
 def test_logout_revocation_unchanged(client, auth_tokens):
+    """Logout returns 200 "Logged out" and the refresh token can no longer be refreshed (401)."""
     resp = client.post("/auth/logout", json={"refresh_token": auth_tokens["refresh_token"]})
     assert resp.status_code == 200
     assert resp.json()["message"] == "Logged out"
@@ -180,6 +196,9 @@ def test_logout_revocation_unchanged(client, auth_tokens):
 
 
 def test_logout_clears_session_cookie(client, auth_tokens):
+    """Logout sends an omnibioai_session Set-Cookie with an empty value and Max-Age 0 to clear the
+    cookie.
+    """
     resp = client.post("/auth/logout", json={"refresh_token": auth_tokens["refresh_token"]})
     set_cookie = resp.headers.get("set-cookie")
     assert set_cookie is not None

@@ -8,6 +8,8 @@ ever read this setting -- create_access_token() itself still hardcoded
 `timedelta(minutes=15)`, so the two could silently drift apart the moment
 an operator changed the setting away from its own default (15, which is
 exactly why the drift went undetected: 15 == 15).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 from datetime import datetime, timedelta
@@ -19,6 +21,9 @@ from app.core.jwt import create_access_token
 
 
 def test_access_token_exp_matches_configured_expiry_minutes(monkeypatch):
+    """The access token's exp claim follows settings.ACCESS_TOKEN_EXPIRE_MINUTES (42 minutes here)
+    and is not the old hardcoded 15-minute lifetime.
+    """
     monkeypatch.setattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 42)
 
     before = datetime.utcnow()

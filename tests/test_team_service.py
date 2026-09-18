@@ -9,6 +9,8 @@ membership gating on invite, and the "every team keeps at least one
 admin" invariant (decision: owner = distinguished admin role member, no
 separate owner_user_id field, so this invariant is the only thing
 standing in for ownership transfer/deletion being the only ways out).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import pytest
 from sqlalchemy import create_engine
@@ -55,6 +57,7 @@ def _join_org(db, org, user):
 
 
 def test_create_team_sets_description_and_created_by(db):
+    """create_team stores the name and description and records the creating user."""
     org = _org(db)
     creator = _user(db, "creator@omnibioai.test")
 
@@ -75,6 +78,7 @@ def test_create_team_without_description_or_creator_still_works(db):
 
 
 def test_update_team_rename_only_leaves_description_unchanged(db):
+    """Renaming a team through update_team leaves its description unchanged."""
     org = _org(db)
     team = team_service.create_team(db, org.id, "Old Name", description="Keep me")
 
@@ -85,6 +89,7 @@ def test_update_team_rename_only_leaves_description_unchanged(db):
 
 
 def test_update_team_description_only_leaves_name_unchanged(db):
+    """Changing only the description through update_team leaves the team name unchanged."""
     org = _org(db)
     team = team_service.create_team(db, org.id, "Stays The Same")
 
@@ -98,6 +103,7 @@ def test_update_team_description_only_leaves_name_unchanged(db):
 
 
 def test_invite_to_team_returns_none_for_unknown_email(db):
+    """invite_to_team returns None when no user has the given email."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     team = team_service.create_team(db, org.id, "Team")
@@ -120,6 +126,7 @@ def test_invite_to_team_rejects_non_org_member(db):
 
 
 def test_invite_to_team_rejects_invalid_role(db):
+    """invite_to_team raises ValueError ("Invalid role") for an unknown team role."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     invitee = _user(db, "invitee@omnibioai.test")
@@ -131,6 +138,9 @@ def test_invite_to_team_rejects_invalid_role(db):
 
 
 def test_invite_to_team_creates_member_with_role_and_invited_by(db):
+    """invite_to_team creates a team member with the requested role, the inviter recorded as
+    invited_by and a joined_at time.
+    """
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     invitee = _user(db, "invitee@omnibioai.test")
@@ -148,6 +158,7 @@ def test_invite_to_team_creates_member_with_role_and_invited_by(db):
 
 
 def test_invite_to_team_defaults_to_member_role(db):
+    """invite_to_team gives the invitee the "member" role when no role is given."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     invitee = _user(db, "invitee@omnibioai.test")
@@ -181,6 +192,7 @@ def test_invite_to_team_is_idempotent_and_does_not_change_role(db):
 
 
 def test_set_member_role_updates_role(db):
+    """set_member_role changes a team member's role."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     member_user = _user(db, "member@omnibioai.test")
@@ -194,6 +206,7 @@ def test_set_member_role_updates_role(db):
 
 
 def test_set_member_role_rejects_invalid_role(db):
+    """set_member_role raises ValueError ("Invalid role") for an unknown team role."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     member_user = _user(db, "member@omnibioai.test")
@@ -206,6 +219,9 @@ def test_set_member_role_rejects_invalid_role(db):
 
 
 def test_set_member_role_blocks_demoting_the_last_admin(db):
+    """set_member_role raises ValueError ("last team admin") when demoting the only admin, who stays
+    admin.
+    """
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     admin_user = _user(db, "admin@omnibioai.test")
@@ -220,6 +236,7 @@ def test_set_member_role_blocks_demoting_the_last_admin(db):
 
 
 def test_set_member_role_allows_demoting_admin_when_another_admin_exists(db):
+    """An admin can be demoted while another admin remains on the team."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     admin1 = _user(db, "admin1@omnibioai.test")
@@ -239,6 +256,8 @@ def test_set_member_role_allows_demoting_admin_when_another_admin_exists(db):
 
 
 def test_remove_member_blocks_removing_the_last_admin(db):
+    """remove_member raises ValueError ("last team admin") for the only admin, who stays a member.
+    """
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     admin_user = _user(db, "admin@omnibioai.test")
@@ -253,6 +272,7 @@ def test_remove_member_blocks_removing_the_last_admin(db):
 
 
 def test_remove_member_allows_removing_a_non_admin(db):
+    """remove_member removes a non-admin member from the team."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     member_user = _user(db, "member@omnibioai.test")
@@ -266,6 +286,9 @@ def test_remove_member_allows_removing_a_non_admin(db):
 
 
 def test_leave_team_blocks_the_last_admin(db):
+    """leave_team raises ValueError ("last team admin cannot leave") for the only admin, who stays a
+    member.
+    """
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     admin_user = _user(db, "admin@omnibioai.test")
@@ -280,6 +303,7 @@ def test_leave_team_blocks_the_last_admin(db):
 
 
 def test_leave_team_removes_membership_when_not_the_last_admin(db):
+    """An admin can leave the team when another admin remains, and their membership is removed."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     admin1 = _user(db, "admin1@omnibioai.test")
@@ -299,6 +323,7 @@ def test_leave_team_removes_membership_when_not_the_last_admin(db):
 
 
 def test_list_team_members_returns_all_members(db):
+    """list_team_members returns every member of the team."""
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     u1 = _user(db, "u1@omnibioai.test")
@@ -315,6 +340,7 @@ def test_list_team_members_returns_all_members(db):
 
 
 def test_get_team_member_returns_none_when_absent(db):
+    """get_team_member returns None for a user who is not on the team."""
     org = _org(db)
     team = team_service.create_team(db, org.id, "Team")
     stranger = _user(db, "stranger@omnibioai.test")
@@ -326,6 +352,7 @@ def test_get_team_member_returns_none_when_absent(db):
 
 
 def test_resolve_team_claim_returns_none_none_for_no_requested_team(db):
+    """resolve_team_claim returns (None, None) when no team was requested."""
     org = _org(db)
     user = _user(db, "user@omnibioai.test")
 
@@ -343,6 +370,9 @@ def test_resolve_team_claim_returns_none_none_when_org_id_is_none(db):
 
 
 def test_resolve_team_claim_returns_id_and_role_for_active_member(db):
+    """resolve_team_claim returns the team id and the member's role for a member of the requested
+    team.
+    """
     org = _org(db)
     inviter = _user(db, "inviter@omnibioai.test")
     member_user = _user(db, "member@omnibioai.test")
@@ -357,6 +387,9 @@ def test_resolve_team_claim_returns_id_and_role_for_active_member(db):
 
 
 def test_resolve_team_claim_degrades_silently_for_non_member(db):
+    """resolve_team_claim returns (None, None) rather than raising when the user is not on the
+    requested team.
+    """
     org = _org(db)
     user = _user(db, "user@omnibioai.test")
     team = team_service.create_team(db, org.id, "Team")
@@ -381,6 +414,8 @@ def test_resolve_team_claim_degrades_silently_for_wrong_org(db):
 
 
 def test_resolve_team_claim_degrades_silently_for_unknown_team(db):
+    """resolve_team_claim returns (None, None) rather than raising for a team that does not exist.
+    """
     org = _org(db)
     user = _user(db, "user@omnibioai.test")
 

@@ -17,6 +17,8 @@ LogoutResponse via OneLogin_Saml2_Auth.logout()/process_slo() itself
 (playing the IdP's sending role with a real, test-only IdP keypair),
 then extract the resulting query-string parameters -- never hand-rolled
 signing math.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import base64
@@ -387,6 +389,9 @@ def _build_idp_logout_response(idp_key_pem, idp_cert_pem, idp_entity_id, sp_slo_
 
 
 def test_sp_initiated_logout_revokes_local_session_and_returns_idp_url(client, idp_keys):
+    """SP-initiated logout returns 200 "Logged out" with an idp_logout_url starting with the
+    configured SLO URL, and revokes the local session.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     login = _login_via_saml(client, ctx, idp_keys)
 
@@ -416,6 +421,9 @@ def test_sp_initiated_logout_of_non_saml_session_has_no_idp_url(client):
 
 
 def test_sp_initiated_logout_without_slo_url_configured_has_no_idp_url(client, idp_keys):
+    """When no IdP SLO URL is configured, SP-initiated logout returns only {"message": "Logged out"}
+    and still revokes the session.
+    """
     ctx = _org_with_saml_login(client, idp_keys, slo_url=None)
     login = _login_via_saml(client, ctx, idp_keys)
 
@@ -427,6 +435,9 @@ def test_sp_initiated_logout_without_slo_url_configured_has_no_idp_url(client, i
 
 
 def test_sp_initiated_logout_blacklists_access_token_when_supplied(client, idp_keys):
+    """Supplying the access token at SP-initiated logout makes /auth/validate report it invalid
+    afterwards.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     login = _login_via_saml(client, ctx, idp_keys)
 
@@ -458,6 +469,7 @@ def test_sp_initiated_logout_wrong_org_in_path_still_logs_out_locally_but_no_idp
 
 
 def test_sp_initiated_slo_round_trip_completes_on_valid_signed_response(client, idp_keys):
+    """A validly signed IdP LogoutResponse completes the SP-initiated logout round trip with 200."""
     ctx = _org_with_saml_login(client, idp_keys)
     login = _login_via_saml(client, ctx, idp_keys)
     key_pem, cert_pem = idp_keys
@@ -477,6 +489,7 @@ def test_sp_initiated_slo_round_trip_completes_on_valid_signed_response(client, 
 
 
 def test_sp_initiated_slo_round_trip_rejects_unsigned_response(client, idp_keys):
+    """An unsigned IdP LogoutResponse is rejected with 400."""
     ctx = _org_with_saml_login(client, idp_keys)
     login = _login_via_saml(client, ctx, idp_keys)
     key_pem, cert_pem = idp_keys
@@ -494,6 +507,9 @@ def test_sp_initiated_slo_round_trip_rejects_unsigned_response(client, idp_keys)
 
 
 def test_sp_initiated_slo_round_trip_rejects_wrong_in_response_to(client, idp_keys):
+    """An IdP LogoutResponse whose InResponseTo does not match the logout request is rejected with
+    400.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     login = _login_via_saml(client, ctx, idp_keys)
     key_pem, cert_pem = idp_keys
@@ -510,6 +526,7 @@ def test_sp_initiated_slo_round_trip_rejects_wrong_in_response_to(client, idp_ke
 
 
 def test_sp_initiated_slo_round_trip_rejects_tampered_relay_state(client, idp_keys):
+    """An IdP LogoutResponse with a tampered RelayState is rejected with 400."""
     ctx = _org_with_saml_login(client, idp_keys)
     login = _login_via_saml(client, ctx, idp_keys)
     key_pem, cert_pem = idp_keys
@@ -551,6 +568,9 @@ def test_sp_initiated_slo_round_trip_rejects_login_relay_state(client, idp_keys)
 
 
 def test_idp_initiated_slo_revokes_matching_session_and_redirects(client, idp_keys):
+    """A valid IdP LogoutRequest revokes the matching session with the user-logout reason and
+    redirects to the IdP SLO URL.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     key_pem, cert_pem = idp_keys
     name_id = f"idp-slo-{uuid.uuid4().hex[:8]}@example.com"
@@ -573,6 +593,7 @@ def test_idp_initiated_slo_revokes_matching_session_and_redirects(client, idp_ke
 
 
 def test_idp_initiated_slo_without_session_index_revokes_every_session_for_name_id(client, idp_keys):
+    """An IdP LogoutRequest without a SessionIndex revokes every session of that NameID."""
     ctx = _org_with_saml_login(client, idp_keys)
     key_pem, cert_pem = idp_keys
     name_id = f"idp-slo-multi-{uuid.uuid4().hex[:8]}@example.com"
@@ -609,6 +630,9 @@ def test_idp_initiated_slo_without_session_index_revokes_every_session_for_name_
 
 
 def test_idp_initiated_slo_session_index_narrows_to_one_session(client, idp_keys):
+    """An IdP LogoutRequest with a SessionIndex revokes only that session and leaves the user's
+    other session active.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     key_pem, cert_pem = idp_keys
     name_id = f"idp-slo-narrow-{uuid.uuid4().hex[:8]}@example.com"
@@ -647,6 +671,7 @@ def test_idp_initiated_slo_session_index_narrows_to_one_session(client, idp_keys
 
 
 def test_idp_initiated_slo_rejects_unsigned_logout_request(client, idp_keys):
+    """An unsigned IdP LogoutRequest is rejected with 400 and the session stays active."""
     ctx = _org_with_saml_login(client, idp_keys)
     key_pem, cert_pem = idp_keys
     name_id = f"idp-slo-unsigned-{uuid.uuid4().hex[:8]}@example.com"
@@ -663,6 +688,9 @@ def test_idp_initiated_slo_rejects_unsigned_logout_request(client, idp_keys):
 
 
 def test_idp_initiated_slo_rejects_wrong_idp_certificate(client, idp_keys):
+    """An IdP LogoutRequest signed with the wrong certificate is rejected with 400 and the session
+    stays active.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     wrong_key_pem, wrong_cert_pem = _generate_idp_keypair_and_cert("attacker-idp")
     name_id = f"idp-slo-wrongcert-{uuid.uuid4().hex[:8]}@example.com"
@@ -677,6 +705,8 @@ def test_idp_initiated_slo_rejects_wrong_idp_certificate(client, idp_keys):
 
 
 def test_idp_initiated_slo_rejects_wrong_issuer(client, idp_keys):
+    """An IdP LogoutRequest from the wrong issuer is rejected with 400 and the session stays active.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     key_pem, cert_pem = idp_keys
     name_id = f"idp-slo-wrongissuer-{uuid.uuid4().hex[:8]}@example.com"
@@ -691,6 +721,7 @@ def test_idp_initiated_slo_rejects_wrong_issuer(client, idp_keys):
 
 
 def test_idp_initiated_slo_replay_of_same_logout_request_rejected(client, idp_keys):
+    """Replaying an already accepted IdP LogoutRequest is rejected with 400."""
     ctx = _org_with_saml_login(client, idp_keys)
     key_pem, cert_pem = idp_keys
     name_id = f"idp-slo-replay-{uuid.uuid4().hex[:8]}@example.com"
@@ -726,6 +757,7 @@ def test_idp_initiated_slo_for_org_a_cannot_revoke_org_b_session(client, idp_key
 
 
 def test_idp_initiated_slo_unknown_organization_404s(client, idp_keys):
+    """An IdP LogoutRequest for an unknown organization slug returns 404."""
     key_pem, cert_pem = idp_keys
     _params, query = _build_idp_logout_request(
         key_pem, cert_pem, "https://idp.example.com/entity",
@@ -736,6 +768,7 @@ def test_idp_initiated_slo_unknown_organization_404s(client, idp_keys):
 
 
 def test_idp_initiated_slo_inactive_saml_config_404s(client, idp_keys):
+    """An IdP LogoutRequest for an organization whose SAML configuration is inactive returns 404."""
     ctx = _org_with_saml_login(client, idp_keys)
     db = _DirectSession()
     try:
@@ -770,6 +803,7 @@ def test_idp_initiated_slo_for_unknown_name_id_is_a_safe_no_op(client, idp_keys)
 
 
 def test_idp_initiated_slo_already_revoked_session_is_idempotent(client, idp_keys):
+    """An IdP LogoutRequest for an already revoked session still redirects and leaves it revoked."""
     ctx = _org_with_saml_login(client, idp_keys)
     key_pem, cert_pem = idp_keys
     name_id = f"idp-slo-already-revoked-{uuid.uuid4().hex[:8]}@example.com"
@@ -790,11 +824,15 @@ def test_idp_initiated_slo_already_revoked_session_is_idempotent(client, idp_key
 
 
 def test_idp_initiated_slo_missing_message_type_400s(client):
+    """An SLO request to an unknown organization returns 404, because the organization is checked
+    before the missing message type.
+    """
     resp = client.get("/auth/saml/some-org-that-does-not-exist/slo")
     assert resp.status_code == 404  # unknown org checked before the missing-message-type check
 
 
 def test_idp_initiated_slo_missing_saml_request_and_response_400s(client, idp_keys):
+    """An SLO request carrying neither SAMLRequest nor SAMLResponse returns 400."""
     ctx = _org_with_saml_login(client, idp_keys)
     resp = client.get(f"/auth/saml/{ctx['org_slug']}/slo")
     assert resp.status_code == 400
@@ -804,6 +842,7 @@ def test_idp_initiated_slo_missing_saml_request_and_response_400s(client, idp_ke
 
 
 def test_saml_config_crud_accepts_and_returns_slo_url(client, idp_keys):
+    """Creating a SAML configuration with an slo_url returns 201 echoing it."""
     org = _create_org(client, "SAML SLO CRUD Org")
     headers = {"Authorization": f"Bearer {org['owner']['access_token']}"}
     resp = client.post(
@@ -820,6 +859,7 @@ def test_saml_config_crud_accepts_and_returns_slo_url(client, idp_keys):
 
 
 def test_saml_config_crud_slo_url_optional_on_create(client):
+    """Creating a SAML configuration without an slo_url returns 201 with slo_url null."""
     org = _create_org(client, "SAML SLO CRUD Optional Org")
     headers = {"Authorization": f"Bearer {org['owner']['access_token']}"}
     resp = client.post(
@@ -835,6 +875,7 @@ def test_saml_config_crud_slo_url_optional_on_create(client):
 
 
 def test_saml_config_crud_rejects_invalid_slo_url(client):
+    """Creating a SAML configuration with an invalid slo_url is rejected with 422."""
     org = _create_org(client, "SAML SLO CRUD Invalid Org")
     headers = {"Authorization": f"Bearer {org['owner']['access_token']}"}
     resp = client.post(
@@ -913,6 +954,7 @@ def test_saml_jit_user_with_personal_mfa_gets_saml_identity_on_session_after_cha
 
 
 def test_existing_auth_logout_endpoint_unaffected(client):
+    """The existing /auth/logout endpoint still returns 200 with {"message": "Logged out"}."""
     user = _register_and_login(client)
     login = client.post("/auth/login", json={"email": user["email"], "password": user["password"]})
     refresh_token = login.json()["refresh_token"]

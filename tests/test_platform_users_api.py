@@ -2,6 +2,8 @@
 Every route here is gated by require_permission(MANAGE_ALL_ORGS) only --
 the same permission PR1's org directory and PR0.4's org bypass already
 use (see routes_platform_users.py's own comment on this choice).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import urllib.parse
@@ -94,6 +96,9 @@ def _enable_mfa(client, headers) -> None:
 
 
 def test_platform_admin_can_list_users(client):
+    """A platform admin can list users at /platform/users, and the listing includes a registered
+    user's email.
+    """
     admin = _platform_admin(client)
     someone = _register_and_login(client)
 
@@ -105,6 +110,7 @@ def test_platform_admin_can_list_users(client):
 
 
 def test_platform_users_list_is_lightweight_summaries_only(client):
+    """User list items carry only the fixed summary fields and no memberships."""
     admin = _platform_admin(client)
     resp = client.get("/platform/users", headers=admin["headers"])
     assert resp.status_code == 200
@@ -117,6 +123,9 @@ def test_platform_users_list_is_lightweight_summaries_only(client):
 
 
 def test_user_detail_shows_org_memberships(client):
+    """The user detail endpoint shows the user's email and their memberships in each organization
+    they belong to.
+    """
     admin = _platform_admin(client)
     member = _register_and_login(client)
 
@@ -141,6 +150,9 @@ def test_user_detail_shows_org_memberships(client):
 
 
 def test_user_detail_shows_global_roles(client):
+    """The user detail endpoint lists the user's global roles, including platform_admin for a
+    platform admin.
+    """
     admin = _platform_admin(client)
     resp = client.post("/auth/validate", json={"token": admin["access_token"]})
     admin_id = resp.json()["user_id"]
@@ -151,6 +163,9 @@ def test_user_detail_shows_global_roles(client):
 
 
 def test_user_detail_shows_default_mfa_state_when_none_enrolled(client):
+    """For a user with no MFA enrolled, the detail shows mfa_enabled false, status "disabled" and no
+    primary method or enabled time.
+    """
     admin = _platform_admin(client)
     someone = _register_and_login(client)
     user_id = client.post("/auth/validate", json={"token": someone["access_token"]}).json()["user_id"]
@@ -165,6 +180,9 @@ def test_user_detail_shows_default_mfa_state_when_none_enrolled(client):
 
 
 def test_user_detail_reflects_real_enrolled_mfa_state(client, configured_crypto):
+    """For a user with enrolled MFA, the detail shows mfa_enabled true, status "enabled" and primary
+    method "totp".
+    """
     admin = _platform_admin(client)
     someone = _register_and_login(client)
     headers = _auth_header(someone["access_token"])
@@ -185,6 +203,7 @@ def test_user_detail_reflects_real_enrolled_mfa_state(client, configured_crypto)
 
 
 def test_nonexistent_user_returns_404(client):
+    """The user detail endpoint returns 404 for a nonexistent user id."""
     admin = _platform_admin(client)
     resp = client.get("/platform/users/999999999", headers=admin["headers"])
     assert resp.status_code == 404
@@ -204,6 +223,9 @@ def test_existing_org_scoped_member_endpoint_untouched(client):
 
 
 def test_pagination_page_size_and_total(client):
+    """Listing five matching users with page size 2 reports total 5, three total pages and two items
+    on the first page.
+    """
     admin = _platform_admin(client)
     marker = uuid.uuid4().hex[:8]
     for i in range(5):
@@ -226,6 +248,7 @@ def test_pagination_page_size_and_total(client):
 
 
 def test_search_matches_email(client):
+    """The search parameter matches on the user's email."""
     admin = _platform_admin(client)
     unique = uuid.uuid4().hex[:10]
     someone = _register_and_login(client, email=f"searchable-{unique}@omnibioai.test")
@@ -237,6 +260,7 @@ def test_search_matches_email(client):
 
 
 def test_sort_by_email_ascending(client):
+    """Sorting by email ascending returns items in email order."""
     admin = _platform_admin(client)
     marker = uuid.uuid4().hex[:8]
     _register_and_login(client, email=f"{marker}-bravo@omnibioai.test")
@@ -252,6 +276,7 @@ def test_sort_by_email_ascending(client):
 
 
 def test_invalid_sort_by_rejected(client):
+    """An unsupported sort_by value (org_count) is rejected with 422."""
     admin = _platform_admin(client)
     resp = client.get("/platform/users", params={"sort_by": "org_count"}, headers=admin["headers"])
     assert resp.status_code == 422
@@ -261,12 +286,14 @@ def test_invalid_sort_by_rejected(client):
 
 
 def test_non_platform_admin_forbidden(client):
+    """A user without platform-admin permission gets 403 from /platform/users."""
     owner = _register_and_login(client)
     resp = client.get("/platform/users", headers=_auth_header(owner["access_token"]))
     assert resp.status_code == 403
 
 
 def test_revoked_token_rejected(client):
+    """After logout revokes the admin's access token, /platform/users returns 401."""
     admin = _platform_admin(client)
     assert client.get("/platform/users", headers=admin["headers"]).status_code == 200
     client.post(
@@ -278,6 +305,9 @@ def test_revoked_token_rejected(client):
 
 
 def test_suspended_account_rejected(client):
+    """After the admin's account is suspended, /platform/users returns 401 for its previously valid
+    token.
+    """
     admin = _platform_admin(client)
     assert client.get("/platform/users", headers=admin["headers"]).status_code == 200
     db = _DirectSession()
@@ -292,6 +322,7 @@ def test_suspended_account_rejected(client):
 
 
 def test_client_credentials_token_rejected(client):
+    """A client_credentials service token is rejected with 401 by /platform/users."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     oc = client.post(
@@ -309,6 +340,9 @@ def test_client_credentials_token_rejected(client):
 
 
 def test_platform_admin_can_suspend_and_reactivate_user(client):
+    """A platform admin can suspend a user, recording status "suspended" with the reason, and can
+    reactivate them.
+    """
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
@@ -351,6 +385,7 @@ def test_suspending_a_user_immediately_rejects_their_existing_token(client):
 
 
 def test_non_platform_admin_cannot_change_user_status(client):
+    """A user without platform-admin permission gets 403 when changing another user's status."""
     owner = _register_and_login(client)
     target = _register_and_login(client)
     target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
@@ -362,6 +397,7 @@ def test_non_platform_admin_cannot_change_user_status(client):
 
 
 def test_invalid_status_value_rejected(client):
+    """A status value other than an allowed one (deleted) is rejected with 400."""
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
@@ -376,6 +412,9 @@ def test_invalid_status_value_rejected(client):
 
 
 def test_password_login_persists_last_login_and_auth_method(client):
+    """After a password login, the user detail shows authentication_method "password" and a
+    last_login_at time.
+    """
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
@@ -386,6 +425,7 @@ def test_password_login_persists_last_login_and_auth_method(client):
 
 
 def test_last_login_advances_on_each_login(client):
+    """last_login_at does not move backwards after a further login."""
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
@@ -422,6 +462,8 @@ def test_user_with_no_login_since_migration_has_null_metadata(client):
 
 
 def test_filter_by_status(client):
+    """Filtering users by status returns only users of that status, including a user just suspended.
+    """
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = client.post("/auth/validate", json={"token": target["access_token"]}).json()["user_id"]
@@ -436,6 +478,9 @@ def test_filter_by_status(client):
 
 
 def test_filter_by_organization_id(client):
+    """Filtering by organization_id returns that organization's members and excludes users outside
+    it.
+    """
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     org = _make_org(client, owner)
@@ -451,6 +496,9 @@ def test_filter_by_organization_id(client):
 
 
 def test_filter_by_global_role(client):
+    """Filtering by a global role returns users holding it (a platform admin) and excludes those
+    without it.
+    """
     admin = _platform_admin(client)
     plain = _register_and_login(client)
 
@@ -490,6 +538,7 @@ def test_filter_by_role_within_organization(client):
 
 
 def test_filters_are_backward_compatible_when_omitted(client):
+    """Listing users without any filters still returns 200."""
     admin = _platform_admin(client)
     resp = client.get("/platform/users", headers=admin["headers"])
     assert resp.status_code == 200

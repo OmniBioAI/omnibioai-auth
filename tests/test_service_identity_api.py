@@ -3,6 +3,8 @@ GET /platform/services/{client_id} -- the Service Identity API, unifying
 OAuth client scopes and the Permission Registry vocabulary. Mirrors
 test_oauth_clients.py's own org/oauth-client fixtures and
 test_identity_api.py's own platform-admin fixture.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import uuid
@@ -135,6 +137,9 @@ PERMISSION_METADATA_KEYS = {
 
 
 def test_service_token_can_reach_service_me(client, org):
+    """A client_credentials service token reaches /service/me, which returns its client_id,
+    organization, permissions and active true.
+    """
     oauth_client = _create_oauth_client(client, org, ["manage_org"])
     token = _service_token(client, oauth_client)
 
@@ -158,6 +163,7 @@ def test_service_me_reflects_token_scopes_not_full_client_scopes(client, org):
 
 
 def test_service_me_missing_token_rejected(client):
+    """/service/me without a bearer token is rejected with 401 or 403."""
     resp = client.get("/service/me")
     assert resp.status_code in (401, 403)
 
@@ -182,6 +188,9 @@ def test_service_token_cannot_access_me(client, org):
 
 
 def test_inactive_service_rejected_from_service_me(client, org):
+    """After the OAuth client is revoked, its previously issued token is refused with 403 by
+    /service/me.
+    """
     oauth_client = _create_oauth_client(client, org, ["manage_org"])
     token = _service_token(client, oauth_client)
 
@@ -198,6 +207,8 @@ def test_inactive_service_rejected_from_service_me(client, org):
 
 
 def test_platform_admin_can_look_up_service_by_client_id(client, org, admin_headers):
+    """A platform admin can look up a service by client_id and see its permissions and active true.
+    """
     _grant_owner_permissions(client, admin_headers, org, ["dataset.read"])
     oauth_client = _create_oauth_client(client, org, ["dataset.read"])
     platform_admin = _platform_admin(client)
@@ -211,6 +222,7 @@ def test_platform_admin_can_look_up_service_by_client_id(client, org, admin_head
 
 
 def test_platform_lookup_shows_revoked_client_as_inactive_not_missing(client, org):
+    """A revoked client is shown by the platform lookup with active false rather than 404."""
     oauth_client = _create_oauth_client(client, org, [])
     client.delete(f"/orgs/{org['id']}/oauth-clients/{oauth_client['id']}", headers=org["owner_headers"])
     platform_admin = _platform_admin(client)
@@ -221,12 +233,14 @@ def test_platform_lookup_shows_revoked_client_as_inactive_not_missing(client, or
 
 
 def test_platform_lookup_nonexistent_client_404s(client):
+    """The platform lookup for an unknown client_id returns 404."""
     platform_admin = _platform_admin(client)
     resp = client.get("/platform/services/does-not-exist", headers=platform_admin["headers"])
     assert resp.status_code == 404
 
 
 def test_non_platform_admin_cannot_look_up_service(client, org):
+    """A user without platform-admin permission gets 403 from the platform service lookup."""
     oauth_client = _create_oauth_client(client, org, [])
     outsider = _register_and_login(client)
     resp = client.get(
@@ -236,6 +250,7 @@ def test_non_platform_admin_cannot_look_up_service(client, org):
 
 
 def test_service_token_cannot_access_platform_lookup(client, org):
+    """A service token is rejected with 401 by the platform service lookup."""
     oauth_client = _create_oauth_client(client, org, [])
     token = _service_token(client, oauth_client)
     resp = client.get(f"/platform/services/{oauth_client['client_id']}", headers=_auth_header(token))
@@ -246,6 +261,9 @@ def test_service_token_cannot_access_platform_lookup(client, org):
 
 
 def test_service_me_expand_permissions_true_returns_full_metadata(client, org, admin_headers):
+    """/service/me with expand_permissions=true returns permissions as metadata objects, for example
+    dataset.read in category "dataset".
+    """
     _grant_owner_permissions(client, admin_headers, org, ["dataset.read"])
     oauth_client = _create_oauth_client(client, org, ["dataset.read"])
     token = _service_token(client, oauth_client)
@@ -259,6 +277,9 @@ def test_service_me_expand_permissions_true_returns_full_metadata(client, org, a
 
 
 def test_service_me_expand_permissions_false_is_default(client, org, admin_headers):
+    """Omitting expand_permissions gives the same /service/me response as expand_permissions=false,
+    with permission names as strings.
+    """
     _grant_owner_permissions(client, admin_headers, org, ["dataset.read"])
     oauth_client = _create_oauth_client(client, org, ["dataset.read"])
     token = _service_token(client, oauth_client)
@@ -272,6 +293,9 @@ def test_service_me_expand_permissions_false_is_default(client, org, admin_heade
 
 
 def test_platform_lookup_expand_permissions_true(client, org, admin_headers):
+    """The platform service lookup with expand_permissions=true returns permissions as metadata
+    objects such as model.use.
+    """
     _grant_owner_permissions(client, admin_headers, org, ["model.use"])
     oauth_client = _create_oauth_client(client, org, ["model.use"])
     platform_admin = _platform_admin(client)
@@ -290,6 +314,9 @@ def test_platform_lookup_expand_permissions_true(client, org, admin_headers):
 
 
 def test_create_oauth_client_rejects_unregistered_scope(client, org):
+    """Creating an OAuth client with a scope that is not in the permission registry returns 400
+    naming the scope.
+    """
     resp = client.post(
         f"/orgs/{org['id']}/oauth-clients",
         json={"name": "typo-client", "scopes": ["workflow.excute"]},
@@ -300,6 +327,9 @@ def test_create_oauth_client_rejects_unregistered_scope(client, org):
 
 
 def test_create_oauth_client_unregistered_scope_suggests_nearest_match(client, org):
+    """The rejection for an unregistered scope suggests the nearest registered name
+    (workflow.execute).
+    """
     resp = client.post(
         f"/orgs/{org['id']}/oauth-clients",
         json={"name": "typo-client-2", "scopes": ["workflow.excute"]},
@@ -310,6 +340,7 @@ def test_create_oauth_client_unregistered_scope_suggests_nearest_match(client, o
 
 
 def test_create_oauth_client_with_random_admin_scope_rejected(client, org):
+    """Creating an OAuth client with an arbitrary administrative scope name is rejected with 400."""
     resp = client.post(
         f"/orgs/{org['id']}/oauth-clients",
         json={"name": "random-admin-client", "scopes": ["random.admin"]},
@@ -319,6 +350,7 @@ def test_create_oauth_client_with_random_admin_scope_rejected(client, org):
 
 
 def test_create_oauth_client_with_registered_scopes_succeeds(client, org, admin_headers):
+    """Creating an OAuth client with registered scopes returns 201 with exactly those scopes."""
     _grant_owner_permissions(client, admin_headers, org, ["workflow.execute", "model.use", "dataset.read"])
     resp = client.post(
         f"/orgs/{org['id']}/oauth-clients",
@@ -333,6 +365,7 @@ def test_create_oauth_client_with_registered_scopes_succeeds(client, org, admin_
 
 
 def test_service_identity_permissions_are_all_known_to_registry(client, org, admin_headers):
+    """Every permission returned by /service/me is a known registry permission."""
     from app.core.permission_names import is_known_permission
 
     _grant_owner_permissions(client, admin_headers, org, ["billing.read", "usage.read"])
@@ -345,6 +378,9 @@ def test_service_identity_permissions_are_all_known_to_registry(client, org, adm
 
 
 def test_service_me_500s_on_registry_drift_when_expanded(client, org):
+    """/service/me with expand_permissions=true returns 500 when a scope on the client is missing
+    from the permission registry.
+    """
     oauth_client = _create_oauth_client(client, org, ["manage_org"])
     token = _service_token(client, oauth_client)
 
@@ -382,6 +418,7 @@ def test_service_me_500s_on_registry_drift_when_expanded(client, org):
 
 
 def test_existing_oauth_token_flow_unaffected(client, org):
+    """A token from the existing client_credentials flow is still accepted by /service/me."""
     oauth_client = _create_oauth_client(client, org, ["manage_teams"])
     token = _service_token(client, oauth_client)
     validate_style = client.get("/service/me", headers=_auth_header(token))

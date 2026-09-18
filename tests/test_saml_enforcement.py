@@ -12,6 +12,8 @@ override_sso_enforcement permission and /override request shape verbatim
 (see app/api/routes_org_saml.py's module docstring for why), so these
 tests hit /orgs/{org_id}/saml/override rather than a SAML-specific path,
 but otherwise assert the exact same behavior.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import base64
@@ -247,6 +249,9 @@ def _enable_enforcement(client, org):
 
 
 def test_enforced_true_rejected_without_prior_saml_login(client, org_with_saml):
+    """Enabling SAML enforcement before any member has completed a SAML login is rejected with 400
+    ("at least one member") and enforced stays false.
+    """
     resp = client.patch(
         f"/orgs/{org_with_saml['org_id']}/saml", json={"enforced": True}, headers=org_with_saml["owner_headers"]
     )
@@ -258,6 +263,7 @@ def test_enforced_true_rejected_without_prior_saml_login(client, org_with_saml):
 
 
 def test_enforced_true_succeeds_after_a_completed_saml_login(client, org_with_saml):
+    """Enabling SAML enforcement succeeds after a member has completed a SAML login."""
     _complete_one_saml_login(client, org_with_saml)
 
     resp = client.patch(
@@ -268,6 +274,9 @@ def test_enforced_true_succeeds_after_a_completed_saml_login(client, org_with_sa
 
 
 def test_enforced_can_be_disabled_without_the_lockout_guard(client, org_with_saml):
+    """SAML enforcement can be switched off without the lockout guard, after which the member's
+    password login works again.
+    """
     _enable_enforcement(client, org_with_saml)
 
     resp = client.patch(
@@ -285,6 +294,9 @@ def test_enforced_can_be_disabled_without_the_lockout_guard(client, org_with_sam
 
 
 def test_password_login_rejected_without_calling_verify_password(client, org_with_saml, monkeypatch):
+    """With SAML enforcement on, a password login by an enforced-domain member returns 403 without
+    invoking password verification.
+    """
     # Registered (and logged in once, successfully) *before* enforcement
     # is turned on -- an existing password account that predates the
     # org enforcing SAML, exactly the case enforcement must still catch.
@@ -322,6 +334,9 @@ def test_password_login_still_works_with_wrong_domain_email(client, org_with_sam
 
 
 def test_google_oauth_login_rejected_for_enforced_org_member(client, org_with_saml, monkeypatch):
+    """A Google OAuth login by an enforced-organization member returns 403 with reason
+    "sso_required" and the organization's SAML login URL.
+    """
     _enable_enforcement(client, org_with_saml)
 
     from app.core.jwt import create_oauth_state_token
@@ -347,6 +362,9 @@ def test_google_oauth_login_rejected_for_enforced_org_member(client, org_with_sa
 
 
 def test_non_enforced_org_user_unaffected_by_other_orgs_saml_enforcement(client, org_with_saml, idp_keys):
+    """A user of an organization that does not enforce SAML can still log in with a password while
+    another organization enforces it.
+    """
     _enable_enforcement(client, org_with_saml)
 
     _, other_cert_pem = _generate_idp_keypair_and_cert("other-saml-org-idp")
@@ -392,6 +410,9 @@ def test_login_unaffected_before_allowed_domains_configured(client):
 
 
 def test_saml_override_requires_global_permission_not_org_admin(client, org_with_saml):
+    """Creating a SAML enforcement override as an organization admin returns 403 because it needs a
+    global permission.
+    """
     _enable_enforcement(client, org_with_saml)
 
     resp = client.post(
@@ -403,6 +424,9 @@ def test_saml_override_requires_global_permission_not_org_admin(client, org_with
 
 
 def test_saml_override_bypasses_enforcement_and_clear_restores_it(client, org_with_saml, admin_headers):
+    """A SAML enforcement override lets an enforced member log in with a password while enforced
+    stays true, and clearing it restores the 403 block.
+    """
     member = _register_and_login(client, email=f"grace-{uuid.uuid4().hex[:8]}@{org_with_saml['domain']}")
     _enable_enforcement(client, org_with_saml)
 

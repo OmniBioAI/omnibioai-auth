@@ -7,6 +7,8 @@ admin reach any organization's data, while every non-platform-admin
 caller's behavior is provably unchanged (locked in by PR0.3's own
 regression suite, re-verified here for the routes this PR actually
 touches: organizations, teams, API keys, OAuth clients, SSO config).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -79,6 +81,7 @@ def _platform_admin(client):
 
 
 def test_platform_admin_can_view_org_they_are_not_a_member_of(client):
+    """A platform admin can view an organization they do not belong to and gets 200 with its id."""
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     org = _make_org(client, owner, "PA Foreign Org")
@@ -104,6 +107,9 @@ def test_platform_admin_leaves_no_real_membership_trace(client):
 
 
 def test_platform_admin_can_create_team_in_foreign_org(client):
+    """A platform admin can create a team in another organization, and that organization's own owner
+    can see the team.
+    """
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     org = _make_org(client, owner, "PA Teams Org")
@@ -207,6 +213,9 @@ def test_platform_admin_can_manage_sso_config_in_foreign_org(client, monkeypatch
 
 
 def test_org_admin_without_manage_all_orgs_still_blocked_from_other_org(client):
+    """An org_admin of a different organization gets 404 both viewing this organization and creating
+    a team in it.
+    """
     owner_a = _register_and_login(client)
     org_a = _make_org(client, owner_a, "Normal Org A")
     owner_b = _register_and_login(client)
@@ -223,6 +232,7 @@ def test_org_admin_without_manage_all_orgs_still_blocked_from_other_org(client):
 
 
 def test_non_member_still_receives_404(client):
+    """A non-member without platform-admin permission gets 404 for another organization."""
     owner = _register_and_login(client)
     org = _make_org(client, owner, "Outsider Test Org")
     outsider = _register_and_login(client)
@@ -314,6 +324,7 @@ def test_platform_admin_check_error_falls_back_to_real_membership_check(client, 
 
 
 def test_platform_admin_gets_404_not_500_for_nonexistent_org(client):
+    """A platform admin requesting a nonexistent organization gets 404, not a server error."""
     admin = _platform_admin(client)
     resp = client.get("/orgs/999999999", headers=admin["headers"])
     assert resp.status_code == 404
@@ -326,6 +337,9 @@ def test_platform_admin_gets_404_not_500_for_nonexistent_org(client):
 
 
 def test_granting_platform_admin_takes_effect_on_refresh_not_just_relogin(client):
+    """Granting platform_admin to a logged-in user takes effect at token refresh: the refreshed
+    token carries manage_all_orgs and can view another organization.
+    """
     from app.core.jwt import decode_token
 
     user = _register_and_login(client)
@@ -343,6 +357,9 @@ def test_granting_platform_admin_takes_effect_on_refresh_not_just_relogin(client
 
 
 def test_revoking_platform_admin_takes_effect_on_refresh(client):
+    """Revoking platform_admin takes effect at token refresh: the refreshed token lacks
+    manage_all_orgs and gets 404 for another organization.
+    """
     admin = _platform_admin(client)
 
     db = _DirectSession()

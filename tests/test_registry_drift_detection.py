@@ -12,6 +12,8 @@ database currently has zero drift" assertion against the shared test.db
 would be order-dependent and, in practice, false once those other test
 files have run. An isolated database sidesteps that entirely and tests
 assert_no_unregistered_permissions's actual logic deterministically.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -28,6 +30,9 @@ def _fresh_session():
 
 
 def test_no_drift_when_all_permissions_are_registered():
+    """assert_no_unregistered_permissions does not raise when every stored permission is in the
+    registry.
+    """
     db = _fresh_session()
     try:
         db.add(Permission(name="manage_org"))
@@ -39,6 +44,7 @@ def test_no_drift_when_all_permissions_are_registered():
 
 
 def test_no_drift_on_empty_permission_table():
+    """assert_no_unregistered_permissions does not raise when the permission table is empty."""
     db = _fresh_session()
     try:
         assert_no_unregistered_permissions(db)  # must not raise
@@ -47,6 +53,9 @@ def test_no_drift_on_empty_permission_table():
 
 
 def test_drift_detected_raises_runtime_error():
+    """assert_no_unregistered_permissions raises RuntimeError naming a stored permission that is not
+    in the registry.
+    """
     db = _fresh_session()
     try:
         db.add(Permission(name="manage_org"))
@@ -62,6 +71,7 @@ def test_drift_detected_raises_runtime_error():
 
 
 def test_drift_error_lists_all_unregistered_names():
+    """The drift RuntimeError names every unregistered permission, not just the first."""
     db = _fresh_session()
     try:
         db.add(Permission(name="bad_one"))

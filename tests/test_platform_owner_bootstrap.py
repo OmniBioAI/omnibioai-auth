@@ -11,6 +11,8 @@ opt-in. Unset, this whole mechanism is inert and
 ensure_platform_admin_role's own pre-existing behavior ("does not assign
 this role to any user -- not even the bootstrap admin@omnibioai
 account") is completely unchanged.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 
@@ -58,6 +60,9 @@ def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"
 
 
 def test_unset_env_var_grants_platform_admin_to_nobody(db_session, monkeypatch):
+    """With PLATFORM_OWNER_EMAIL unset, the bootstrap admin does not gain platform_admin and no
+    audit event is written.
+    """
     monkeypatch.delenv("PLATFORM_OWNER_EMAIL", raising=False)
     _bootstrap(db_session, monkeypatch)
 
@@ -71,6 +76,9 @@ def test_unset_env_var_grants_platform_admin_to_nobody(db_session, monkeypatch):
 
 
 def test_blank_env_var_is_treated_the_same_as_unset(db_session, monkeypatch):
+    """A whitespace-only PLATFORM_OWNER_EMAIL is treated as unset: platform_admin is granted to
+    nobody.
+    """
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "   ")
     _bootstrap(db_session, monkeypatch)
 
@@ -82,6 +90,9 @@ def test_blank_env_var_is_treated_the_same_as_unset(db_session, monkeypatch):
 
 
 def test_platform_owner_email_matching_bootstrap_admin_grants_platform_admin(db_session, monkeypatch):
+    """When PLATFORM_OWNER_EMAIL matches the bootstrap admin, that account gains platform_admin
+    while keeping its admin role.
+    """
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
     _bootstrap(db_session, monkeypatch)
 
@@ -93,6 +104,9 @@ def test_platform_owner_email_matching_bootstrap_admin_grants_platform_admin(db_
 
 
 def test_grant_is_audit_logged_with_no_human_actor(db_session, monkeypatch):
+    """The grant writes exactly one role_assigned audit event with no actor user and source
+    "bootstrap.platform_owner_email".
+    """
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
     _bootstrap(db_session, monkeypatch)
 
@@ -107,6 +121,7 @@ def test_grant_is_audit_logged_with_no_human_actor(db_session, monkeypatch):
 
 
 def test_idempotent_across_repeated_startups(db_session, monkeypatch):
+    """Repeated startups leave a single platform_admin assignment and a single audit event."""
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
     _bootstrap(db_session, monkeypatch)
     ensure_platform_owner(db_session)  # simulate a second container restart
@@ -138,6 +153,9 @@ def test_does_not_remove_or_touch_any_other_role(db_session, monkeypatch):
 
 
 def test_platform_owner_email_can_designate_a_non_bootstrap_user(db_session, monkeypatch):
+    """PLATFORM_OWNER_EMAIL can name another existing user, who gains platform_admin, while the
+    bootstrap admin does not.
+    """
     other = User(email="owner@example.test", hashed_password="x", status="active")
     db_session.add(other)
     db_session.commit()
@@ -155,6 +173,9 @@ def test_platform_owner_email_can_designate_a_non_bootstrap_user(db_session, mon
 
 
 def test_platform_owner_email_with_no_matching_user_is_a_safe_no_op(db_session, monkeypatch, caplog):
+    """An owner email that matches no user does not raise, writes no audit event and grants
+    platform_admin to nobody.
+    """
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "nobody-has-signed-up-yet@example.test")
     _bootstrap(db_session, monkeypatch)  # must not raise
 

@@ -4,6 +4,8 @@ and the POST /auth/switch-team endpoint that reissues a token with a new
 one. Mirrors tests/test_jwt_org_context.py's conventions (decode the
 token directly for claims not exposed on any response body) and
 tests/test_teams.py's org/team HTTP fixtures.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import uuid
@@ -71,6 +73,7 @@ def _relogin(client, creds):
 
 
 def test_fresh_login_token_has_no_team_claim(client):
+    """A freshly issued login token has null team_id and team_role claims."""
     user = _register_and_login(client)
     decoded = decode_token(user["access_token"])
 
@@ -82,6 +85,9 @@ def test_fresh_login_token_has_no_team_claim(client):
 
 
 def test_switch_team_sets_team_id_and_role_claims(client, org, team):
+    """Switching team returns a token whose team_id and team_role reflect the chosen team while
+    org_id is unchanged.
+    """
     access, refresh = _relogin(client, org["owner"])
 
     resp = client.post("/auth/switch-team", json={"team_id": team["id"], "refresh_token": refresh})
@@ -96,6 +102,7 @@ def test_switch_team_sets_team_id_and_role_claims(client, org, team):
 
 
 def test_switch_team_issues_a_new_refresh_token(client, org, team):
+    """Switching team consumes the presented refresh token: presenting it again returns 401."""
     access, refresh = _relogin(client, org["owner"])
 
     resp = client.post("/auth/switch-team", json={"team_id": team["id"], "refresh_token": refresh})
@@ -108,6 +115,7 @@ def test_switch_team_issues_a_new_refresh_token(client, org, team):
 
 
 def test_switch_team_back_to_personal_workspace(client, org, team):
+    """Switching to team_id null returns a token with null team_id and team_role."""
     _, refresh = _relogin(client, org["owner"])
     switched = client.post("/auth/switch-team", json={"team_id": team["id"], "refresh_token": refresh}).json()
 
@@ -124,6 +132,7 @@ def test_switch_team_back_to_personal_workspace(client, org, team):
 
 
 def test_switch_team_rejects_unknown_team(client, org):
+    """Switching to a nonexistent team id returns 404."""
     _, refresh = _relogin(client, org["owner"])
 
     resp = client.post("/auth/switch-team", json={"team_id": 999999, "refresh_token": refresh})
@@ -131,6 +140,7 @@ def test_switch_team_rejects_unknown_team(client, org):
 
 
 def test_switch_team_rejects_team_from_another_org(client, org, team):
+    """Switching into a team of an organization the user does not belong to returns 403."""
     other_org_owner = _register_and_login(client)
     other_org = client.post(
         "/orgs",
@@ -175,6 +185,7 @@ def test_switch_team_rejects_non_member_of_team(client, org, team):
 
 
 def test_switch_team_requires_a_token(client):
+    """POST /auth/switch-team without a refresh token returns 401."""
     resp = client.post("/auth/switch-team", json={"team_id": 1})
     assert resp.status_code == 401
 

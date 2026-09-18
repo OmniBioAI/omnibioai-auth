@@ -3,6 +3,8 @@ GET /platform/roles?expand_permissions=true -- the RBAC management layer
 built on top of PR4's Permission Registry and PR5's read-only registry API.
 Gated by require_permission(MANAGE_ALL_ORGS) only, mirroring
 test_platform_roles_api.py's own conventions exactly.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import uuid
@@ -77,6 +79,9 @@ PERMISSION_METADATA_KEYS = {
 
 
 def test_get_role_detail_returns_full_permission_metadata(client, admin_headers):
+    """GET /platform/roles/{name} returns the role's name and description together with its
+    permissions as full metadata objects.
+    """
     admin = _platform_admin(client)
     name = f"detail-role-{uuid.uuid4().hex[:8]}"
     client.post(
@@ -96,6 +101,8 @@ def test_get_role_detail_returns_full_permission_metadata(client, admin_headers)
 
 
 def test_get_role_detail_permission_metadata_matches_registry(client, admin_headers):
+    """A role's permission metadata equals the registry definition's as_dict() for that permission.
+    """
     from app.core.permission_names import REGISTRY
 
     admin = _platform_admin(client)
@@ -108,12 +115,14 @@ def test_get_role_detail_permission_metadata_matches_registry(client, admin_head
 
 
 def test_get_unknown_role_detail_returns_404(client):
+    """GET on an unknown role name returns 404."""
     admin = _platform_admin(client)
     resp = client.get("/platform/roles/does-not-exist-role", headers=admin["headers"])
     assert resp.status_code == 404
 
 
 def test_non_platform_admin_cannot_get_role_detail(client, admin_headers):
+    """A user without platform-admin permission gets 403 for a role's detail."""
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     name = f"forbidden-detail-role-{uuid.uuid4().hex[:8]}"
@@ -168,6 +177,9 @@ def test_list_roles_default_response_unchanged(client):
 
 
 def test_list_roles_expand_permissions_false_matches_default(client):
+    """Listing roles with expand_permissions=false returns the same response as omitting the
+    parameter.
+    """
     admin = _platform_admin(client)
     default = client.get("/platform/roles", headers=admin["headers"]).json()
     explicit_false = client.get(
@@ -177,6 +189,9 @@ def test_list_roles_expand_permissions_false_matches_default(client):
 
 
 def test_list_roles_expand_permissions_true_returns_full_metadata(client, admin_headers):
+    """Listing roles with expand_permissions=true returns each role's permissions as full metadata
+    objects with the same role field set.
+    """
     admin = _platform_admin(client)
     name = f"expand-role-{uuid.uuid4().hex[:8]}"
     client.post("/roles", json={"name": name, "permissions": ["dataset.read"]}, headers=admin_headers)
@@ -201,6 +216,7 @@ def test_list_roles_expand_permissions_true_returns_full_metadata(client, admin_
 
 
 def test_non_platform_admin_cannot_list_roles_expanded(client):
+    """A user without platform-admin permission gets 403 for the expanded role listing."""
     owner = _register_and_login(client)
     resp = client.get(
         "/platform/roles", params={"expand_permissions": "true"}, headers=_auth_header(owner["access_token"]),

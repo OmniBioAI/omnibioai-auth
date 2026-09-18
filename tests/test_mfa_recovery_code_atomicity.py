@@ -17,6 +17,8 @@ whole-database write lock in tests), which is exactly what makes this
 correct across any number of horizontally-scaled app instances sharing
 one production database. See
 docs/security-mfa-recovery-code-atomicity.md for the full design.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import urllib.parse
@@ -128,6 +130,7 @@ def mfa_user(client, configured_crypto):
 
 
 def _fresh_recovery_code(client, mfa_user) -> str:
+    """Generate a fresh recovery-code batch for the user and return its first code."""
     headers = _auth_header(mfa_user["access_token"])
     return client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"][0]
 
@@ -136,6 +139,7 @@ def _fresh_recovery_code(client, mfa_user) -> str:
 
 
 def test_one_valid_unused_recovery_code_succeeds(client, mfa_user):
+    """A valid unused recovery code completes the MFA challenge with 200 and an access token."""
     code = _fresh_recovery_code(client, mfa_user)
     token = _fresh_challenge_token(client, mfa_user)
 
@@ -175,6 +179,9 @@ def test_existing_recovery_code_behavior_unchanged_for_normal_requests(client, m
 
 
 def test_reusing_recovery_code_sequentially_fails(client, mfa_user):
+    """Presenting the same recovery code a second time is rejected with 400 and issues no access
+    token.
+    """
     code = _fresh_recovery_code(client, mfa_user)
 
     first = client.post("/users/me/mfa/challenge", json={
@@ -313,6 +320,9 @@ def test_atomicity_does_not_depend_on_process_local_locking(client, mfa_user):
 
 
 def test_challenge_jti_single_use_remains_intact_for_recovery_code_success(client, mfa_user):
+    """A challenge token already consumed by a recovery-code success is rejected with 401 even when
+    a different, unused code is presented.
+    """
     code = _fresh_recovery_code(client, mfa_user)
     token = _fresh_challenge_token(client, mfa_user)
 
@@ -331,6 +341,9 @@ def test_challenge_jti_single_use_remains_intact_for_recovery_code_success(clien
 
 
 def test_different_recovery_codes_consumed_independently(client, mfa_user):
+    """Consuming one recovery code does not affect another: separate codes each succeed once, and a
+    third unused code still works afterwards.
+    """
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
     code_a, code_b = codes[0], codes[1]
@@ -358,6 +371,9 @@ def test_different_recovery_codes_consumed_independently(client, mfa_user):
 
 
 def test_audit_emits_exactly_one_success_event_under_concurrent_race(client, mfa_user):
+    """When several challenge tokens race with the same recovery code, exactly one success audit
+    event is written.
+    """
     code = _fresh_recovery_code(client, mfa_user)
     tokens = [_fresh_challenge_token(client, mfa_user) for _ in range(6)]
 
@@ -372,6 +388,9 @@ def test_audit_emits_exactly_one_success_event_under_concurrent_race(client, mfa
 
 
 def test_no_secret_or_code_leakage_in_audit_under_race(client, mfa_user):
+    """Audit events written during a recovery-code race contain no recovery code, TOTP secret or
+    challenge token.
+    """
     code = _fresh_recovery_code(client, mfa_user)
     tokens = [_fresh_challenge_token(client, mfa_user) for _ in range(4)]
 

@@ -5,6 +5,8 @@ build_user_claims (via generate_tokens) directly against a hand-built
 membership, the same "direct DB session, decode the token" pattern
 test_jwt_org_context.py already uses for claim content that isn't
 observable via any HTTP response field.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -41,6 +43,9 @@ def _make_active_membership(db, user: User, role_name: str) -> OrganizationMembe
 
 
 def test_scientist_org_role_grants_exactly_its_permission_set(client):
+    """A member with the scientist org role gets workflow.execute, dataset.read and model.use in
+    their token permissions, but not workflow.publish or manage_org.
+    """
     db = _DirectSession()
     try:
         user = _make_user(db)
@@ -57,6 +62,9 @@ def test_scientist_org_role_grants_exactly_its_permission_set(client):
 
 
 def test_viewer_org_role_grants_exactly_its_permission_set(client):
+    """A member with the viewer org role gets dataset.read and workflow.read in their token
+    permissions, but not workflow.execute, workflow.publish or manage_org.
+    """
     db = _DirectSession()
     try:
         user = _make_user(db)
@@ -74,6 +82,9 @@ def test_viewer_org_role_grants_exactly_its_permission_set(client):
 
 
 def test_org_admin_role_grants_org_management_not_platform_management(client):
+    """A member with the org_admin role gets manage_org but not the platform-wide manage_all_orgs in
+    their token permissions.
+    """
     db = _DirectSession()
     try:
         user = _make_user(db)

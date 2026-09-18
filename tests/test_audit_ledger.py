@@ -4,6 +4,8 @@ IAM lifecycle events (login, role, permission, org membership) are
 captured with the correct actor/target/organization/before-after state,
 and that each RBAC mutation emits exactly one event -- never zero, never
 duplicated across the route surfaces that share one service function.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import uuid
@@ -50,6 +52,7 @@ def admin_headers(admin_token):
 
 
 def _grant_platform_admin(email: str) -> None:
+    """Attach the platform_admin role directly to the user with the given email."""
     db = _DirectSession()
     try:
         user = db.query(User).filter(User.email == email).first()
@@ -72,6 +75,9 @@ def _platform_admin(client):
 
 
 def _org(client, owner):
+    """Create an organization owned by the given user and return its id, owner and owner auth
+    headers.
+    """
     headers = _auth_header(owner["access_token"])
     created = client.post(
         "/orgs", json={"name": "Audit Ledger Org", "slug": f"audit-org-{uuid.uuid4().hex[:8]}"}, headers=headers,
@@ -80,6 +86,7 @@ def _org(client, owner):
 
 
 def _events(**filters) -> list[AuditEvent]:
+    """Return audit ledger rows matching the given column filters as plain dicts ordered by id."""
     db = _DirectSession()
     try:
         query = db.query(AuditEvent)
@@ -106,6 +113,9 @@ def _events(**filters) -> list[AuditEvent]:
 
 
 def test_login_success_emits_event(client):
+    """A successful login writes exactly one login_success ledger event with the user as actor,
+    resource type "user" and the login email in its metadata.
+    """
     user = _register_and_login(client)
     user_id = _user_id(client, user["access_token"])
 
@@ -117,6 +127,9 @@ def test_login_success_emits_event(client):
 
 
 def test_login_failure_wrong_password_emits_event(client):
+    """A login with the wrong password writes exactly one login_failure event with reason
+    "invalid_password".
+    """
     user = _register_and_login(client)
     user_id = _user_id(client, user["access_token"])
 
@@ -128,6 +141,9 @@ def test_login_failure_wrong_password_emits_event(client):
 
 
 def test_login_failure_unknown_email_emits_event_with_no_target(client):
+    """A login for an unknown email writes one login_failure event with reason
+    "unknown_user_or_inactive" and no actor or target user.
+    """
     unknown_email = f"unknown-{uuid.uuid4().hex[:8]}@omnibioai.test"
     client.post("/auth/login", json={"email": unknown_email, "password": "Whatever123!"})
 
@@ -143,6 +159,9 @@ def test_login_failure_unknown_email_emits_event_with_no_target(client):
 
 
 def test_create_role_emits_exactly_one_role_created_event(client, admin_headers):
+    """Creating a role writes exactly one role_created event whose after-state records the role name
+    and permissions.
+    """
     name = f"audit-role-{uuid.uuid4().hex[:8]}"
     resp = client.post("/roles", json={"name": name, "permissions": ["manage_org"]}, headers=admin_headers)
     role_id = resp.json()["id"]
@@ -154,6 +173,9 @@ def test_create_role_emits_exactly_one_role_created_event(client, admin_headers)
 
 
 def test_role_assigned_and_removed_emit_events(client, admin_headers):
+    """Assigning and removing a role through /platform/users/{id}/roles writes one role_assigned
+    event (platform admin as actor) and one role_removed event carrying the role name.
+    """
     platform_admin = _platform_admin(client)
     platform_admin_id = _user_id(client, platform_admin["access_token"])
 
@@ -186,6 +208,9 @@ def test_role_assigned_and_removed_emit_events(client, admin_headers):
 
 
 def test_update_role_permissions_grant_emits_permission_granted_event(client, admin_headers):
+    """Adding a permission to a role writes one permission_granted event with before/after
+    permission lists and the added permission in its metadata.
+    """
     name = f"audit-grant-role-{uuid.uuid4().hex[:8]}"
     create = client.post("/roles", json={"name": name, "permissions": ["manage_org"]}, headers=admin_headers)
     role_id = create.json()["id"]
@@ -204,6 +229,9 @@ def test_update_role_permissions_grant_emits_permission_granted_event(client, ad
 
 
 def test_update_role_permissions_revoke_emits_permission_revoked_event(client, admin_headers):
+    """Removing a permission from a role writes one permission_revoked event listing the removed
+    permission in its metadata.
+    """
     name = f"audit-revoke-role-{uuid.uuid4().hex[:8]}"
     create = client.post(
         "/roles", json={"name": name, "permissions": ["manage_org", "manage_teams"]}, headers=admin_headers,
@@ -220,6 +248,9 @@ def test_update_role_permissions_revoke_emits_permission_revoked_event(client, a
 
 
 def test_update_role_permissions_noop_emits_no_event(client, admin_headers):
+    """Updating a role with its existing permission set writes neither a permission_granted nor a
+    permission_revoked event.
+    """
     name = f"audit-noop-role-{uuid.uuid4().hex[:8]}"
     create = client.post("/roles", json={"name": name, "permissions": ["manage_org"]}, headers=admin_headers)
     role_id = create.json()["id"]
@@ -237,6 +268,9 @@ def test_update_role_permissions_noop_emits_no_event(client, admin_headers):
 
 
 def test_invite_member_emits_organization_membership_changed_event(client):
+    """Inviting a member writes one organization membership event with the owner as actor,
+    after-state status "invited" and reason "invited".
+    """
     owner = _register_and_login(client)
     org = _org(client, owner)
     invitee = _register_and_login(client)
@@ -285,6 +319,9 @@ def test_org_member_role_assignment_emits_exactly_one_role_assigned_event(client
 
 
 def test_org_member_single_role_add_and_remove_emit_events(client, admin_headers):
+    """Adding and removing a single organization-member role writes one role_assigned event and one
+    role_removed event scoped to that organization and member.
+    """
     owner = _register_and_login(client)
     org = _org(client, owner)
     member = _register_and_login(client)

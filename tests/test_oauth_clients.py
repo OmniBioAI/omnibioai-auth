@@ -1,3 +1,10 @@
+"""Organization OAuth client management under /orgs/{id}/oauth-clients: creation
+returns the client secret only once, listing never exposes secret material,
+revocation, non-member and cross-organization isolation, and the additive
+top-up of an existing org_admin role.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import uuid
 
 import pytest
@@ -19,6 +26,9 @@ def _register_and_login(client, email=None):
 
 @pytest.fixture
 def org(client):
+    """Create an organization owned by a freshly registered user and return its id, owner
+    credentials and owner auth headers.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     created = client.post(
@@ -30,6 +40,9 @@ def org(client):
 
 
 def test_create_oauth_client_returns_secret_once(client, org):
+    """Creating an OAuth client returns 201 with the name, scopes, an omni_client_ client_id and a
+    40-character client_secret.
+    """
     resp = client.post(
         f"/orgs/{org['id']}/oauth-clients",
         json={"name": "CI integration", "scopes": ["manage_teams"]},
@@ -56,6 +69,9 @@ def test_create_oauth_client_rejects_scope_caller_does_not_hold(client, org):
 
 
 def test_list_oauth_clients_never_exposes_secret_or_hash(client, org):
+    """Listing OAuth clients returns them by name but never includes the client secret or
+    client_secret_hash.
+    """
     create = client.post(
         f"/orgs/{org['id']}/oauth-clients",
         json={"name": "Listed client", "scopes": []},
@@ -73,6 +89,7 @@ def test_list_oauth_clients_never_exposes_secret_or_hash(client, org):
 
 
 def test_revoke_oauth_client(client, org):
+    """Revoking an OAuth client returns 204 and the client is then listed with status "revoked"."""
     create = client.post(
         f"/orgs/{org['id']}/oauth-clients", json={"name": "Revoke me", "scopes": []}, headers=org["owner_headers"]
     )
@@ -87,6 +104,8 @@ def test_revoke_oauth_client(client, org):
 
 
 def test_missing_token_rejected(client, org):
+    """Listing an organization's OAuth clients without a bearer token is rejected with 401 or 403.
+    """
     resp = client.get(f"/orgs/{org['id']}/oauth-clients")
     assert resp.status_code in (401, 403)
 
@@ -95,6 +114,9 @@ def test_missing_token_rejected(client, org):
 
 
 def test_non_member_cannot_list_or_revoke_oauth_clients(client, org):
+    """A non-member gets 404 when listing or revoking an organization's OAuth clients, and the
+    client stays active.
+    """
     create = client.post(
         f"/orgs/{org['id']}/oauth-clients", json={"name": "Protected", "scopes": []}, headers=org["owner_headers"]
     )
@@ -114,6 +136,9 @@ def test_non_member_cannot_list_or_revoke_oauth_clients(client, org):
 
 
 def test_oauth_client_from_org_a_not_reachable_via_org_b(client, org):
+    """An OAuth client of organization A cannot be revoked through organization B's URL; the request
+    returns 404.
+    """
     create = client.post(
         f"/orgs/{org['id']}/oauth-clients", json={"name": "Org A client", "scopes": []}, headers=org["owner_headers"]
     )

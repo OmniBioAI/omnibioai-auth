@@ -5,6 +5,8 @@ the organization side. Deliberately separate from the legacy
 /orgs/{org_id}/... surface (routes_orgs.py, untouched by this PR) --
 mirrors test_orgs.py's own fixtures/conventions for org creation and
 membership setup.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import uuid
@@ -55,6 +57,7 @@ def admin_headers(admin_token):
 
 
 def _grant_platform_admin(email: str) -> None:
+    """Attach the platform_admin role directly to the user with the given email."""
     db = _DirectSession()
     try:
         user = db.query(User).filter(User.email == email).first()
@@ -74,6 +77,9 @@ def _platform_admin(client):
 
 
 def _make_org(client, owner):
+    """Create an organization owned by the given user and return its id, owner and owner auth
+    headers.
+    """
     headers = _auth_header(owner["access_token"])
     created = client.post(
         "/orgs", json={"name": f"PR7 Org {uuid.uuid4().hex[:6]}", "slug": _unique_slug()}, headers=headers,
@@ -95,6 +101,9 @@ def _make_extra_role(client, admin_headers, permissions):
 
 
 def test_get_member_roles_returns_full_permission_metadata(client):
+    """GET on a member's roles returns 200 with the organization, user, email and their roles
+    (including org_admin) with permission metadata.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -117,6 +126,7 @@ def test_get_member_roles_returns_full_permission_metadata(client):
 
 
 def test_get_member_roles_nonexistent_organization_404s(client):
+    """Reading member roles for a nonexistent organization returns 404."""
     owner = _register_and_login(client)
     owner_id = _user_id(client, owner["access_token"])
     resp = client.get(f"/organizations/999999999/members/{owner_id}/roles", headers=_auth_header(owner["access_token"]))
@@ -124,6 +134,9 @@ def test_get_member_roles_nonexistent_organization_404s(client):
 
 
 def test_get_member_roles_nonexistent_member_404s(client):
+    """Reading a member's roles through /organizations/{id}/members/{user}/roles for a user who is
+    not a member returns 404.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     resp = client.get(f"/organizations/{org['id']}/members/999999999/roles", headers=org["owner_headers"])
@@ -131,6 +144,8 @@ def test_get_member_roles_nonexistent_member_404s(client):
 
 
 def test_get_member_roles_unauthorized_caller_403s(client):
+    """A caller outside the organization cannot read a member's roles: the response is 403 or 404.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -143,6 +158,7 @@ def test_get_member_roles_unauthorized_caller_403s(client):
 
 
 def test_platform_admin_can_inspect_any_organization_member_roles(client):
+    """A platform admin outside the organization can read a member's roles with 200."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -156,6 +172,9 @@ def test_platform_admin_can_inspect_any_organization_member_roles(client):
 
 
 def test_assign_roles_replaces_existing_assignment(client, admin_headers):
+    """Assigning roles to a member returns 201 with exactly the assigned role, and assigning again
+    replaces the earlier assignment rather than appending.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     member = _register_and_login(client)
@@ -185,6 +204,7 @@ def test_assign_roles_replaces_existing_assignment(client, admin_headers):
 
 
 def test_assign_nonexistent_role_returns_400(client):
+    """Assigning a nonexistent role through /organizations/{id}/members/{user}/roles returns 400."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -198,6 +218,7 @@ def test_assign_nonexistent_role_returns_400(client):
 
 
 def test_assign_duplicate_role_in_request_returns_400(client, admin_headers):
+    """Assigning a request that lists the same role twice returns 400."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -212,6 +233,7 @@ def test_assign_duplicate_role_in_request_returns_400(client, admin_headers):
 
 
 def test_assign_roles_nonexistent_member_404s(client):
+    """Assigning roles to a user who is not a member returns 404."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     resp = client.post(
@@ -285,6 +307,7 @@ def test_assign_roles_self_escalation_blocked(client, admin_headers):
 
 
 def test_remove_role_by_name(client, admin_headers):
+    """Removing a role by name returns 204 and the role is no longer assigned to the member."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     member = _register_and_login(client)
@@ -308,6 +331,7 @@ def test_remove_role_by_name(client, admin_headers):
 
 
 def test_remove_nonexistent_role_name_404s(client):
+    """Removing a role name that does not exist returns 404."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -318,6 +342,7 @@ def test_remove_nonexistent_role_name_404s(client):
 
 
 def test_remove_role_not_assigned_to_member_404s(client, admin_headers):
+    """Removing a role that exists but is not assigned to the member returns 404."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -333,6 +358,9 @@ def test_remove_role_not_assigned_to_member_404s(client, admin_headers):
 
 
 def test_list_members_includes_roles_and_permission_names(client):
+    """Listing members returns rows with user_id, email, status, roles and permission names,
+    including org_admin and manage_org for the owner.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
 
@@ -346,6 +374,9 @@ def test_list_members_includes_roles_and_permission_names(client):
 
 
 def test_list_members_expand_permissions_true_returns_full_metadata(client):
+    """Listing members with expand_permissions=true returns each permission as a metadata object
+    with name and category.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
 
@@ -358,6 +389,7 @@ def test_list_members_expand_permissions_true_returns_full_metadata(client):
 
 
 def test_list_members_unauthorized_caller_rejected(client):
+    """A caller outside the organization cannot list its members: the response is 403 or 404."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     outsider = _register_and_login(client)
@@ -369,6 +401,7 @@ def test_list_members_unauthorized_caller_rejected(client):
 
 
 def test_effective_permissions_combines_all_roles(client, admin_headers):
+    """A member's effective permissions combine the permissions of all of their roles."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     member = _register_and_login(client)
@@ -421,6 +454,7 @@ def test_effective_permissions_only_exposes_existing_rbac_grant(client, admin_he
 
 
 def test_effective_permissions_nonexistent_member_404s(client):
+    """Reading effective permissions for a user who is not a member returns 404."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     resp = client.get(f"/organizations/{org['id']}/members/999999999/effective-permissions", headers=org["owner_headers"])
@@ -431,6 +465,9 @@ def test_effective_permissions_nonexistent_member_404s(client):
 
 
 def test_member_roles_500s_on_registry_drift(client):
+    """The member-roles and effective-permissions endpoints return 500 when a granted permission is
+    missing from the permission registry.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])

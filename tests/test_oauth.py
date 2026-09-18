@@ -1,3 +1,11 @@
+"""Consumer OAuth login (Google, with the provider code exchange mocked): provider
+lookup errors, the redirect carrying state, callback state validation, new-user
+creation and repeat logins, redirect behaviour of the GET callback, link
+confirmation for an existing email, and OAuth-only accounts having no password
+login.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import uuid
 
 import pytest
@@ -15,11 +23,17 @@ _DirectSession = sessionmaker(bind=_direct_engine)
 
 @pytest.fixture
 def configured_google(monkeypatch):
+    """Configure the Google OAuth provider with test client credentials for the duration of the
+    test.
+    """
     monkeypatch.setitem(PROVIDERS["google"], "client_id", "test-google-client-id")
     monkeypatch.setitem(PROVIDERS["google"], "client_secret", "test-google-client-secret")
 
 
 def _mock_exchange(monkeypatch, provider_user_id, email):
+    """Replace the provider code exchange with a stub that returns the given provider user id and
+    email and ignores any PKCE verifier.
+    """
     # code_verifier accepted (Phase 2 PR2's PKCE plumbing) but ignored --
     # these tests exercise the account-linking logic downstream of the
     # exchange, not the exchange/PKCE mechanics themselves (see
@@ -32,11 +46,13 @@ def _mock_exchange(monkeypatch, provider_user_id, email):
 # ── Basic provider validation ───────────────────────────────────────────────────
 
 def test_unknown_provider_returns_404(client):
+    """Starting login for an unknown provider returns 404."""
     resp = client.get("/auth/bitbucket/login")
     assert resp.status_code == 404
 
 
 def test_unconfigured_provider_returns_503(client, monkeypatch):
+    """Starting login for a provider without configured credentials returns 503."""
     # Real credentials are loaded from .env in this environment, so force
     # microsoft's config empty for this test to exercise the "not configured" path.
     monkeypatch.setitem(PROVIDERS["microsoft"], "client_id", "")
@@ -48,6 +64,9 @@ def test_unconfigured_provider_returns_503(client, monkeypatch):
 # ── Login redirect ───────────────────────────────────────────────────────────────
 
 def test_login_redirects_to_provider_with_state(client, configured_google):
+    """Provider login redirects to the provider's authorize URL carrying the configured client_id
+    and a state parameter.
+    """
     resp = client.get("/auth/google/login", follow_redirects=False)
     assert resp.status_code in (302, 307)
     location = resp.headers["location"]
@@ -59,6 +78,9 @@ def test_login_redirects_to_provider_with_state(client, configured_google):
 # ── Callback: new account ───────────────────────────────────────────────────────
 
 def test_callback_creates_new_user_and_issues_token(client, configured_google, monkeypatch):
+    """The callback for a new provider identity creates a user and returns status "ok" with tokens
+    that validate for that email, recording authentication_method "oauth" and a last-login time.
+    """
     email = f"oauth-{uuid.uuid4().hex[:8]}@omnibioai.test"
     _mock_exchange(monkeypatch, "google-uid-1", email)
     state = create_oauth_state_token("google")
@@ -87,12 +109,14 @@ def test_callback_creates_new_user_and_issues_token(client, configured_google, m
 
 
 def test_callback_invalid_state_returns_400(client, configured_google, monkeypatch):
+    """A callback with an invalid state token returns 400."""
     _mock_exchange(monkeypatch, "google-uid-2", "whoever@omnibioai.test")
     resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": "not-a-real-token"})
     assert resp.status_code == 400
 
 
 def test_callback_state_for_wrong_provider_rejected(client, configured_google, monkeypatch):
+    """A state token minted for a different provider is rejected with 400."""
     _mock_exchange(monkeypatch, "google-uid-3", "whoever2@omnibioai.test")
     github_state = create_oauth_state_token("github")  # minted for a different provider
     resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": github_state})
@@ -100,6 +124,7 @@ def test_callback_state_for_wrong_provider_rejected(client, configured_google, m
 
 
 def test_same_oauth_identity_logs_in_on_repeat(client, configured_google, monkeypatch):
+    """The same provider identity logs in to the same user on repeated callbacks."""
     email = f"oauth-repeat-{uuid.uuid4().hex[:8]}@omnibioai.test"
     _mock_exchange(monkeypatch, "google-uid-repeat", email)
     state1 = create_oauth_state_token("google")
@@ -118,6 +143,7 @@ def test_same_oauth_identity_logs_in_on_repeat(client, configured_google, monkey
 # ── GET callback redirects the browser back, even on failure ────────────────────
 
 def test_get_callback_success_redirects_with_token(client, configured_google, monkeypatch):
+    """A successful GET callback redirects to /oauth-complete with status=ok and an access_token."""
     email = f"oauth-redirect-{uuid.uuid4().hex[:8]}@omnibioai.test"
     _mock_exchange(monkeypatch, "google-uid-redirect", email)
     state = create_oauth_state_token("google")
@@ -133,6 +159,9 @@ def test_get_callback_success_redirects_with_token(client, configured_google, mo
 
 
 def test_get_callback_failure_redirects_with_error_not_raw_json(client, configured_google):
+    """A GET callback with an invalid state redirects to /oauth-complete with status=error instead
+    of returning raw JSON.
+    """
     # invalid state — must still redirect, not surface a bare 400 JSON page
     resp = client.get(
         "/auth/google/callback?code=fake-code&state=not-a-real-token", follow_redirects=False
@@ -146,6 +175,9 @@ def test_get_callback_failure_redirects_with_error_not_raw_json(client, configur
 # ── Callback: existing email → link confirmation required ───────────────────────
 
 def test_callback_existing_email_requires_link_confirmation(client, configured_google, monkeypatch, registered_user):
+    """A provider identity whose email belongs to an existing account returns status "link_required"
+    with a link token instead of logging in.
+    """
     _mock_exchange(monkeypatch, "google-uid-link", registered_user["email"])
     state = create_oauth_state_token("google")
 
@@ -158,6 +190,7 @@ def test_callback_existing_email_requires_link_confirmation(client, configured_g
 
 
 def test_link_confirm_wrong_password_returns_401(client, configured_google, monkeypatch, registered_user):
+    """Confirming an account link with the wrong password returns 401."""
     _mock_exchange(monkeypatch, "google-uid-link-wrong-pw", registered_user["email"])
     state = create_oauth_state_token("google")
     link_resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": state})
@@ -168,6 +201,9 @@ def test_link_confirm_wrong_password_returns_401(client, configured_google, monk
 
 
 def test_link_confirm_success_links_account_and_issues_token(client, configured_google, monkeypatch, registered_user):
+    """Confirming the link with the correct password returns tokens and links the identity, so a
+    later provider callback logs in directly.
+    """
     _mock_exchange(monkeypatch, "google-uid-link-ok", registered_user["email"])
     state = create_oauth_state_token("google")
     link_resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": state})
@@ -187,6 +223,7 @@ def test_link_confirm_success_links_account_and_issues_token(client, configured_
 
 
 def test_link_confirm_invalid_token_returns_400(client):
+    """Confirming a link with an invalid link token returns 400."""
     resp = client.post("/auth/link/confirm", json={"link_token": "garbage", "password": "whatever"})
     assert resp.status_code == 400
 
@@ -194,6 +231,7 @@ def test_link_confirm_invalid_token_returns_400(client):
 # ── OAuth-only accounts can't password-login ─────────────────────────────────────
 
 def test_oauth_only_account_cannot_password_login(client, configured_google, monkeypatch):
+    """An account created through OAuth has no password, so a password login attempt returns 401."""
     email = f"oauth-nopass-{uuid.uuid4().hex[:8]}@omnibioai.test"
     _mock_exchange(monkeypatch, "google-uid-nopass", email)
     state = create_oauth_state_token("google")
@@ -206,6 +244,7 @@ def test_oauth_only_account_cannot_password_login(client, configured_google, mon
 # ── Existing email/password login is unaffected ──────────────────────────────────
 
 def test_existing_password_login_still_works(client, registered_user):
+    """Password login for a registered user still returns 200 with an access token."""
     resp = client.post("/auth/login", json=registered_user)
     assert resp.status_code == 200
     assert "access_token" in resp.json()

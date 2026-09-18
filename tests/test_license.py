@@ -1,3 +1,10 @@
+"""License-key lifecycle: admin-only generation and revocation, the
+/license/validate outcomes (success with tokens, unknown key, email or platform
+mismatch, exhausted uses, revoked key), first-use machine binding, the
+read-only /license/pull-token check, and /license/status.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import os
 import uuid
 
@@ -30,6 +37,7 @@ def _unique_email():
 # ── Generate (admin) ─────────────────────────────────────────────────────────
 
 def test_generate_missing_token_rejected(client):
+    """POST /license/generate without a bearer token returns 401."""
     resp = client.post(
         "/license/generate",
         json={"email": _unique_email(), "plan": "beta"},
@@ -38,6 +46,7 @@ def test_generate_missing_token_rejected(client):
 
 
 def test_generate_requires_admin_permission(client, auth_tokens):
+    """POST /license/generate by a non-admin user returns 403."""
     resp = client.post(
         "/license/generate",
         json={"email": _unique_email(), "plan": "beta"},
@@ -47,6 +56,9 @@ def test_generate_requires_admin_permission(client, auth_tokens):
 
 
 def test_generate_license(client, admin_headers):
+    """An admin can generate a license: the response carries a 24-character OMNI- key, the requested
+    email and an expiry.
+    """
     email = _unique_email()
     resp = client.post(
         "/license/generate",
@@ -64,6 +76,9 @@ def test_generate_license(client, admin_headers):
 # ── Validate ──────────────────────────────────────────────────────────────────
 
 def test_validate_success_issues_tokens(client, admin_headers):
+    """Validating a fresh key returns valid=true with an access token, a refresh token and the
+    license email in user_info.
+    """
     email = _unique_email()
     gen = client.post(
         "/license/generate",
@@ -122,6 +137,7 @@ def test_validate_response_is_electron_compatible_superset(client, admin_headers
 
 
 def test_validate_unknown_key(client):
+    """Validating an unknown key returns valid=false with reason "invalid_key"."""
     resp = client.post(
         "/license/validate",
         json={"key": "OMNI-0000-0000-0000-0000", "email": "nobody@test.com", "platform": "web"},
@@ -133,6 +149,7 @@ def test_validate_unknown_key(client):
 
 
 def test_validate_wrong_email(client, admin_headers):
+    """Validating a key with a different email returns reason "email_mismatch"."""
     email = _unique_email()
     gen = client.post(
         "/license/generate", json={"email": email}, headers=admin_headers
@@ -148,6 +165,9 @@ def test_validate_wrong_email(client, admin_headers):
 
 
 def test_validate_exhausted_after_max_uses(client, admin_headers):
+    """Once a key's allowed uses are consumed, validation returns valid=false with reason
+    "usage_exhausted".
+    """
     email = _unique_email()
     gen = client.post(
         "/license/generate",
@@ -169,6 +189,9 @@ def test_validate_exhausted_after_max_uses(client, admin_headers):
 
 
 def test_validate_platform_mismatch(client, admin_headers):
+    """Validating a key on a platform other than the one it was issued for returns valid=false with
+    reason "platform_mismatch".
+    """
     email = _unique_email()
     gen = client.post(
         "/license/generate",
@@ -209,6 +232,9 @@ def test_validate_without_email_uses_license_email(client, admin_headers):
 
 
 def test_validate_binds_machine_id_on_first_use(client, admin_headers):
+    """The first validation pins the license to a machine id, but a later validation from a
+    different machine still succeeds because binding is informational.
+    """
     email = _unique_email()
     gen = client.post(
         "/license/generate",
@@ -236,6 +262,7 @@ def test_validate_binds_machine_id_on_first_use(client, admin_headers):
 
 
 def test_pull_token_returns_ghcr_credential(client, admin_headers, monkeypatch):
+    """/license/pull-token returns the configured GHCR pull token for a valid key."""
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "GHCR_PULL_TOKEN", "test-ghcr-token")
@@ -256,6 +283,9 @@ def test_pull_token_returns_ghcr_credential(client, admin_headers, monkeypatch):
 
 
 def test_pull_token_does_not_consume_a_use(client, admin_headers):
+    """Repeated /license/pull-token calls do not consume a use: a single-use key still validates
+    afterwards.
+    """
     email = _unique_email()
     gen = client.post(
         "/license/generate",
@@ -277,6 +307,7 @@ def test_pull_token_does_not_consume_a_use(client, admin_headers):
 
 
 def test_pull_token_unknown_key_returns_404(client):
+    """/license/pull-token returns 404 for an unknown key."""
     resp = client.post(
         "/license/pull-token", json={"key": "OMNI-0000-0000-0000-0000"}
     )
@@ -284,6 +315,7 @@ def test_pull_token_unknown_key_returns_404(client):
 
 
 def test_pull_token_revoked_key_returns_403(client, admin_headers):
+    """/license/pull-token returns 403 for a revoked key."""
     email = _unique_email()
     gen = client.post(
         "/license/generate", json={"email": email, "platform": "desktop"}, headers=admin_headers
@@ -298,6 +330,9 @@ def test_pull_token_revoked_key_returns_403(client, admin_headers):
 # ── Status ────────────────────────────────────────────────────────────────────
 
 def test_status_after_validate(client, admin_headers):
+    """After a successful validation, /license/status for the issued token returns the key,
+    usage_count 1 and revoked false.
+    """
     email = _unique_email()
     gen = client.post(
         "/license/generate", json={"email": email, "plan": "beta"}, headers=admin_headers
@@ -318,6 +353,7 @@ def test_status_after_validate(client, admin_headers):
 
 
 def test_status_no_license_returns_404(client, admin_headers):
+    """/license/status returns 404 for a user who holds no license."""
     email = _unique_email()
     client.post("/auth/register", json={"email": email, "password": "Password123!"})
     login = client.post("/auth/login", json={"email": email, "password": "Password123!"})
@@ -330,6 +366,9 @@ def test_status_no_license_returns_404(client, admin_headers):
 # ── Revoke (admin) ───────────────────────────────────────────────────────────
 
 def test_revoke_license(client, admin_headers):
+    """An admin can revoke a key (success=true), after which validation returns valid=false with
+    reason "revoked".
+    """
     email = _unique_email()
     gen = client.post(
         "/license/generate", json={"email": email}, headers=admin_headers
@@ -348,11 +387,13 @@ def test_revoke_license(client, admin_headers):
 
 
 def test_revoke_missing_token_rejected(client):
+    """POST /license/revoke without a bearer token returns 401."""
     resp = client.post("/license/revoke", json={"key": "OMNI-0000-0000-0000-0000"})
     assert resp.status_code == 401
 
 
 def test_revoke_requires_admin_permission(client, auth_tokens):
+    """POST /license/revoke by a non-admin user returns 403."""
     resp = client.post(
         "/license/revoke",
         json={"key": "OMNI-0000-0000-0000-0000"},
@@ -362,6 +403,7 @@ def test_revoke_requires_admin_permission(client, auth_tokens):
 
 
 def test_revoke_unknown_key_returns_404(client, admin_headers):
+    """Revoking an unknown key returns 404."""
     resp = client.post(
         "/license/revoke", json={"key": "OMNI-ZZZZ-ZZZZ-ZZZZ-ZZZZ"}, headers=admin_headers
     )

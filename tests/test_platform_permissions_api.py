@@ -2,6 +2,8 @@
 exposure of the Permission Registry (app/core/permission_names.py). Gated
 by require_permission(MANAGE_ALL_ORGS) only, mirroring
 test_platform_roles_api.py's own conventions exactly.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -97,12 +99,14 @@ def _platform_admin(client):
 
 
 def test_platform_admin_can_list_permissions(client):
+    """A platform admin can GET /platform/permissions with 200."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
     assert resp.status_code == 200
 
 
 def test_response_contains_all_registered_permissions(client):
+    """The permission listing contains exactly the registry's permission names, one entry each."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
     names = {p["name"] for p in resp.json()}
@@ -124,6 +128,7 @@ def test_response_contains_all_registered_permissions(client):
 
 
 def test_response_fields_match_permission_def_as_dict(client):
+    """Each listed permission equals the registry definition's as_dict() output."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
     by_name = {p["name"]: p for p in resp.json()}
@@ -132,6 +137,7 @@ def test_response_fields_match_permission_def_as_dict(client):
 
 
 def test_response_has_no_extra_fields(client):
+    """Each listed permission has exactly the expected set of keys."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
     expected_keys = {
@@ -143,6 +149,7 @@ def test_response_has_no_extra_fields(client):
 
 
 def test_response_is_sorted_by_name(client):
+    """The permission listing is sorted by name."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
     names = [p["name"] for p in resp.json()]
@@ -153,6 +160,9 @@ def test_response_is_sorted_by_name(client):
 
 
 def test_future_permissions_present_and_correctly_flagged(client):
+    """Reserved future permissions appear in the listing as non-legacy, non-deprecated and scoped
+    "both".
+    """
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
     by_name = {p["name"]: p for p in resp.json()}
@@ -164,6 +174,9 @@ def test_future_permissions_present_and_correctly_flagged(client):
 
 
 def test_service_mint_permission_present_and_correctly_flagged(client):
+    """The service-token mint permission appears in the listing as non-legacy, non-deprecated and
+    scoped "global".
+    """
     # #443: kept separate from the loop above -- GLOBAL-scoped, not BOTH.
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
@@ -179,6 +192,7 @@ def test_service_mint_permission_present_and_correctly_flagged(client):
 
 
 def test_legacy_permissions_present_and_correctly_flagged(client):
+    """Every legacy permission appears in the listing flagged as legacy."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", headers=admin["headers"])
     by_name = {p["name"]: p for p in resp.json()}
@@ -191,12 +205,14 @@ def test_legacy_permissions_present_and_correctly_flagged(client):
 
 
 def test_non_platform_admin_cannot_list_permissions(client):
+    """A user without platform-admin permission gets 403 from /platform/permissions."""
     owner = _register_and_login(client)
     resp = client.get("/platform/permissions", headers=_auth_header(owner["access_token"]))
     assert resp.status_code == 403
 
 
 def test_missing_token_rejected(client):
+    """/platform/permissions without a bearer token is rejected with 401 or 403."""
     resp = client.get("/platform/permissions")
     assert resp.status_code in (401, 403)
 
@@ -205,6 +221,7 @@ def test_missing_token_rejected(client):
 
 
 def test_filter_by_category(client):
+    """Filtering by category "billing" returns exactly the four billing permissions."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", params={"category": "billing"}, headers=admin["headers"])
     assert resp.status_code == 200
@@ -214,6 +231,7 @@ def test_filter_by_category(client):
 
 
 def test_filter_by_scope(client):
+    """Filtering by scope "org" returns only org-scoped permissions, five in total."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", params={"scope": "org"}, headers=admin["headers"])
     assert resp.status_code == 200
@@ -222,6 +240,7 @@ def test_filter_by_scope(client):
 
 
 def test_filter_by_legacy(client):
+    """Filtering with legacy=true returns exactly the legacy permissions."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", params={"legacy": "true"}, headers=admin["headers"])
     assert resp.status_code == 200
@@ -230,6 +249,7 @@ def test_filter_by_legacy(client):
 
 
 def test_filter_by_deprecated(client):
+    """Filtering with deprecated=true returns an empty list."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", params={"deprecated": "true"}, headers=admin["headers"])
     assert resp.status_code == 200
@@ -237,6 +257,7 @@ def test_filter_by_deprecated(client):
 
 
 def test_filter_by_search(client):
+    """Searching for "model" returns permissions including model.use."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", params={"search": "model"}, headers=admin["headers"])
     assert resp.status_code == 200
@@ -245,6 +266,7 @@ def test_filter_by_search(client):
 
 
 def test_filter_combines_category_and_scope(client):
+    """Category and scope filters combine, returning only permissions matching both."""
     admin = _platform_admin(client)
     resp = client.get(
         "/platform/permissions", params={"category": "workflow", "scope": "both"}, headers=admin["headers"],
@@ -264,6 +286,7 @@ def test_no_filters_returns_full_unfiltered_list_unchanged(client):
 
 
 def test_invalid_category_returns_422(client):
+    """An unknown category filter is rejected with 422."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", params={"category": "not-a-category"}, headers=admin["headers"])
     assert resp.status_code == 422
@@ -273,6 +296,9 @@ def test_invalid_category_returns_422(client):
 
 
 def test_platform_admin_can_get_registry_stats(client):
+    """/platform/permissions/stats returns totals that match the registry, with zero deprecated
+    permissions.
+    """
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions/stats", headers=admin["headers"])
     assert resp.status_code == 200
@@ -286,6 +312,7 @@ def test_platform_admin_can_get_registry_stats(client):
 
 
 def test_non_platform_admin_cannot_get_registry_stats(client):
+    """A user without platform-admin permission gets 403 from /platform/permissions/stats."""
     owner = _register_and_login(client)
     resp = client.get("/platform/permissions/stats", headers=_auth_header(owner["access_token"]))
     assert resp.status_code == 403

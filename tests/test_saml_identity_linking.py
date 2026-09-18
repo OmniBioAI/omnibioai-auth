@@ -14,6 +14,8 @@ this repo's established per-file duplication convention -- see
 tests/test_saml_acs.py's own module docstring for the reasoning behind
 building REAL, genuinely-signed SAMLResponse documents rather than mocking
 validate_saml_response.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import base64
@@ -365,6 +367,9 @@ def test_mutually_exclusive_scope_rejected_before_hitting_the_db():
 
 
 def test_find_linked_user_scopes_saml_lookup_to_config():
+    """find_linked_user resolves a SAML NameID only within its own SAML config: each config finds
+    its own user and an unrelated config finds none.
+    """
     db = _DirectSession()
     try:
         user_a = User(email=f"scope-a-{uuid.uuid4().hex[:8]}@omnibioai.test", hashed_password=None, status="active")
@@ -459,6 +464,9 @@ def test_existing_email_returns_link_required_not_direct_token(client, idp_keys)
 
 
 def test_link_confirm_wrong_password_does_not_create_oauth_account(client, idp_keys):
+    """Confirming a SAML account link with the wrong password returns 401 and creates no OAuth
+    account.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     existing = _register_and_login(client)
     resp_body = _build_response(ctx, idp_keys, name_id=existing["email"])
@@ -471,6 +479,9 @@ def test_link_confirm_wrong_password_does_not_create_oauth_account(client, idp_k
 
 
 def test_link_confirm_success_creates_scoped_oauth_account_and_issues_token(client, idp_keys):
+    """Confirming with the correct password returns 200 with tokens and creates exactly one "saml"
+    OAuth account scoped to that SAML config and not to any OIDC config.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     existing = _register_and_login(client)
     resp_body = _build_response(ctx, idp_keys, name_id=existing["email"])
@@ -492,6 +503,9 @@ def test_link_confirm_success_creates_scoped_oauth_account_and_issues_token(clie
 
 
 def test_repeat_saml_login_after_link_goes_straight_through(client, idp_keys):
+    """After linking, a repeat SAML login returns status "ok" with tokens and does not create a
+    duplicate OAuth account.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     existing = _register_and_login(client)
     first_body = _build_response(ctx, idp_keys, name_id=existing["email"])
@@ -554,6 +568,9 @@ def _enable_mfa(client, headers) -> str:
 
 
 def test_mfa_required_user_gets_challenge_not_token(client, idp_keys, configured_crypto):
+    """A linked user with MFA enabled gets status "mfa_required" with a challenge token and no
+    access token.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     user = _register_and_login(client)
     headers = {"Authorization": f"Bearer {user['access_token']}"}

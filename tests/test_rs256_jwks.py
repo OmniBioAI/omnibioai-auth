@@ -4,6 +4,8 @@ JWT_ALGORITHM defaults to HS256 (see config.py) so nothing here changes
 default behavior -- these tests explicitly flip settings.JWT_ALGORITHM to
 RS256 for the duration of each test that needs it, then restore it, and
 separately prove the HS256 path is untouched by default.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import pytest
@@ -30,6 +32,7 @@ def rs256_enabled():
 
 
 def test_access_token_signed_rs256_when_enabled(rs256_enabled):
+    """With RS256 enabled, access tokens carry an RS256 algorithm header."""
     token = create_access_token({"sub": "1", "email": "a@omnibioai.test"})
     header = jose_jwt.get_unverified_header(token)
     assert header["alg"] == "RS256"
@@ -48,12 +51,14 @@ def test_default_algorithm_is_still_hs256():
 
 
 def test_kid_present_on_rs256_tokens_and_matches_rsa_keys_module(rs256_enabled):
+    """RS256 tokens carry a kid header equal to the RSA key module's KID."""
     token = create_access_token({"sub": "1", "email": "a@omnibioai.test"})
     header = jose_jwt.get_unverified_header(token)
     assert header["kid"] == KID
 
 
 def test_kid_matches_the_jwks_entrys_kid(rs256_enabled):
+    """An RS256 token's kid header equals the kid of the JWKS entry for the signing key."""
     token = create_access_token({"sub": "1"})
     header = jose_jwt.get_unverified_header(token)
     jwk_entry = public_jwk()
@@ -64,6 +69,9 @@ def test_kid_matches_the_jwks_entrys_kid(rs256_enabled):
 
 
 def test_jwks_endpoint_response_shape(client):
+    """/.well-known/jwks.json returns 200 with exactly one RSA signature key carrying the expected
+    JWK fields.
+    """
     resp = client.get("/.well-known/jwks.json")
     assert resp.status_code == 200
     body = resp.json()
@@ -84,6 +92,9 @@ def test_jwks_endpoint_response_shape(client):
 
 
 def test_jwks_endpoint_key_actually_verifies_an_rs256_token(client, rs256_enabled):
+    """The key published at the JWKS endpoint verifies an RS256 access token when used with the
+    expected audience.
+    """
     token = create_access_token({"sub": "42"})
     body = client.get("/.well-known/jwks.json").json()
     key = body["keys"][0]
@@ -103,12 +114,14 @@ def test_jwks_endpoint_key_actually_verifies_an_rs256_token(client, rs256_enable
 
 
 def test_decode_token_verifies_hs256_tokens_by_default():
+    """decode_token verifies HS256 tokens under the default configuration."""
     token = create_access_token({"sub": "1", "email": "a@omnibioai.test"})
     decoded = decode_token(token)
     assert decoded["sub"] == "1"
 
 
 def test_decode_token_verifies_rs256_tokens_when_enabled(rs256_enabled):
+    """decode_token verifies RS256 tokens when RS256 is enabled."""
     token = create_access_token({"sub": "1", "email": "a@omnibioai.test"})
     decoded = decode_token(token)
     assert decoded["sub"] == "1"
@@ -141,6 +154,9 @@ def test_decode_token_verifies_both_algorithms_in_the_same_process():
 
 
 def test_rs256_access_token_claims_shape_matches_hs256(rs256_enabled):
+    """RS256 access tokens carry the same claims as HS256 ones: the supplied data, type "access", a
+    jti and an exp.
+    """
     data = {
         "sub": "7",
         "email": "org-user@omnibioai.test",
@@ -161,6 +177,7 @@ def test_rs256_access_token_claims_shape_matches_hs256(rs256_enabled):
 
 
 def test_rs256_refresh_token_still_has_refresh_type(rs256_enabled):
+    """RS256 refresh tokens decode with type "refresh" and carry a jti."""
     token = create_refresh_token({"sub": "7"})
     decoded = decode_token(token)
     assert decoded["type"] == "refresh"
@@ -171,6 +188,9 @@ def test_rs256_refresh_token_still_has_refresh_type(rs256_enabled):
 
 
 def test_login_and_refresh_flow_unaffected_by_rs256(client, rs256_enabled):
+    """With RS256 enabled, login issues RS256 tokens with the expected kid and the refresh flow
+    still works.
+    """
     import uuid
 
     email = f"rs256-{uuid.uuid4().hex[:8]}@omnibioai.test"

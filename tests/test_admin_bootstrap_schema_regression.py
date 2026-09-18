@@ -6,6 +6,8 @@ path (`app/db/init_admin.py` -> `app/services/role_service.py`) against both
 a healthy, fully-migrated schema and a reconstructed pre-0016 schema, using
 throwaway SQLite databases -- never the app's own configured database or
 `conftest.py`'s shared `test.db`. See docs/MIGRATIONS.md.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import pytest
@@ -23,6 +25,7 @@ from app.services.role_service import get_or_create_role
 
 @pytest.fixture
 def fresh_engine(tmp_path):
+    """Provide an empty per-test SQLite engine backed by a file under tmp_path."""
     db_url = f"sqlite:///{tmp_path / 'bootstrap.db'}"
     return create_engine(db_url, connect_args={"check_same_thread": False})
 
@@ -45,6 +48,10 @@ def _legacy_roles_table() -> MetaData:
 
 
 def test_create_admin_bootstraps_admin_user_and_role_against_current_schema(fresh_engine, monkeypatch):
+    """On a fully migrated schema create_admin() creates the active admin@omnibioai user with the
+    admin role, and a later get_or_create_role("user") returns the existing platform-wide role
+    (organization_id None).
+    """
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", "regression-test-password-not-for-prod")
     Base.metadata.create_all(bind=fresh_engine)
     assert_schema_matches_models(fresh_engine, Base.metadata)  # sanity: fresh schema always matches

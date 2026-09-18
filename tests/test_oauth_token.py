@@ -1,3 +1,11 @@
+"""OAuth token endpoints: client_credentials issuance (organization-bound,
+scope-narrowed, no refresh token) and its client-authentication failures, the
+separation of service tokens from user tokens in the auth dependencies, and the
+first-party authorization-code flow used for LIMS SSO (opaque single-use codes,
+platform-level authorization, redirect_uri and client-secret checks).
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import uuid
 
 from app.core.jwt import decode_token
@@ -18,6 +26,9 @@ def _register_and_login(client, email=None):
 
 
 def _org_with_client(client, scopes=None):
+    """Create an organization owned by a new user together with an OAuth client holding the given
+    scopes, and return their credentials.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     org = client.post(
@@ -37,6 +48,10 @@ def _org_with_client(client, scopes=None):
 
 
 def test_client_credentials_issues_token_with_org_and_scopes(client):
+    """A client_credentials request returns a bearer token with no refresh token, whose claims carry
+    the client's org_id, client_id, auth_method "client_credentials" and scopes, and neither sub
+    nor email.
+    """
     org, oc = _org_with_client(client, scopes=["manage_teams", "manage_org"])
 
     resp = client.post(
@@ -64,6 +79,7 @@ def test_client_credentials_issues_token_with_org_and_scopes(client):
 
 
 def test_client_credentials_narrows_scope_on_request(client):
+    """Requesting a subset of the client's scopes narrows the issued token to exactly that scope."""
     _, oc = _org_with_client(client, scopes=["manage_teams", "manage_org"])
 
     resp = client.post(
@@ -82,6 +98,7 @@ def test_client_credentials_narrows_scope_on_request(client):
 
 
 def test_client_credentials_rejects_widened_scope_request(client):
+    """Requesting a scope beyond the client's own returns 400 with "invalid_scope"."""
     _, oc = _org_with_client(client, scopes=["manage_teams"])
 
     resp = client.post(
@@ -115,6 +132,7 @@ def test_client_credentials_via_http_basic(client):
 
 
 def test_unsupported_grant_type_rejected(client):
+    """A token request with an unsupported grant type returns 400 with "unsupported_grant_type"."""
     _, oc = _org_with_client(client)
     resp = client.post(
         "/oauth/token",
@@ -129,6 +147,7 @@ def test_unsupported_grant_type_rejected(client):
 
 
 def test_wrong_secret_rejected(client):
+    """A wrong client secret returns 401 with "invalid_client"."""
     _, oc = _org_with_client(client)
     resp = client.post(
         "/oauth/token",
@@ -143,6 +162,7 @@ def test_wrong_secret_rejected(client):
 
 
 def test_unknown_client_id_rejected(client):
+    """An unknown client_id returns 401 with "invalid_client"."""
     resp = client.post(
         "/oauth/token",
         data={
@@ -156,6 +176,7 @@ def test_unknown_client_id_rejected(client):
 
 
 def test_revoked_client_rejected(client):
+    """A revoked OAuth client can no longer obtain a token: 401 with "invalid_client"."""
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     fresh_org = client.post(
@@ -183,6 +204,7 @@ def test_revoked_client_rejected(client):
 
 
 def test_missing_credentials_rejected(client):
+    """A token request without client credentials returns 400."""
     resp = client.post("/oauth/token", data={"grant_type": "client_credentials"})
     assert resp.status_code == 400
 
@@ -229,6 +251,9 @@ def test_user_token_rejected_by_require_service_scope(client):
 
 
 def test_service_token_with_correct_scope_passes_require_service_scope(client):
+    """A service token holding the required scope carries auth_method "client_credentials" and
+    passes require_service_scope.
+    """
     _, oc = _org_with_client(client, scopes=["manage_teams"])
     token_resp = client.post(
         "/oauth/token",
@@ -250,6 +275,7 @@ def test_service_token_with_correct_scope_passes_require_service_scope(client):
 
 
 def test_service_token_missing_scope_rejected_by_require_service_scope(client):
+    """require_service_scope rejects a service token that lacks the required scope with 403."""
     _, oc = _org_with_client(client, scopes=["manage_teams"])
     token_resp = client.post(
         "/oauth/token",
@@ -276,6 +302,9 @@ def test_service_token_missing_scope_rejected_by_require_service_scope(client):
 
 
 def test_first_party_owner_authorize_returns_opaque_single_use_code(client, monkeypatch):
+    """A platform admin's /oauth/authorize call redirects with 302 to a location carrying an opaque
+    code (not a JWT) and the caller's state.
+    """
     from app.api import routes_oauth_token
     from app.core.config import settings
     from app.main import app
@@ -311,6 +340,7 @@ def test_first_party_owner_authorize_returns_opaque_single_use_code(client, monk
 
 
 def _grant_platform_admin_for_sso(email: str) -> None:
+    """Attach the platform_admin role directly to the user with the given email."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from app.db.models import Role, User
@@ -325,6 +355,9 @@ def _grant_platform_admin_for_sso(email: str) -> None:
 
 
 def test_first_party_code_redemption_is_single_use_and_returns_state(client, monkeypatch):
+    """Redeeming the authorization code with the first-party client credentials returns 200 with the
+    original state, and redeeming the same code again returns 400.
+    """
     from app.api import routes_oauth_token
     from app.core.config import settings
     import fakeredis
@@ -357,6 +390,7 @@ def test_first_party_code_redemption_is_single_use_and_returns_state(client, mon
 
 
 def test_authorize_rejects_unauthenticated_request(client, monkeypatch):
+    """/oauth/authorize without an Authorization header returns 401."""
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-3")
@@ -378,6 +412,7 @@ def test_authorize_rejects_unauthenticated_request(client, monkeypatch):
 
 
 def test_authorize_rejects_ordinary_user_without_manage_all_orgs(client, monkeypatch):
+    """/oauth/authorize by an ordinary user lacking manage_all_orgs returns 403."""
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-4")
@@ -400,6 +435,7 @@ def test_authorize_rejects_ordinary_user_without_manage_all_orgs(client, monkeyp
 
 
 def test_authorize_disabled_when_sso_unconfigured(client, monkeypatch):
+    """/oauth/authorize returns 503 when first-party SSO is not configured."""
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "")
@@ -422,6 +458,9 @@ def test_authorize_disabled_when_sso_unconfigured(client, monkeypatch):
 
 
 def test_redemption_rejects_mismatched_redirect_uri(client, monkeypatch):
+    """Redeeming a code with a redirect_uri different from the one it was issued for returns 400
+    "invalid_grant" and still consumes the code, so a retry with the correct URI also fails.
+    """
     from app.api import routes_oauth_token
     from app.core.config import settings
     import fakeredis
@@ -499,6 +538,9 @@ def test_redemption_of_expired_code_fails_clean(client, monkeypatch):
 
 
 def test_redemption_rejects_wrong_client_secret(client, monkeypatch):
+    """A wrong client secret at redemption returns 401 "invalid_client" without consuming the code,
+    which remains redeemable with the correct secret.
+    """
     from app.api import routes_oauth_token
     from app.core.config import settings
     import fakeredis

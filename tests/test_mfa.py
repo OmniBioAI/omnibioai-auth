@@ -7,6 +7,8 @@ themselves. Each test file is self-contained (its own local
 `configured_crypto`/`_register_and_login`/`_events` helpers), matching
 this repo's existing per-file duplication convention rather than a
 shared conftest fixture.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import urllib.parse
@@ -77,6 +79,9 @@ def _events(**filters) -> list[dict]:
 
 
 def _assert_no_secret_leakage(event: dict, *, secret: str | None = None, code: str | None = None) -> None:
+    """Assert that an audit event's states and metadata contain no encrypted secret, otpauth URI,
+    plaintext TOTP secret or OTP code.
+    """
     blob = str(event["before_state"]) + str(event["after_state"]) + str(event["metadata"])
     for forbidden in ("encrypted_secret", "otpauth://"):
         assert forbidden not in blob, f"{forbidden!r} leaked into audit event: {event}"
@@ -113,6 +118,7 @@ def user(client, configured_crypto):
 
 
 def test_verify_totp_code_accepts_current_previous_and_next_step():
+    """verify_totp_code accepts the codes for the current, previous and next 30-second steps."""
     secret = mfa_service.generate_totp_secret()
     now = (int(time.time()) // 30) * 30 + 15  # mid-step, so +-1 arithmetic below is unambiguous
     current_code = mfa_service._totp_code_at(secret, now)
@@ -125,6 +131,7 @@ def test_verify_totp_code_accepts_current_previous_and_next_step():
 
 
 def test_verify_totp_code_rejects_code_outside_window():
+    """verify_totp_code rejects a code from outside the accepted step window."""
     secret = mfa_service.generate_totp_secret()
     now = (int(time.time()) // 30) * 30 + 15
     far_code = mfa_service._totp_code_at(secret, now - 90)
@@ -133,6 +140,7 @@ def test_verify_totp_code_rejects_code_outside_window():
 
 
 def test_verify_totp_code_rejects_malformed_input():
+    """verify_totp_code rejects non-numeric, wrong-length, empty and None codes."""
     secret = mfa_service.generate_totp_secret()
 
     assert not mfa_service.verify_totp_code(secret, "abcdef")
@@ -142,6 +150,9 @@ def test_verify_totp_code_rejects_malformed_input():
 
 
 def test_generate_provisioning_uri_shape():
+    """The provisioning URI is an otpauth://totp URI carrying the issuer, secret, SHA1, 6 digits and
+    a 30-second period.
+    """
     secret = mfa_service.generate_totp_secret()
     uri = mfa_service.generate_provisioning_uri(secret, "person@example.com")
 
@@ -157,6 +168,9 @@ def test_generate_provisioning_uri_shape():
 
 
 def test_start_totp_enrollment_creates_pending_device_and_does_not_return_secret(client, user):
+    """Starting enrollment returns 201 with only device_id and otpauth_uri, and stores an unverified
+    TOTP device whose secret is encrypted rather than plaintext.
+    """
     resp = client.post("/users/me/mfa/totp/enroll", headers=_auth_header(user["access_token"]))
 
     assert resp.status_code == 201
@@ -175,6 +189,7 @@ def test_start_totp_enrollment_creates_pending_device_and_does_not_return_secret
 
 
 def test_start_totp_enrollment_fails_loudly_when_encryption_key_unset(client):
+    """Starting enrollment returns 500 when no CONFIG_ENCRYPTION_KEY is configured."""
     # Deliberately no `configured_crypto` fixture here -- exercises the
     # real "CONFIG_ENCRYPTION_KEY not set" state conftest.py leaves in
     # place by default, same as test_config.py's own equivalent test.
@@ -186,6 +201,9 @@ def test_start_totp_enrollment_fails_loudly_when_encryption_key_unset(client):
 
 
 def test_start_totp_enrollment_replaces_existing_pending_device(client, user):
+    """Starting enrollment again disables the earlier pending device and leaves only the new one
+    active.
+    """
     headers = _auth_header(user["access_token"])
     first = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     second = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
@@ -199,6 +217,9 @@ def test_start_totp_enrollment_replaces_existing_pending_device(client, user):
 
 
 def test_verify_totp_enrollment_with_valid_code_activates_device_and_updates_user(client, user):
+    """Verifying with a valid code marks the device verified and enables MFA on the user (status
+    "enabled", primary method totp) without exposing the encrypted secret.
+    """
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     secret = _extract_secret(enroll["otpauth_uri"])
@@ -225,6 +246,7 @@ def test_verify_totp_enrollment_with_valid_code_activates_device_and_updates_use
 
 
 def test_verify_totp_enrollment_with_invalid_code_rejected(client, user):
+    """An invalid enrollment code returns 400 and leaves the device unverified and MFA disabled."""
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     secret = _extract_secret(enroll["otpauth_uri"])
@@ -243,6 +265,7 @@ def test_verify_totp_enrollment_with_invalid_code_rejected(client, user):
 
 
 def test_verify_totp_enrollment_nonexistent_device_returns_404(client, user):
+    """Verifying enrollment for a nonexistent device id returns 404."""
     resp = client.post(
         "/users/me/mfa/totp/verify",
         json={"device_id": 999999999, "code": "123456"},
@@ -253,6 +276,7 @@ def test_verify_totp_enrollment_nonexistent_device_returns_404(client, user):
 
 
 def test_verify_totp_enrollment_rejects_another_users_device(client, user):
+    """Verifying another user's pending device returns 404 and leaves that device unverified."""
     other = _register_and_login(client)
     enroll = client.post("/users/me/mfa/totp/enroll", headers=_auth_header(user["access_token"])).json()
 
@@ -268,6 +292,7 @@ def test_verify_totp_enrollment_rejects_another_users_device(client, user):
 
 
 def test_verify_totp_enrollment_rejects_already_verified_device(client, user):
+    """Verifying a device that is already verified returns 400."""
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     secret = _extract_secret(enroll["otpauth_uri"])
@@ -287,6 +312,9 @@ def test_verify_totp_enrollment_rejects_already_verified_device(client, user):
 
 
 def test_list_mfa_devices_hides_secret_fields(client, user):
+    """Listing MFA devices returns only the safe field set (id, type, label and timestamps) with no
+    secret material.
+    """
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
 
@@ -302,6 +330,7 @@ def test_list_mfa_devices_hides_secret_fields(client, user):
 
 
 def test_list_mfa_devices_only_shows_callers_own_devices(client, user):
+    """Listing MFA devices shows only the caller's devices, not another user's."""
     other = _register_and_login(client)
     client.post("/users/me/mfa/totp/enroll", headers=_auth_header(other["access_token"]))
 
@@ -312,6 +341,9 @@ def test_list_mfa_devices_only_shows_callers_own_devices(client, user):
 
 
 def test_remove_mfa_device_disables_mfa_when_last_verified_device_removed(client, user):
+    """Removing the last verified device returns 204, disables the device, sets the user's MFA to
+    disabled and empties the device list.
+    """
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     secret = _extract_secret(enroll["otpauth_uri"])
@@ -330,6 +362,7 @@ def test_remove_mfa_device_disables_mfa_when_last_verified_device_removed(client
 
 
 def test_remove_mfa_device_rejects_another_users_device(client, user):
+    """Removing another user's device returns 404 and leaves that device enabled."""
     other = _register_and_login(client)
     enroll = client.post("/users/me/mfa/totp/enroll", headers=_auth_header(user["access_token"])).json()
 
@@ -343,6 +376,7 @@ def test_remove_mfa_device_rejects_another_users_device(client, user):
 
 
 def test_remove_mfa_device_nonexistent_returns_404(client, user):
+    """Removing a nonexistent device id returns 404."""
     resp = client.delete("/users/me/mfa/devices/999999999", headers=_auth_header(user["access_token"]))
 
     assert resp.status_code == 404
@@ -352,6 +386,9 @@ def test_remove_mfa_device_nonexistent_returns_404(client, user):
 
 
 def test_enrollment_start_emits_audit_event_without_secret(client, user):
+    """Starting enrollment writes one audit event for the device with device_type "totp" and no
+    secret material.
+    """
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     secret = _extract_secret(enroll["otpauth_uri"])
@@ -366,6 +403,9 @@ def test_enrollment_start_emits_audit_event_without_secret(client, user):
 
 
 def test_verify_emits_device_added_and_mfa_enabled_events_without_secret_or_code(client, user):
+    """Verifying enrollment writes one mfa_device_added and one mfa_enabled audit event, neither
+    containing the secret or the OTP code.
+    """
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     secret = _extract_secret(enroll["otpauth_uri"])
@@ -384,6 +424,9 @@ def test_verify_emits_device_added_and_mfa_enabled_events_without_secret_or_code
 
 
 def test_verifying_second_device_does_not_re_emit_mfa_enabled(client, user):
+    """Verifying a second device logs a second mfa_device_added event but does not log mfa_enabled
+    again.
+    """
     headers = _auth_header(user["access_token"])
 
     def _enroll_and_verify():
@@ -407,6 +450,9 @@ def test_verifying_second_device_does_not_re_emit_mfa_enabled(client, user):
 
 
 def test_remove_last_verified_device_emits_removed_and_disabled_events(client, user):
+    """Removing the last verified device writes one device-removed event and one MFA-disabled event
+    with mfa_enabled false, without secret material.
+    """
     headers = _auth_header(user["access_token"])
     enroll = client.post("/users/me/mfa/totp/enroll", headers=headers).json()
     secret = _extract_secret(enroll["otpauth_uri"])

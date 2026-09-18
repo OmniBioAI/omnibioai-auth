@@ -1,4 +1,7 @@
-"""Security contract tests for the TES -> ToolServer delegated token foundation."""
+"""Security contract tests for the TES -> ToolServer delegated token foundation.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import hashlib
 import uuid
 from datetime import datetime, timedelta
@@ -29,6 +32,10 @@ def register_login(client, email=None):
 
 
 def setup_delegation(client, service_scopes=None, user_permissions=None):
+    """Create a user with an organization membership and role holding the given permissions, plus an
+    active OAuth client (TES) holding the given service scopes, and return their tokens and
+    identifiers.
+    """
     service_scopes = service_scopes or ["toolserver.delegate", "workflow.execute", "runs.read"]
     user_permissions = user_permissions or ["workflow.execute", "runs.read"]
     email, password, user_token = register_login(client)
@@ -57,6 +64,9 @@ def setup_delegation(client, service_scopes=None, user_permissions=None):
 
 
 def issue(client, data, **overrides):
+    """POST a delegation request to /service/delegations/toolserver as the TES service, with
+    optional body overrides.
+    """
     body = {"initiating_token": data["user"], "organization_id": data["org"]["id"],
             "permissions": ["workflow.execute"], "audience": "omnibioai-toolserver"}
     body.update(overrides)
@@ -64,10 +74,15 @@ def issue(client, data, **overrides):
 
 
 def introspect(client, token):
+    """POST a delegated token to the ToolServer introspection endpoint without any credentials."""
     return client.post("/service/delegations/toolserver/introspect", json={"token": token})
 
 
 def test_authorized_tes_issues_audience_bound_typed_delegation(client):
+    """An authorized service issues a 300-second delegated_execution token bound to the toolserver
+    audience, the service client_id, the organization and the requested permissions, with no
+    email claim.
+    """
     data = setup_delegation(client)
     response = issue(client, data)
     assert response.status_code == 200
@@ -83,6 +98,9 @@ def test_authorized_tes_issues_audience_bound_typed_delegation(client):
 
 
 def test_delegation_is_not_a_user_or_service_token(client):
+    """A delegated-execution token is rejected by /auth/validate and does not authenticate a normal
+    route, yet still introspects as valid.
+    """
     token = issue(client, setup_delegation(client)).json()["access_token"]
     assert client.post("/auth/validate", json={"token": token}).json()["valid"] is False
     assert client.get("/license/status", headers=header(token)).status_code in (401, 403, 404)
@@ -90,6 +108,9 @@ def test_delegation_is_not_a_user_or_service_token(client):
 
 
 def test_arbitrary_service_and_user_are_denied(client):
+    """Issuance returns 403 for a service lacking the toolserver.delegate scope and for an ordinary
+    user token used in place of a service token.
+    """
     data = setup_delegation(client, service_scopes=["workflow.execute"])
     assert issue(client, data).status_code == 403
     ordinary = setup_delegation(client)
@@ -97,6 +118,9 @@ def test_arbitrary_service_and_user_are_denied(client):
 
 
 def test_issuance_rejects_bad_audience_and_permission_escalation(client):
+    """Issuance returns 400 for an unknown audience or a permission the service may not delegate,
+    and 403 for a permission outside the service's own scopes.
+    """
     data = setup_delegation(client)
     assert issue(client, data, audience="other-service").status_code == 400
     assert issue(client, data, permissions=["workflow.manage"]).status_code == 400
@@ -105,6 +129,9 @@ def test_issuance_rejects_bad_audience_and_permission_escalation(client):
 
 
 def test_issuance_requires_authoritative_user_and_membership(client):
+    """Issuance returns 403 for an invalid initiating token, a nonexistent organization, or an
+    organization the initiating user does not belong to.
+    """
     data = setup_delegation(client)
     assert issue(client, data, initiating_token="bad.token.value").status_code == 403
     assert issue(client, data, organization_id=999999).status_code == 403
@@ -113,6 +140,9 @@ def test_issuance_requires_authoritative_user_and_membership(client):
 
 
 def test_introspection_fails_closed_for_revocation_and_live_state_changes(client):
+    """Introspection reports valid=false once the delegation's jti is recorded as revoked, and for a
+    new delegation once the service's OAuth client is revoked.
+    """
     data = setup_delegation(client)
     token = issue(client, data).json()["access_token"]
     claims = decode_token_for_audience(token, "omnibioai-toolserver")
@@ -136,6 +166,9 @@ def test_introspection_fails_closed_for_revocation_and_live_state_changes(client
 
 
 def test_introspection_rejects_disabled_user_removed_membership_expired_and_invalid_signature(client):
+    """Introspection reports valid=false when the initiating user is disabled, when the stored grant
+    has expired, and for a malformed token.
+    """
     data = setup_delegation(client)
     token = issue(client, data).json()["access_token"]
     db = Session()
@@ -161,6 +194,9 @@ def test_introspection_rejects_disabled_user_removed_membership_expired_and_inva
 
 
 def test_issuance_audit_contains_identifiers_not_raw_token(client):
+    """The delegated_execution_token_issued audit event records the service client_id and never
+    contains the issued raw token.
+    """
     data = setup_delegation(client)
     response = issue(client, data)
     token = response.json()["access_token"]
@@ -175,6 +211,9 @@ def test_issuance_audit_contains_identifiers_not_raw_token(client):
 
 
 def test_introspection_rejects_removed_membership_and_permission(client):
+    """Introspection reports valid=false after the initiating user's organization membership is
+    removed, and for a new delegation after the member's roles are cleared.
+    """
     data = setup_delegation(client)
     token = issue(client, data).json()["access_token"]
     db = Session()
@@ -205,6 +244,7 @@ def test_introspection_rejects_removed_membership_and_permission(client):
 
 
 def test_issuance_rejects_scope_not_held_by_user(client):
+    """Issuance returns 403 when the initiating user does not hold the requested permission."""
     data = setup_delegation(client, user_permissions=["runs.read"])
     assert issue(client, data, permissions=["workflow.execute"]).status_code == 403
 
@@ -216,6 +256,10 @@ def test_issuance_rejects_scope_not_held_by_user(client):
     "delegation_scope", "execution_scope", "expired", "inactive", "null_scopes",
 ])
 def test_current_service_authority_rechecked(client, change):
+    """Introspection rechecks the service's current authority: dropping the delegate or execute
+    scope, expiring, revoking or nulling the scopes of the OAuth client makes a live delegation
+    invalid, and restoring them makes the unexpired grant valid again.
+    """
     data = setup_delegation(client)
     token = issue(client, data).json()["access_token"]
     assert introspect(client, token).json()["valid"] is True
@@ -249,6 +293,9 @@ def test_current_service_authority_rechecked(client, change):
 
 
 def test_unrelated_scope_change_preserves_grant_authority(client):
+    """Changing the service's scopes while keeping the delegation and execution scopes leaves the
+    delegation valid with its original permissions.
+    """
     data = setup_delegation(client)
     token = issue(client, data).json()["access_token"]
     with Session() as db:
@@ -266,6 +313,9 @@ def test_unrelated_scope_change_preserves_grant_authority(client):
     ("type", "access"),
 ])
 def test_introspection_rejects_wrong_token_semantics(client, claim, value):
+    """Introspection reports valid=false for an Auth-signed token whose exp is in the past, whose
+    audience is not the toolserver, or whose type is not delegated_execution.
+    """
     data = setup_delegation(client)
     token = issue(client, data).json()["access_token"]
     claims = decode_token_for_audience(token, "omnibioai-toolserver")
@@ -275,5 +325,6 @@ def test_introspection_rejects_wrong_token_semantics(client, claim, value):
 
 
 def test_delegated_token_rejected_by_service_identity_route(client):
+    """A delegated-execution token presented to /service/me is rejected with 401."""
     token = issue(client, setup_delegation(client)).json()["access_token"]
     assert client.get("/service/me", headers=header(token)).status_code == 401

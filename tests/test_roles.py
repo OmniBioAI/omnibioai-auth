@@ -1,3 +1,10 @@
+"""Global role administration under /roles and /users/{id}/roles: admin-only
+creation, reading, updating and deletion of roles, validation of permission
+names against the registry (with a nearest-match suggestion), assignment of
+roles to users, refusal for non-admins, and guards against self-escalation.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import os
 import uuid
 
@@ -35,6 +42,7 @@ def _unique_name(prefix):
 # ── Role CRUD (admin) ───────────────────────────────────────────────────────────
 
 def test_create_role(client, admin_headers):
+    """An admin can create a role and gets 201 with the requested name and permissions."""
     name = _unique_name("role")
     resp = client.post(
         "/roles",
@@ -48,6 +56,7 @@ def test_create_role(client, admin_headers):
 
 
 def test_create_duplicate_role_returns_409(client, admin_headers):
+    """Creating a role with an existing name returns 409."""
     name = _unique_name("dup-role")
     client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
     resp = client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
@@ -55,12 +64,14 @@ def test_create_duplicate_role_returns_409(client, admin_headers):
 
 
 def test_list_roles_includes_bootstrap_admin_role(client, admin_headers):
+    """Listing roles returns 200 and includes the bootstrap admin role."""
     resp = client.get("/roles", headers=admin_headers)
     assert resp.status_code == 200
     assert any(r["name"] == "admin" for r in resp.json())
 
 
 def test_get_role_detail(client, admin_headers):
+    """GET /roles/{id} returns the role with its permissions."""
     name = _unique_name("detail-role")
     create = client.post(
         "/roles", json={"name": name, "permissions": ["model.use"]}, headers=admin_headers
@@ -72,11 +83,13 @@ def test_get_role_detail(client, admin_headers):
 
 
 def test_get_role_not_found(client, admin_headers):
+    """GET on a nonexistent role id returns 404."""
     resp = client.get("/roles/999999", headers=admin_headers)
     assert resp.status_code == 404
 
 
 def test_update_role_permissions(client, admin_headers):
+    """PUT replaces a role's permissions with the submitted set."""
     name = _unique_name("update-role")
     create = client.post(
         "/roles", json={"name": name, "permissions": ["dataset.read"]}, headers=admin_headers
@@ -92,6 +105,7 @@ def test_update_role_permissions(client, admin_headers):
 
 
 def test_delete_unused_role(client, admin_headers):
+    """Deleting an unused role returns 204 and the role is then gone (404)."""
     name = _unique_name("deletable-role")
     create = client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
     role_id = create.json()["id"]
@@ -102,6 +116,7 @@ def test_delete_unused_role(client, admin_headers):
 
 
 def test_delete_role_in_use_returns_409(client, admin_headers, registered_user):
+    """Deleting a role that is assigned to a user returns 409."""
     name = _unique_name("in-use-role")
     create = client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
     role_id = create.json()["id"]
@@ -119,6 +134,7 @@ def test_delete_role_in_use_returns_409(client, admin_headers, registered_user):
 
 
 def test_update_role_unknown_name_leaves_no_role(client, admin_headers):
+    """GET on role id 0 returns 404."""
     resp = client.get("/roles/0", headers=admin_headers)
     assert resp.status_code == 404
 
@@ -126,6 +142,7 @@ def test_update_role_unknown_name_leaves_no_role(client, admin_headers):
 # ── Permission Registry validation (PR4) ────────────────────────────────────────
 
 def test_create_role_with_unregistered_permission_returns_400(client, admin_headers):
+    """Creating a role with a permission that is not in the registry returns 400."""
     resp = client.post(
         "/roles",
         json={"name": _unique_name("bad-perm-role"), "permissions": ["not_a_real_permission"]},
@@ -147,6 +164,9 @@ def test_unregistered_permission_error_suggests_nearest_match(client, admin_head
 
 
 def test_unregistered_permission_with_no_close_match_has_no_suggestion(client, admin_headers):
+    """The error for an unregistered permission has no "Did you mean" suggestion when no registry
+    name is close.
+    """
     resp = client.post(
         "/roles",
         json={"name": _unique_name("no-match-perm-role"), "permissions": ["zzzzzzzzzzzzzzzzzzzz"]},
@@ -157,6 +177,7 @@ def test_unregistered_permission_with_no_close_match_has_no_suggestion(client, a
 
 
 def test_update_role_with_unregistered_permission_returns_400(client, admin_headers):
+    """Updating a role with an unregistered permission returns 400 and leaves the role unchanged."""
     name = _unique_name("update-bad-perm-role")
     create = client.post(
         "/roles", json={"name": name, "permissions": ["dataset.read"]}, headers=admin_headers
@@ -202,6 +223,7 @@ def test_create_role_with_future_enterprise_permission_succeeds(client, admin_he
 # ── User role assignment (admin) ────────────────────────────────────────────────
 
 def test_get_user_roles(client, admin_headers, registered_user):
+    """A newly registered user's roles are exactly ["user"]."""
     login = client.post("/auth/login", json=registered_user)
     user_id = _user_id(client, login.json())
 
@@ -213,6 +235,7 @@ def test_get_user_roles(client, admin_headers, registered_user):
 
 
 def test_assign_role_to_user(client, admin_headers, registered_user):
+    """An admin can assign a role to a user, and the user's roles become exactly that role."""
     name = _unique_name("assignable-role")
     client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
 
@@ -225,6 +248,7 @@ def test_assign_role_to_user(client, admin_headers, registered_user):
 
 
 def test_assign_unknown_role_returns_400(client, admin_headers, registered_user):
+    """Assigning a nonexistent role through /users/{id}/roles returns 400."""
     login = client.post("/auth/login", json=registered_user)
     user_id = _user_id(client, login.json())
 
@@ -235,6 +259,7 @@ def test_assign_unknown_role_returns_400(client, admin_headers, registered_user)
 
 
 def test_assign_roles_user_not_found(client, admin_headers):
+    """Assigning roles to a nonexistent user returns 404."""
     resp = client.put("/users/999999/roles", json={"roles": []}, headers=admin_headers)
     assert resp.status_code == 404
 
@@ -242,16 +267,19 @@ def test_assign_roles_user_not_found(client, admin_headers):
 # ── Negative / non-admin access ──────────────────────────────────────────────────
 
 def test_missing_token_rejected(client):
+    """Listing roles without a bearer token is rejected with 401 or 403."""
     resp = client.get("/roles")
     assert resp.status_code in (401, 403)
 
 
 def test_non_admin_cannot_list_roles(client, auth_tokens):
+    """A user without the role-management permission gets 403 when listing roles."""
     resp = client.get("/roles", headers=_auth_header(auth_tokens["access_token"]))
     assert resp.status_code == 403
 
 
 def test_non_admin_cannot_create_role(client, auth_tokens):
+    """A user without the role-management permission gets 403 when creating a role."""
     resp = client.post(
         "/roles",
         json={"name": _unique_name("hacker-role"), "permissions": []},
@@ -261,6 +289,7 @@ def test_non_admin_cannot_create_role(client, auth_tokens):
 
 
 def test_non_admin_cannot_delete_role(client, admin_headers, auth_tokens):
+    """A user without the role-management permission gets 403 when deleting a role."""
     name = _unique_name("protected-role")
     create = client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
     role_id = create.json()["id"]
@@ -270,6 +299,7 @@ def test_non_admin_cannot_delete_role(client, admin_headers, auth_tokens):
 
 
 def test_non_admin_cannot_assign_roles(client, auth_tokens):
+    """A user without the role-management permission gets 403 when assigning roles to a user."""
     resp = client.put(
         "/users/1/roles",
         json={"roles": ["admin"]},

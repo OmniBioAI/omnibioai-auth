@@ -7,6 +7,8 @@ Uses the same direct-DB-session pattern as tests/test_session_foundation.py
 `client` fixture uses -- since none of this PR's functionality is
 exposed via an HTTP route (see interaction_service.py's own module
 docstring for why no routes_interactions.py exists in this PR).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 from datetime import datetime
@@ -27,6 +29,7 @@ _DirectSession = sessionmaker(bind=_direct_engine)
 
 @pytest.fixture
 def db():
+    """Yield a direct DB session bound to the shared SQLite test database."""
     session = _DirectSession()
     try:
         yield session
@@ -35,6 +38,7 @@ def db():
 
 
 def _row(interaction_id: str) -> Interaction | None:
+    """Fetch the persisted Interaction row with the given interaction_id, or None."""
     db = _DirectSession()
     try:
         return db.query(Interaction).filter(Interaction.interaction_id == interaction_id).first()
@@ -47,6 +51,7 @@ def _row(interaction_id: str) -> Interaction | None:
 # ---------------------------------------------------------------------------
 
 def test_interaction_id_generated():
+    """Building an event assigns a non-empty interaction_id automatically."""
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query", action="search",
     )
@@ -54,6 +59,7 @@ def test_interaction_id_generated():
 
 
 def test_interaction_id_is_valid_uuid4_format():
+    """The generated interaction_id is a valid UUID4 string."""
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query", action="search",
     )
@@ -93,6 +99,9 @@ def test_two_separate_build_calls_produce_different_ids():
 # ---------------------------------------------------------------------------
 
 def test_timestamp_generated_at_creation():
+    """The event timestamp is set when the event is built, between the moments just before and after
+    the call.
+    """
     before = datetime.utcnow()
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query", action="search",
@@ -117,21 +126,27 @@ def test_timestamp_naive_utc_matches_repo_convention():
 # ---------------------------------------------------------------------------
 
 def test_organization_id_required():
+    """InteractionEvent validation fails with ValidationError when organization_id is missing."""
     with pytest.raises(ValidationError):
         InteractionEvent(service="rag", interaction_type="query")
 
 
 def test_service_required():
+    """InteractionEvent validation fails with ValidationError when service is missing."""
     with pytest.raises(ValidationError):
         InteractionEvent(organization_id=1, interaction_type="query")
 
 
 def test_interaction_type_required():
+    """InteractionEvent validation fails with ValidationError when interaction_type is missing."""
     with pytest.raises(ValidationError):
         InteractionEvent(organization_id=1, service="rag")
 
 
 def test_optional_fields_default_to_none_or_empty():
+    """Optional event fields (user, session, trace, resource, status, decision) default to None and
+    metadata defaults to an empty dict.
+    """
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query",
     )
@@ -146,6 +161,9 @@ def test_optional_fields_default_to_none_or_empty():
 
 
 def test_all_fields_round_trip_through_persistence(db):
+    """Every populated event field persists to the interactions table and reads back with the same
+    value.
+    """
     event = interaction_service.build_interaction_event(
         organization_id=7,
         service="rag",
@@ -233,6 +251,9 @@ def test_persist_duplicate_returns_the_original_row_unchanged(db):
 # ---------------------------------------------------------------------------
 
 def test_organization_scoped_query_excludes_other_orgs(db):
+    """Querying interactions by organization_id returns that organization's rows and excludes
+    another organization's.
+    """
     org_a_event = interaction_service.build_interaction_event(
         organization_id=101, service="rag", interaction_type="query", action="a",
     )
@@ -258,6 +279,7 @@ def test_organization_scoped_query_excludes_other_orgs(db):
 # ---------------------------------------------------------------------------
 
 def test_session_id_nullable_for_system_interaction(db):
+    """A system interaction without a session or user persists with NULL session_id and user_id."""
     event = interaction_service.build_interaction_event(
         organization_id=1, service="workflow-bundles", interaction_type="system",
         action="scheduled_cleanup",
@@ -268,6 +290,7 @@ def test_session_id_nullable_for_system_interaction(db):
 
 
 def test_session_id_populated_when_producer_supplies_it(db):
+    """A producer-supplied session_id is persisted as given."""
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query", action="search",
         user_id=5, session_id="66666666-7777-8888-9999-000000000000",
@@ -295,6 +318,9 @@ def test_no_manufactured_session_for_system_events():
     "ACCESS_TOKEN",
 ])
 def test_metadata_strips_secret_shaped_keys(forbidden_key):
+    """Building an event drops each secret-shaped metadata key (tokens, authorization, cookie,
+    password, api_key, secret, private_key, in any letter case) while keeping other keys.
+    """
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query",
         metadata={forbidden_key: "should-never-be-stored", "workflow_id": "wf-1"},
@@ -304,6 +330,7 @@ def test_metadata_strips_secret_shaped_keys(forbidden_key):
 
 
 def test_metadata_preserves_non_secret_context():
+    """Non-secret metadata (workflow_id, tool_name, duration_ms) is kept unchanged."""
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query",
         metadata={"workflow_id": "wf-1", "tool_name": "blast", "duration_ms": 1200},
@@ -312,6 +339,9 @@ def test_metadata_preserves_non_secret_context():
 
 
 def test_metadata_redaction_is_recursive():
+    """Secret-shaped keys are stripped from nested metadata dicts while sibling non-secret keys such
+    as path are preserved.
+    """
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query",
         metadata={"request": {"headers": {"authorization": "Bearer xyz"}, "path": "/v1/query"}},

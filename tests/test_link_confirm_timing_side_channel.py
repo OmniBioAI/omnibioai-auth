@@ -16,6 +16,8 @@ Same deterministic-testing convention as
 tests/test_login_timing_side_channel.py: spy on
 app.api.routes_oauth.verify_password and assert call count/argument
 identity, never wall-clock duration.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -39,11 +41,16 @@ def _unique_email():
 
 @pytest.fixture
 def configured_google(monkeypatch):
+    """Configure the Google OAuth provider with test client credentials for the duration of the
+    test.
+    """
     monkeypatch.setitem(PROVIDERS["google"], "client_id", "test-google-client-id")
     monkeypatch.setitem(PROVIDERS["google"], "client_secret", "test-google-client-secret")
 
 
 def _mock_exchange(monkeypatch, provider_user_id, email):
+    """Replace the OAuth code exchange with a stub returning the given provider user id and email.
+    """
     async def fake_exchange(provider, code, code_verifier=None):
         return provider_user_id, email
     monkeypatch.setattr(oauth_service, "exchange_code_for_userinfo", fake_exchange)
@@ -108,6 +115,9 @@ def test_invalid_link_token_invokes_no_hash_verification(client, verify_password
 
 
 def test_wrong_token_type_invokes_no_hash_verification(client, verify_password_spy):
+    """A link/confirm request carrying a token of the wrong type returns 400 without any
+    password-hash verification.
+    """
     from app.core.jwt import create_oauth_state_token as _mint_state
     wrong_type_token = _mint_state("google")  # a real, validly-signed token, but type="oauth_state"
     resp = client.post("/auth/link/confirm", json={"link_token": wrong_type_token, "password": "whatever"})
@@ -171,6 +181,9 @@ def test_link_token_user_id_mismatch_invokes_one_dummy_hash_verification(client,
 
 
 def test_link_token_for_passwordless_account_invokes_one_dummy_hash_verification(client, verify_password_spy):
+    """Link confirmation for an account that has no password returns 409 after exactly one
+    verification against the dummy hash.
+    """
     email = _unique_email()
     db = _DirectSession()
     try:
@@ -194,6 +207,9 @@ def test_link_token_for_passwordless_account_invokes_one_dummy_hash_verification
 def test_link_confirm_wrong_password_invokes_one_real_hash_verification(
     client, configured_google, monkeypatch, registered_user, verify_password_spy,
 ):
+    """A wrong password on link confirmation returns 401 after exactly one verification against the
+    account's real hash.
+    """
     link_token = _mint_link_token(client, configured_google, monkeypatch, registered_user["email"], "google-uid-wrong-pw")
     resp = client.post("/auth/link/confirm", json={"link_token": link_token, "password": "wrong-password"})
     assert resp.status_code == 401
@@ -207,6 +223,9 @@ def test_link_confirm_wrong_password_invokes_one_real_hash_verification(
 def test_link_confirm_success_invokes_one_real_hash_verification_and_links_account(
     client, configured_google, monkeypatch, registered_user, verify_password_spy,
 ):
+    """The correct password on link confirmation returns 200 with tokens after one real-hash
+    verification, and links the provider identity so a later provider callback logs in directly.
+    """
     link_token = _mint_link_token(client, configured_google, monkeypatch, registered_user["email"], "google-uid-ok")
     resp = client.post(
         "/auth/link/confirm", json={"link_token": link_token, "password": registered_user["password"]}
@@ -267,6 +286,9 @@ def test_link_confirm_mfa_required_invokes_one_real_hash_verification_and_challe
 
 
 def test_no_password_or_dummy_hash_leaked_in_audit_or_response(client, verify_password_spy):
+    """Neither the submitted password nor the dummy hash appears in the 409 response body or in any
+    audit event.
+    """
     email = _unique_email()
     db = _DirectSession()
     try:

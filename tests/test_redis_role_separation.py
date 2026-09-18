@@ -19,6 +19,8 @@ setup -- reloading any of those modules destroys that patch process-wide,
 for the rest of the test session, not just this test. monkeypatch.setattr
 on the module's client attribute is used instead, which monkeypatch
 itself auto-restores after each test.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 
@@ -42,6 +44,9 @@ def _resolve_url(interaction_env: str | None, redis_env: str) -> str:
 # 1. auth/security Redis client uses the intended (REDIS_URL) URL
 # ---------------------------------------------------------------------
 def test_rate_limit_uses_redis_url(monkeypatch):
+    """A rate_limit Redis client built from a redis_auth URL carries the redis_auth username in its
+    connection pool, without opening a connection.
+    """
     from app.core import rate_limit
 
     fresh = _client_for("redis://redis_auth:secret@redis:6379/0")
@@ -50,6 +55,9 @@ def test_rate_limit_uses_redis_url(monkeypatch):
 
 
 def test_token_revocation_uses_redis_url(monkeypatch):
+    """A token_revocation Redis client built from a redis_auth URL carries the redis_auth username
+    in its connection pool, without opening a connection.
+    """
     from app.core import token_revocation
 
     fresh = _client_for("redis://redis_auth:secret@redis:6379/0")
@@ -61,6 +69,9 @@ def test_token_revocation_uses_redis_url(monkeypatch):
 # 2. interaction producer uses INTERACTION_REDIS_URL when set
 # ---------------------------------------------------------------------
 def test_interaction_producer_uses_interaction_redis_url_when_set():
+    """When an interaction Redis URL is set it takes precedence over REDIS_URL, and the resulting
+    client carries the redis_interaction_producer username.
+    """
     url = _resolve_url(
         "redis://redis_interaction_producer:secret@redis:6379/0",
         "redis://redis_auth:othersecret@redis:6379/0",
@@ -78,6 +89,9 @@ def test_interaction_producer_uses_interaction_redis_url_when_set():
 #    real-client verification for the live NOPERM proof).
 # ---------------------------------------------------------------------
 def test_interaction_producer_distinct_from_auth_when_both_set():
+    """With both URLs set, the interaction client's username (redis_interaction_producer) differs
+    from the auth client's (redis_auth).
+    """
     auth_url = "redis://redis_auth:y@redis:6379/0"
     interaction_url = _resolve_url("redis://redis_interaction_producer:x@redis:6379/0", auth_url)
 
@@ -92,6 +106,9 @@ def test_interaction_producer_distinct_from_auth_when_both_set():
 # 4. auth/security client does NOT inherit the interaction identity
 # ---------------------------------------------------------------------
 def test_auth_security_client_never_reads_interaction_redis_url(monkeypatch):
+    """The rate-limit and token-revocation clients built from REDIS_URL carry the redis_auth
+    username, not the interaction identity.
+    """
     from app.core import rate_limit, token_revocation
 
     # rate_limit.py/token_revocation.py have no INTERACTION_REDIS_URL
@@ -111,6 +128,9 @@ def test_auth_security_client_never_reads_interaction_redis_url(monkeypatch):
 # INTERACTION_REDIS_URL is unset -- never synthesizes/widens a credential
 # ---------------------------------------------------------------------
 def test_interaction_producer_falls_back_without_widening():
+    """With no interaction Redis URL, the resolved URL is REDIS_URL unchanged, so the client keeps
+    the redis_auth username rather than gaining another credential.
+    """
     url = _resolve_url(None, "redis://redis_auth:y@redis:6379/0")
     kwargs = _client_for(url).connection_pool.connection_kwargs
     # falls back to exactly REDIS_URL's identity -- fails closed on the
@@ -123,6 +143,9 @@ def test_interaction_producer_falls_back_without_widening():
 # 7. percent-encoded Redis credentials work correctly
 # ---------------------------------------------------------------------
 def test_percent_encoded_password_parses_correctly():
+    """A percent-encoded password in a Redis URL is decoded to the raw password, with the
+    redis_interaction_producer username preserved.
+    """
     from urllib.parse import quote
 
     raw_password = "ab/cd+ef=gh"

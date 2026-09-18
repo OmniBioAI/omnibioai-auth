@@ -7,6 +7,8 @@ tests/test_sso_enforcement.py -- a second connection to the same physical
 sqlite file conftest.py's `client` fixture uses, so these tests can
 manipulate rows (RevokedToken, User.status) that no HTTP route exposes a
 way to create/set directly.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -47,12 +49,14 @@ def _get_orgs(client, access_token):
 
 
 def test_valid_active_token_still_works(client):
+    """An active, unrevoked access token is accepted by a protected route with 200."""
     user = _register_and_login(client)
     resp = _get_orgs(client, user["access_token"])
     assert resp.status_code == 200
 
 
 def test_blacklisted_access_token_rejected_by_protected_route(client):
+    """After logout blacklists the access token, a protected route rejects it with 401."""
     user = _register_and_login(client)
 
     # Sanity: works before logout.
@@ -71,6 +75,9 @@ def test_blacklisted_access_token_rejected_by_protected_route(client):
 
 
 def test_revoked_tokens_db_entry_rejected_by_protected_route(client):
+    """A token whose jti is recorded in the revoked_tokens table is rejected by a protected route
+    with 401.
+    """
     user = _register_and_login(client)
     assert _get_orgs(client, user["access_token"]).status_code == 200
 
@@ -87,6 +94,9 @@ def test_revoked_tokens_db_entry_rejected_by_protected_route(client):
 
 
 def test_suspended_user_rejected_by_protected_route(client):
+    """A still-valid token of a user who has since been suspended is rejected by a protected route
+    with 401.
+    """
     user = _register_and_login(client)
     assert _get_orgs(client, user["access_token"]).status_code == 200
 
@@ -131,6 +141,7 @@ def _make_active_user(email=None):
 
 
 def test_assert_token_usable_passes_for_active_user_no_revocation(client):
+    """assert_token_usable accepts a token for an active user with no revocation."""
     user_id = _make_active_user()
     db = _DirectSession()
     try:
@@ -140,6 +151,7 @@ def test_assert_token_usable_passes_for_active_user_no_revocation(client):
 
 
 def test_assert_token_usable_raises_for_blacklisted_jti(client):
+    """assert_token_usable raises 401 for a blacklisted jti."""
     from app.core import token_revocation
 
     user_id = _make_active_user()
@@ -180,6 +192,7 @@ def test_assert_token_usable_fails_open_when_redis_is_unreachable(client, monkey
 
 
 def test_assert_token_usable_raises_for_revoked_token_row():
+    """assert_token_usable raises 401 for a jti recorded in the revoked_tokens table."""
     user_id = _make_active_user()
     jti = str(uuid.uuid4())
     db = _DirectSession()
@@ -195,6 +208,7 @@ def test_assert_token_usable_raises_for_revoked_token_row():
 
 
 def test_assert_token_usable_raises_for_inactive_user():
+    """assert_token_usable raises 401 for an inactive user."""
     email = f"inactive-{uuid.uuid4().hex[:8]}@omnibioai.test"
     db = _DirectSession()
     try:
@@ -211,6 +225,7 @@ def test_assert_token_usable_raises_for_inactive_user():
 
 
 def test_assert_token_usable_raises_for_nonexistent_user():
+    """assert_token_usable raises 401 when the token's subject is not an existing user."""
     db = _DirectSession()
     try:
         with pytest.raises(HTTPException) as exc:

@@ -28,6 +28,8 @@ unweakened validate_saml_response/OneLogin_Saml2_Auth.process_response
 code path -- never a mocked/stubbed validator. This is the only way to
 prove signature/audience/destination/recipient/issuer/InResponseTo/
 timestamp validation is actually enforced, not just shaped like it is.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import base64
@@ -302,12 +304,14 @@ def _build_valid_response(ctx, idp_keys, **overrides):
 
 
 def test_unknown_organization_fails_safely(client, org_with_saml_login, idp_keys):
+    """POSTing a SAML response to the ACS of an unknown organization slug is rejected with 400."""
     resp_body = _build_valid_response(org_with_saml_login, idp_keys)
     resp = _post_acs(client, "totally-unknown-org-slug", resp_body, org_with_saml_login["relay_state"])
     assert resp.status_code == 400
 
 
 def test_missing_saml_configuration_fails_safely(client, idp_keys):
+    """POSTing to the ACS of an organization that has no SAML configuration is rejected with 400."""
     org = _create_org(client, "ACS No Config Org")
     key_pem, cert_pem = idp_keys
     resp_body = build_signed_saml_response(
@@ -340,6 +344,7 @@ def test_inactive_saml_configuration_fails_safely(client, org_with_saml_login, i
 
 
 def test_missing_samlresponse_fails_safely(client, org_with_saml_login):
+    """An ACS request without a SAMLResponse form field is rejected with 400 or 422."""
     resp = client.post(
         f"/auth/saml/{org_with_saml_login['org_slug']}/acs",
         data={"RelayState": org_with_saml_login["relay_state"]},
@@ -348,6 +353,7 @@ def test_missing_samlresponse_fails_safely(client, org_with_saml_login):
 
 
 def test_malformed_samlresponse_fails_safely(client, org_with_saml_login):
+    """An ACS request whose SAMLResponse is not a valid response is rejected with 400."""
     resp = _post_acs(client, org_with_saml_login["org_slug"], "not-valid-base64-xml!!!", org_with_saml_login["relay_state"])
     assert resp.status_code == 400
 
@@ -356,12 +362,14 @@ def test_malformed_samlresponse_fails_safely(client, org_with_saml_login):
 
 
 def test_invalid_relaystate_fails_safely(client, org_with_saml_login, idp_keys):
+    """An ACS request with an invalid RelayState is rejected with 400."""
     resp_body = _build_valid_response(org_with_saml_login, idp_keys)
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, "not-a-real-relay-state-token")
     assert resp.status_code == 400
 
 
 def test_missing_relaystate_fails_safely(client, org_with_saml_login, idp_keys):
+    """An ACS request with a valid response but no RelayState is rejected with 400."""
     resp_body = _build_valid_response(org_with_saml_login, idp_keys)
     resp = client.post(
         f"/auth/saml/{org_with_saml_login['org_slug']}/acs", data={"SAMLResponse": resp_body}
@@ -370,6 +378,7 @@ def test_missing_relaystate_fails_safely(client, org_with_saml_login, idp_keys):
 
 
 def test_tampered_relaystate_rejected(client, org_with_saml_login, idp_keys):
+    """An ACS request whose RelayState has been tampered with is rejected with 400."""
     relay_state = org_with_saml_login["relay_state"]
     header, payload, signature = relay_state.split(".")
     tampered_char = "A" if payload[-1] != "A" else "B"
@@ -381,6 +390,9 @@ def test_tampered_relaystate_rejected(client, org_with_saml_login, idp_keys):
 
 
 def test_relaystate_for_another_organization_rejected(client, org_with_saml_login, idp_keys):
+    """A valid RelayState minted for a different organization than the ACS URL names is rejected
+    with 400.
+    """
     other_org = _create_org(client, "ACS Other Org For RelayState")
     _plant_saml_config(other_org["id"])
 
@@ -458,6 +470,7 @@ def test_wrong_idp_certificate_rejected(client, org_with_saml_login):
 
 
 def test_unsigned_assertion_rejected(client, org_with_saml_login, idp_keys):
+    """An assertion that is not signed is rejected with 400."""
     resp_body = _build_valid_response(org_with_saml_login, idp_keys, unsign=True)
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
     assert resp.status_code == 400
@@ -467,18 +480,23 @@ def test_unsigned_assertion_rejected(client, org_with_saml_login, idp_keys):
 
 
 def test_wrong_issuer_rejected(client, org_with_saml_login, idp_keys):
+    """A response from an issuer that does not match the configured IdP entity id is rejected with
+    400.
+    """
     resp_body = _build_valid_response(org_with_saml_login, idp_keys, issuer_override="https://evil-idp.example.com")
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
     assert resp.status_code == 400
 
 
 def test_wrong_audience_rejected(client, org_with_saml_login, idp_keys):
+    """A response whose audience is not this service provider is rejected with 400."""
     resp_body = _build_valid_response(org_with_saml_login, idp_keys, audience="https://someone-else.example.com")
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
     assert resp.status_code == 400
 
 
 def test_wrong_destination_rejected(client, org_with_saml_login, idp_keys):
+    """A response whose Destination is not this ACS URL is rejected with 400."""
     resp_body = _build_valid_response(
         org_with_saml_login, idp_keys, destination="https://webstudio.omnibioai.org/auth/saml/some-other-org/acs"
     )
@@ -487,6 +505,7 @@ def test_wrong_destination_rejected(client, org_with_saml_login, idp_keys):
 
 
 def test_wrong_recipient_rejected(client, org_with_saml_login, idp_keys):
+    """A response whose SubjectConfirmation Recipient is not this ACS URL is rejected with 400."""
     resp_body = _build_valid_response(
         org_with_saml_login, idp_keys, recipient="https://webstudio.omnibioai.org/auth/saml/some-other-org/acs"
     )
@@ -498,12 +517,18 @@ def test_wrong_recipient_rejected(client, org_with_saml_login, idp_keys):
 
 
 def test_invalid_inresponseto_response_level_rejected(client, org_with_saml_login, idp_keys):
+    """A response whose response-level InResponseTo does not match the login request is rejected
+    with 400.
+    """
     resp_body = _build_valid_response(org_with_saml_login, idp_keys, in_response_to_override="ONELOGIN_completely_different")
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
     assert resp.status_code == 400
 
 
 def test_invalid_inresponseto_subject_confirmation_level_rejected(client, org_with_saml_login, idp_keys):
+    """A response whose SubjectConfirmation InResponseTo does not match the login request is
+    rejected with 400.
+    """
     resp_body = _build_valid_response(org_with_saml_login, idp_keys, sc_in_response_to_override="ONELOGIN_completely_different")
     resp = _post_acs(client, org_with_saml_login["org_slug"], resp_body, org_with_saml_login["relay_state"])
     assert resp.status_code == 400
@@ -513,6 +538,7 @@ def test_invalid_inresponseto_subject_confirmation_level_rejected(client, org_wi
 
 
 def test_expired_assertion_rejected(client, org_with_saml_login, idp_keys):
+    """An assertion whose validity window has expired is rejected with 400."""
     resp_body = _build_valid_response(
         org_with_saml_login, idp_keys, not_on_or_after_offset=-600, not_before_offset=-900
     )
@@ -634,6 +660,9 @@ def test_no_leakage_on_successful_login(client, org_with_saml_login, idp_keys):
 
 
 def test_two_organizations_cannot_consume_each_others_saml_responses(client, idp_keys):
+    """A valid SAML response for organization A is rejected when POSTed to organization B's ACS,
+    even with A's valid RelayState.
+    """
     org_a = _create_org(client, "ACS Isolation Org A")
     key_a, cert_a = idp_keys
     idp_a = "https://idp-a.example.com/entity"
@@ -687,6 +716,9 @@ def test_existing_oidc_sso_login_route_unaffected(client):
 
 
 def test_existing_saml_metadata_and_login_routes_unaffected(client, org_with_saml_login):
+    """The SAML metadata route still returns 200 and the login route still redirects with a
+    SAMLRequest.
+    """
     metadata_resp = client.get(f"/auth/saml/{org_with_saml_login['org_slug']}/metadata")
     assert metadata_resp.status_code == 200
 

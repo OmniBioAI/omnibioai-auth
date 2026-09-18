@@ -8,18 +8,22 @@ name that path explicitly and assert the service is actually reachable and
 functional afterwards -- this is the exact sequence that crash-looped in
 production on 2026-08-06 (see docs/MIGRATIONS.md): the container never
 reached a state where it could serve `/health` at all.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import os
 
 
 def test_app_starts_and_serves_health(client):
+    """The app starts and /health returns 200 with {"status": "ok"}."""
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
 
 def test_app_starts_and_serves_metrics(client):
+    """The app starts and /metrics returns 200."""
     resp = client.get("/metrics")
     assert resp.status_code == 200
 

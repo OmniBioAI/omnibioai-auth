@@ -1,3 +1,10 @@
+"""Organization management under /orgs: creation (the creator becomes an org_admin
+member, duplicate slugs conflict), listing, updates and platform-admin status
+changes, invitations, per-organization role assignment and removal with
+self-escalation guards, and 404-based isolation of non-members.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import os
 import uuid
 
@@ -54,6 +61,9 @@ def org_owner_headers(org_owner):
 
 
 def test_create_org_creator_becomes_admin_member(client, org_owner_headers):
+    """Creating an organization returns 201 with its slug, name and status "active", and the creator
+    appears in its member list as an org_admin member.
+    """
     slug = _unique_slug()
     resp = client.post("/orgs", json={"name": "Acme Genomics", "slug": slug}, headers=org_owner_headers)
     assert resp.status_code == 201
@@ -70,6 +80,7 @@ def test_create_org_creator_becomes_admin_member(client, org_owner_headers):
 
 
 def test_create_org_duplicate_slug_returns_409(client, org_owner_headers):
+    """Creating an organization with an already used slug returns 409."""
     slug = _unique_slug()
     client.post("/orgs", json={"name": "First", "slug": slug}, headers=org_owner_headers)
     resp = client.post("/orgs", json={"name": "Second", "slug": slug}, headers=org_owner_headers)
@@ -77,6 +88,7 @@ def test_create_org_duplicate_slug_returns_409(client, org_owner_headers):
 
 
 def test_list_my_orgs_only_shows_my_orgs(client, org_owner_headers):
+    """GET /orgs returns 200 and includes the organization the caller just created."""
     slug = _unique_slug()
     client.post("/orgs", json={"name": "Mine", "slug": slug}, headers=org_owner_headers)
     resp = client.get("/orgs", headers=org_owner_headers)
@@ -85,11 +97,15 @@ def test_list_my_orgs_only_shows_my_orgs(client, org_owner_headers):
 
 
 def test_missing_token_rejected(client):
+    """GET /orgs without a bearer token is rejected with 401 or 403."""
     resp = client.get("/orgs")
     assert resp.status_code in (401, 403)
 
 
 def test_update_org(client, org_owner_headers):
+    """A name-only PATCH by the owner renames the organization and leaves the status-tracking fields
+    unset.
+    """
     slug = _unique_slug()
     create = client.post("/orgs", json={"name": "Original", "slug": slug}, headers=org_owner_headers)
     org_id = create.json()["id"]
@@ -108,6 +124,7 @@ def test_update_org(client, org_owner_headers):
 
 
 def _grant_platform_admin(email: str) -> None:
+    """Attach the platform_admin role directly to the user with the given email."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -136,6 +153,9 @@ def _platform_admin_headers(client):
 
 
 def test_platform_admin_can_suspend_and_reactivate_org(client, org_owner_headers):
+    """A platform admin can suspend an organization, recording status "suspended" with the reason
+    and change time, and can reactivate it.
+    """
     admin_headers = _platform_admin_headers(client)
     slug = _unique_slug()
     create = client.post("/orgs", json={"name": "Suspend Me", "slug": slug}, headers=org_owner_headers)
@@ -178,6 +198,7 @@ def test_org_admin_cannot_change_own_org_status(client, org_owner_headers):
 
 
 def test_invalid_status_value_rejected(client, org_owner_headers):
+    """A PATCH with an invalid status value returns 400 and the organization stays active."""
     admin_headers = _platform_admin_headers(client)
     slug = _unique_slug()
     create = client.post("/orgs", json={"name": "Bad Status", "slug": slug}, headers=org_owner_headers)
@@ -191,6 +212,7 @@ def test_invalid_status_value_rejected(client, org_owner_headers):
 
 
 def test_platform_admin_can_still_rename_while_changing_status(client, org_owner_headers):
+    """A platform admin can rename an organization and change its status in one update."""
     admin_headers = _platform_admin_headers(client)
     slug = _unique_slug()
     create = client.post("/orgs", json={"name": "Combined Update", "slug": slug}, headers=org_owner_headers)
@@ -205,6 +227,7 @@ def test_platform_admin_can_still_rename_while_changing_status(client, org_owner
 
 
 def test_invite_unknown_email_returns_404(client, org_owner_headers):
+    """Inviting an email that has no user account returns 404."""
     slug = _unique_slug()
     create = client.post("/orgs", json={"name": "Inviter", "slug": slug}, headers=org_owner_headers)
     org_id = create.json()["id"]
@@ -218,6 +241,9 @@ def test_invite_unknown_email_returns_404(client, org_owner_headers):
 
 
 def test_invite_existing_user_adds_membership(client, org_owner_headers):
+    """Inviting an existing user returns 201 with status "invited" and the org_member role, and the
+    user appears in the member list.
+    """
     slug = _unique_slug()
     create = client.post("/orgs", json={"name": "Inviter Org", "slug": slug}, headers=org_owner_headers)
     org_id = create.json()["id"]
@@ -320,11 +346,15 @@ def two_orgs(client):
 
 
 def test_non_member_cannot_view_org(client, two_orgs):
+    """A non-member gets 404 (not 403) when viewing another organization, so its existence is not
+    confirmed.
+    """
     resp = client.get(f"/orgs/{two_orgs['org_b']['id']}", headers=two_orgs["owner_a_headers"])
     assert resp.status_code == 404  # not 403 -- doesn't confirm existence to non-members
 
 
 def test_non_member_cannot_update_org(client, two_orgs):
+    """A non-member gets 404 when updating another organization, which stays unchanged."""
     resp = client.patch(
         f"/orgs/{two_orgs['org_b']['id']}",
         json={"name": "Hijacked"},
@@ -337,11 +367,13 @@ def test_non_member_cannot_update_org(client, two_orgs):
 
 
 def test_non_member_cannot_list_members(client, two_orgs):
+    """A non-member gets 404 when listing another organization's members."""
     resp = client.get(f"/orgs/{two_orgs['org_b']['id']}/members", headers=two_orgs["owner_a_headers"])
     assert resp.status_code == 404
 
 
 def test_non_member_cannot_invite(client, two_orgs):
+    """A non-member gets 404 when inviting a user into another organization."""
     resp = client.post(
         f"/orgs/{two_orgs['org_b']['id']}/invite",
         json={"email": "someone@omnibioai.test"},
@@ -351,6 +383,7 @@ def test_non_member_cannot_invite(client, two_orgs):
 
 
 def test_non_member_cannot_modify_roles(client, two_orgs):
+    """A non-member gets 404 when replacing a member's roles in another organization."""
     members = client.get(f"/orgs/{two_orgs['org_b']['id']}/members", headers=two_orgs["owner_b_headers"])
     target_user_id = members.json()[0]["user_id"]
 
@@ -391,6 +424,9 @@ def test_list_org_roles_returns_platform_wide_catalog(client, org_owner_headers)
 
 
 def test_get_member_roles_for_org_admin(client, org_owner_headers, org_owner):
+    """The owner's member-roles response carries the organization id, the user id and exactly the
+    role list ["org_admin"].
+    """
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Get Member Roles Org", "slug": slug}, headers=org_owner_headers).json()["id"]
     owner_id = _user_id(client, org_owner["access_token"])
@@ -404,6 +440,9 @@ def test_get_member_roles_for_org_admin(client, org_owner_headers, org_owner):
 
 
 def test_get_member_roles_for_non_member_returns_404(client, org_owner_headers):
+    """Reading a member's roles through /orgs/{id}/members/{user}/roles for a user who is not a
+    member returns 404.
+    """
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Ghost Member Org", "slug": slug}, headers=org_owner_headers).json()["id"]
 
@@ -412,6 +451,9 @@ def test_get_member_roles_for_non_member_returns_404(client, org_owner_headers):
 
 
 def test_assign_and_remove_single_member_role(client, org_owner_headers):
+    """Assigning a single role adds it to the member's existing roles instead of replacing them, and
+    removing it takes away only that role.
+    """
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Assign Remove Org", "slug": slug}, headers=org_owner_headers).json()["id"]
 
@@ -441,6 +483,7 @@ def test_assign_and_remove_single_member_role(client, org_owner_headers):
 
 
 def test_assign_unknown_role_name_rejected(client, org_owner_headers, org_owner):
+    """Assigning a role name that does not exist returns 400."""
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Unknown Role Org", "slug": slug}, headers=org_owner_headers).json()["id"]
     owner_id = _user_id(client, org_owner["access_token"])
@@ -452,6 +495,7 @@ def test_assign_unknown_role_name_rejected(client, org_owner_headers, org_owner)
 
 
 def test_remove_role_not_currently_assigned_returns_404(client, org_owner_headers, org_owner):
+    """Removing a role the member does not hold returns 404."""
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Not Assigned Org", "slug": slug}, headers=org_owner_headers).json()["id"]
     owner_id = _user_id(client, org_owner["access_token"])
@@ -468,6 +512,7 @@ def test_remove_role_not_currently_assigned_returns_404(client, org_owner_header
 
 
 def test_remove_nonexistent_role_id_returns_404(client, org_owner_headers, org_owner):
+    """Removing a role id that does not exist from an organization member returns 404."""
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Bad Role Id Org", "slug": slug}, headers=org_owner_headers).json()["id"]
     owner_id = _user_id(client, org_owner["access_token"])
@@ -528,6 +573,9 @@ def test_self_assign_role_with_no_new_permissions_allowed(client, org_owner_head
 
 
 def test_platform_admin_can_manage_roles_in_org_they_do_not_belong_to(client, org_owner_headers):
+    """A platform admin who is not a member can list an organization's roles and members and assign
+    a member's role.
+    """
     admin_headers = _platform_admin_headers(client)
     slug = _unique_slug()
     org_id = client.post("/orgs", json={"name": "Cross Tenant Roles Org", "slug": slug}, headers=org_owner_headers).json()["id"]
@@ -547,11 +595,13 @@ def test_platform_admin_can_manage_roles_in_org_they_do_not_belong_to(client, or
 
 
 def test_non_member_cannot_list_org_roles(client, two_orgs):
+    """A non-member gets 404 when listing another organization's roles."""
     resp = client.get(f"/orgs/{two_orgs['org_b']['id']}/roles", headers=two_orgs["owner_a_headers"])
     assert resp.status_code == 404
 
 
 def test_non_member_cannot_view_member_roles(client, two_orgs):
+    """A non-member gets 404 when reading a member's roles in another organization."""
     members = client.get(f"/orgs/{two_orgs['org_b']['id']}/members", headers=two_orgs["owner_b_headers"])
     target_user_id = members.json()[0]["user_id"]
 
@@ -562,6 +612,7 @@ def test_non_member_cannot_view_member_roles(client, two_orgs):
 
 
 def test_non_member_cannot_assign_single_role(client, two_orgs):
+    """A non-member gets 404 when assigning a single role in another organization."""
     members = client.get(f"/orgs/{two_orgs['org_b']['id']}/members", headers=two_orgs["owner_b_headers"])
     target_user_id = members.json()[0]["user_id"]
 
@@ -574,6 +625,7 @@ def test_non_member_cannot_assign_single_role(client, two_orgs):
 
 
 def test_non_member_cannot_remove_single_role(client, two_orgs):
+    """A non-member gets 404 when removing a single role in another organization."""
     members = client.get(f"/orgs/{two_orgs['org_b']['id']}/members", headers=two_orgs["owner_b_headers"])
     target_user_id = members.json()[0]["user_id"]
     roles_catalog = client.get(f"/orgs/{two_orgs['org_b']['id']}/roles", headers=two_orgs["owner_b_headers"]).json()

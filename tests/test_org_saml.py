@@ -5,6 +5,8 @@ OIDC equivalent) -- see app/services/org_saml_service.py's module
 docstring for why. Structurally mirrors test_org_sso.py deliberately
 closely: same permission (manage_sso, reused rather than a new
 manage_saml), same platform-admin/isolation/duplicate-config shape.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import uuid
@@ -68,6 +70,9 @@ def admin_headers(admin_token):
 
 @pytest.fixture
 def org(client):
+    """Create an organization owned by a freshly registered user and return its id, owner
+    credentials and owner auth headers.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     created = client.post(
@@ -79,6 +84,7 @@ def org(client):
 
 
 def _create_body(**overrides):
+    """Build a valid SAML configuration request body with optional field overrides."""
     body = {
         "entity_id": _ENTITY_ID,
         "sso_url": _SSO_URL,
@@ -93,6 +99,9 @@ def _create_body(**overrides):
 
 
 def test_create_saml_config_success(client, org):
+    """Creating an organization's SAML configuration returns 201 echoing entity_id, sso_url,
+    certificate and attribute mapping, with status "active" and enabled false.
+    """
     resp = client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
     assert resp.status_code == 201
     data = resp.json()
@@ -105,6 +114,9 @@ def test_create_saml_config_success(client, org):
 
 
 def test_create_persists_to_database(client, org):
+    """A created SAML configuration is stored in the database with its entity_id, sso_url and status
+    "active".
+    """
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     db = _DirectSession()
@@ -123,6 +135,7 @@ def test_create_persists_to_database(client, org):
 
 
 def test_get_returns_persisted_configuration(client, org):
+    """GET returns the organization's stored SAML configuration."""
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     resp = client.get(f"/orgs/{org['id']}/saml", headers=org["owner_headers"])
@@ -131,11 +144,13 @@ def test_get_returns_persisted_configuration(client, org):
 
 
 def test_get_saml_config_404_when_none_exists(client, org):
+    """GET returns 404 when the organization has no SAML configuration."""
     resp = client.get(f"/orgs/{org['id']}/saml", headers=org["owner_headers"])
     assert resp.status_code == 404
 
 
 def test_update_persists_changes(client, org):
+    """A partial update changes sso_url and persists it while leaving entity_id untouched."""
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     new_sso_url = "https://idp2.acme-test.example.com/sso"
@@ -152,6 +167,7 @@ def test_update_persists_changes(client, org):
 
 
 def test_update_enabled_and_status(client, org):
+    """A PATCH can set enabled to true and status to "disabled"."""
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     resp = client.patch(
@@ -163,6 +179,7 @@ def test_update_enabled_and_status(client, org):
 
 
 def test_update_does_not_create_a_second_configuration(client, org):
+    """Updating an organization's SAML configuration does not create a second row."""
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
     client.patch(f"/orgs/{org['id']}/saml", json={"sso_url": "https://new.example.com/sso"}, headers=org["owner_headers"])
 
@@ -178,6 +195,7 @@ def test_update_does_not_create_a_second_configuration(client, org):
 
 
 def test_delete_saml_config(client, org):
+    """Deleting the SAML configuration returns 204 and a following GET returns 404."""
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     resp = client.delete(f"/orgs/{org['id']}/saml", headers=org["owner_headers"])
@@ -191,6 +209,9 @@ def test_delete_saml_config(client, org):
 
 
 def test_second_saml_config_for_same_org_rejected(client, org):
+    """Creating a second SAML configuration for the same organization returns 409 and leaves the
+    original in place.
+    """
     first = client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
     assert first.status_code == 201
 
@@ -205,6 +226,7 @@ def test_second_saml_config_for_same_org_rejected(client, org):
 
 
 def test_delete_then_create_allowed(client, org):
+    """A SAML configuration can be created again after the previous one has been deleted."""
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
     client.delete(f"/orgs/{org['id']}/saml", headers=org["owner_headers"])
 
@@ -216,12 +238,14 @@ def test_delete_then_create_allowed(client, org):
 
 
 def test_empty_entity_id_rejected(client, org):
+    """An empty entity_id is rejected with 422 and nothing is stored."""
     resp = client.post(f"/orgs/{org['id']}/saml", json=_create_body(entity_id=""), headers=org["owner_headers"])
     assert resp.status_code == 422
     assert client.get(f"/orgs/{org['id']}/saml", headers=org["owner_headers"]).status_code == 404
 
 
 def test_non_http_scheme_sso_url_rejected(client, org):
+    """An SSO URL with a non-HTTP scheme (ftp) is rejected with 422 and nothing is stored."""
     resp = client.post(
         f"/orgs/{org['id']}/saml", json=_create_body(sso_url="ftp://idp.example.com/sso"),
         headers=org["owner_headers"],
@@ -231,6 +255,7 @@ def test_non_http_scheme_sso_url_rejected(client, org):
 
 
 def test_http_sso_url_rejected_by_default(client, org):
+    """A plain http SSO URL is rejected with 422 by default and nothing is stored."""
     resp = client.post(
         f"/orgs/{org['id']}/saml", json=_create_body(sso_url="http://idp.example.com/sso"),
         headers=org["owner_headers"],
@@ -240,6 +265,7 @@ def test_http_sso_url_rejected_by_default(client, org):
 
 
 def test_sso_url_without_hostname_rejected(client, org):
+    """An SSO URL without a hostname is rejected with 422."""
     resp = client.post(
         f"/orgs/{org['id']}/saml", json=_create_body(sso_url="https:///no-host"),
         headers=org["owner_headers"],
@@ -248,6 +274,7 @@ def test_sso_url_without_hostname_rejected(client, org):
 
 
 def test_malformed_certificate_rejected(client, org):
+    """A malformed x509 certificate is rejected with 422 and nothing is stored."""
     resp = client.post(
         f"/orgs/{org['id']}/saml", json=_create_body(x509_certificate="not-a-real-certificate"),
         headers=org["owner_headers"],
@@ -257,6 +284,7 @@ def test_malformed_certificate_rejected(client, org):
 
 
 def test_invalid_attribute_mapping_shape_rejected(client, org):
+    """An attribute mapping of the wrong shape is rejected with 422."""
     resp = client.post(
         f"/orgs/{org['id']}/saml",
         json={**_create_body(), "attribute_mapping": {"email": 12345}},
@@ -266,6 +294,7 @@ def test_invalid_attribute_mapping_shape_rejected(client, org):
 
 
 def test_invalid_status_value_rejected(client, org):
+    """An unknown status value is rejected with 422 and the stored status stays "active"."""
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
     resp = client.patch(
         f"/orgs/{org['id']}/saml", json={"status": "not-a-real-status"}, headers=org["owner_headers"]
@@ -277,6 +306,8 @@ def test_invalid_status_value_rejected(client, org):
 
 
 def test_update_invalid_sso_url_leaves_existing_config_untouched(client, org):
+    """An update with an invalid SSO URL is rejected with 422 and the stored sso_url is unchanged.
+    """
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
     resp = client.patch(
         f"/orgs/{org['id']}/saml", json={"sso_url": "ftp://bad.example.com"}, headers=org["owner_headers"]
@@ -291,11 +322,15 @@ def test_update_invalid_sso_url_leaves_existing_config_untouched(client, org):
 
 
 def test_org_admin_with_manage_sso_can_create(client, org):
+    """An organization owner holding manage_sso can create the SAML configuration."""
     resp = client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
     assert resp.status_code == 201
 
 
 def test_member_without_manage_sso_receives_403(client, org, admin_headers):
+    """A member whose role lacks manage_sso is refused with 403 when creating the SAML
+    configuration.
+    """
     owner_id = _user_id(client, org["owner"]["access_token"])
 
     narrow_role = f"org-saml-narrow-{uuid.uuid4().hex[:8]}"
@@ -310,6 +345,9 @@ def test_member_without_manage_sso_receives_403(client, org, admin_headers):
 
 
 def test_missing_token_rejected(client, org):
+    """Reading an organization's SAML configuration without a bearer token is rejected with 401 or
+    403.
+    """
     resp = client.get(f"/orgs/{org['id']}/saml")
     assert resp.status_code in (401, 403)
 
@@ -336,6 +374,7 @@ def _grant_platform_admin(email: str) -> None:
 
 
 def _platform_admin_headers(client):
+    """Register a user, grant platform_admin and return bearer headers for a fresh login."""
     admin = _register_and_login(client)
     _grant_platform_admin(admin["email"])
     relogged = client.post("/auth/login", json={"email": admin["email"], "password": admin["password"]}).json()
@@ -343,6 +382,9 @@ def _platform_admin_headers(client):
 
 
 def test_platform_admin_can_manage_any_org_saml_config(client, org):
+    """A platform admin who is not a member can create, read, update and delete any organization's
+    SAML configuration.
+    """
     platform_admin_headers = _platform_admin_headers(client)
 
     resp = client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=platform_admin_headers)
@@ -364,6 +406,9 @@ def test_platform_admin_can_manage_any_org_saml_config(client, org):
 
 
 def test_org_a_cannot_view_org_b_saml_config(client, org):
+    """An owner of another organization gets 404 when reading this organization's SAML
+    configuration, and vice versa.
+    """
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     other_owner = _register_and_login(client)
@@ -381,6 +426,9 @@ def test_org_a_cannot_view_org_b_saml_config(client, org):
 
 
 def test_org_a_cannot_update_or_delete_org_b_saml_config(client, org):
+    """An owner of another organization gets 404 when updating or deleting this organization's SAML
+    configuration.
+    """
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     other_owner = _register_and_login(client)
@@ -460,6 +508,9 @@ def test_organization_id_in_payload_cannot_override_server_side_scope(client, or
 
 
 def test_config_created_via_api_is_readable_by_get_saml_config(client, org):
+    """A configuration created through the API is readable by the get_saml_config service with the
+    same entity_id, sso_url and status.
+    """
     client.post(f"/orgs/{org['id']}/saml", json=_create_body(), headers=org["owner_headers"])
 
     from app.services import org_saml_service

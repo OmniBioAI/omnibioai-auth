@@ -1,5 +1,7 @@
 """SAML SSO PR3: SP metadata endpoint. No login/ACS/SLO exists yet -- see
 app/services/org_saml_service.py's module docstring.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import uuid
@@ -51,12 +53,16 @@ def org(client):
 
 
 def test_metadata_returns_200_with_correct_content_type(client, org):
+    """The SP metadata endpoint returns 200 with an application/samlmetadata+xml content type."""
     resp = client.get(f"/auth/saml/{org['slug']}/metadata")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/samlmetadata+xml")
 
 
 def test_metadata_is_well_formed_xml_and_matches_org_slug(client, org):
+    """The metadata is well-formed XML whose entityID contains the organization slug, with that
+    organization's HTTP-POST ACS URL and the email NameID format.
+    """
     resp = client.get(f"/auth/saml/{org['slug']}/metadata")
     root = etree.fromstring(resp.content)
 
@@ -84,11 +90,13 @@ def test_metadata_works_without_any_organizationsamlconfig_row(client, org):
 
 
 def test_metadata_unknown_org_returns_404(client):
+    """The metadata endpoint returns 404 for an unknown organization slug."""
     resp = client.get("/auth/saml/does-not-exist-org-slug-xyz/metadata")
     assert resp.status_code == 404
 
 
 def test_two_different_organizations_get_different_entity_ids_and_acs_urls(client):
+    """Two organizations' metadata have different entityIDs and different ACS URLs."""
     org_a = _create_org(client, "SAML Meta Org A")
     org_b = _create_org(client, "SAML Meta Org B")
 
@@ -143,6 +151,9 @@ def test_build_sp_metadata_is_independent_of_organization_existing():
 
 
 def test_entity_id_and_acs_url_are_pure_functions_of_org_slug():
+    """entity_id_for and acs_url_for derive the SP entity ID and ACS URL from the organization slug
+    alone.
+    """
     assert org_saml_service.entity_id_for("acme") == "https://webstudio.omnibioai.org/auth/saml/acme/metadata"
     assert org_saml_service.acs_url_for("acme") == "https://webstudio.omnibioai.org/auth/saml/acme/acs"
 

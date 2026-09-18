@@ -7,6 +7,8 @@ are mocked, same level tests/test_oauth.py's own `_mock_exchange`
 already mocks at -- not the MFA logic under test). Each test file is
 self-contained (local helpers), matching this repo's per-file
 duplication convention.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import urllib.parse
@@ -79,6 +81,9 @@ def _events(**filters) -> list[dict]:
 
 
 def _assert_no_secret_leakage(event: dict, *, secret: str | None = None, code: str | None = None) -> None:
+    """Assert that an audit event's states and metadata contain no encrypted secret, otpauth URI,
+    challenge token, plaintext TOTP secret or OTP code.
+    """
     blob = str(event["before_state"]) + str(event["after_state"]) + str(event["metadata"])
     for forbidden in ("encrypted_secret", "otpauth://", "challenge_token"):
         assert forbidden not in blob, f"{forbidden!r} leaked into audit event: {event}"
@@ -122,6 +127,7 @@ def mfa_user(client, configured_crypto):
 
 
 def _expired_challenge_token(user_id: int) -> str:
+    """Sign an MFA challenge token for the user whose expiry is already one minute in the past."""
     from datetime import datetime, timedelta
 
     return _sign({
@@ -139,6 +145,9 @@ def _expired_challenge_token(user_id: int) -> str:
 
 
 def test_login_without_mfa_returns_normal_tokens_unchanged(client):
+    """Login for a user without MFA returns 200 with access and refresh tokens, a bearer token type
+    and no mfa_required key.
+    """
     user = _register_and_login(client)
     resp = client.post("/auth/login", json={"email": user["email"], "password": user["password"]})
 
@@ -151,6 +160,7 @@ def test_login_without_mfa_returns_normal_tokens_unchanged(client):
 
 
 def test_access_token_carries_mfa_verified_claim_for_non_mfa_user(client):
+    """The access token issued to a user without MFA carries mfa_verified true."""
     user = _register_and_login(client)
     payload = decode_token(user["access_token"])
     assert payload["mfa_verified"] is True
@@ -160,6 +170,9 @@ def test_access_token_carries_mfa_verified_claim_for_non_mfa_user(client):
 
 
 def test_login_with_mfa_enabled_returns_challenge_not_tokens(client, mfa_user):
+    """Login for an MFA-enabled user returns only mfa_required, a challenge_token and methods
+    ["totp"], with no access or refresh token.
+    """
     resp = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
 
     assert resp.status_code == 200
@@ -174,6 +187,9 @@ def test_login_with_mfa_enabled_returns_challenge_not_tokens(client, mfa_user):
 
 
 def test_challenge_with_valid_code_returns_tokens(client, mfa_user):
+    """Completing the challenge with a valid TOTP code returns bearer tokens whose access token has
+    mfa_verified true and auth_method "password", and records mfa_last_verified_at.
+    """
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
     code = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
@@ -195,6 +211,7 @@ def test_challenge_with_valid_code_returns_tokens(client, mfa_user):
 
 
 def test_challenge_with_invalid_code_rejected(client, mfa_user):
+    """Completing the challenge with a wrong TOTP code returns 400."""
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
     correct = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
@@ -206,6 +223,7 @@ def test_challenge_with_invalid_code_rejected(client, mfa_user):
 
 
 def test_expired_challenge_token_rejected(client, mfa_user):
+    """An expired challenge token is rejected with 401 even with a valid code."""
     user_id = _user_id(client, mfa_user["access_token"])
     expired = _expired_challenge_token(user_id)
     code = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
@@ -216,6 +234,7 @@ def test_expired_challenge_token_rejected(client, mfa_user):
 
 
 def test_challenge_token_cannot_be_reused(client, mfa_user):
+    """A challenge token cannot be replayed: a second challenge with the same token returns 401."""
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
     code = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
@@ -228,6 +247,7 @@ def test_challenge_token_cannot_be_reused(client, mfa_user):
 
 
 def test_challenge_token_cannot_access_apis(client, mfa_user):
+    """A challenge token presented as a bearer token to an API route is rejected with 401."""
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
 
@@ -237,6 +257,9 @@ def test_challenge_token_cannot_access_apis(client, mfa_user):
 
 
 def test_challenge_token_cannot_refresh_session(client, mfa_user):
+    """A challenge token submitted to /auth/refresh is rejected with 401 and is never stored as a
+    refresh token.
+    """
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
 
@@ -271,6 +294,7 @@ def test_challenge_rejects_another_users_code(client, mfa_user):
 
 
 def test_stale_challenge_rejected_after_mfa_disabled(client, mfa_user):
+    """A challenge token issued before the user's MFA devices were removed is rejected with 401."""
     headers = _auth_header(mfa_user["access_token"])
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
@@ -286,6 +310,7 @@ def test_stale_challenge_rejected_after_mfa_disabled(client, mfa_user):
 
 
 def test_refresh_works_normally_after_completing_mfa_challenge(client, mfa_user):
+    """The refresh token issued after completing the MFA challenge can be refreshed normally."""
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
     code = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
@@ -302,11 +327,17 @@ def test_refresh_works_normally_after_completing_mfa_challenge(client, mfa_user)
 
 @pytest.fixture
 def configured_google(monkeypatch):
+    """Configure the Google OAuth provider with test client credentials for the duration of the
+    test.
+    """
     monkeypatch.setitem(PROVIDERS["google"], "client_id", "test-google-client-id")
     monkeypatch.setitem(PROVIDERS["google"], "client_secret", "test-google-client-secret")
 
 
 def test_oauth_login_with_mfa_enabled_returns_challenge(client, mfa_user, configured_google, monkeypatch):
+    """An OAuth (Google) callback for an MFA-enabled user returns status "mfa_required" with a
+    challenge token and methods ["totp"], and no access token.
+    """
     user_id = _user_id(client, mfa_user["access_token"])
     db = _DirectSession()
     try:
@@ -332,6 +363,9 @@ def test_oauth_login_with_mfa_enabled_returns_challenge(client, mfa_user, config
 
 
 def test_sso_login_with_mfa_enabled_returns_challenge(client, mfa_user, monkeypatch):
+    """An organization SSO callback for an MFA-enabled user returns status "mfa_required" with a
+    challenge token and methods ["totp"], and no access token.
+    """
     user_id = _user_id(client, mfa_user["access_token"])
     db = _DirectSession()
     try:
@@ -379,6 +413,9 @@ def test_sso_login_with_mfa_enabled_returns_challenge(client, mfa_user, monkeypa
 
 
 def test_license_login_with_mfa_enabled_returns_challenge(client, mfa_user):
+    """/license/validate for an MFA-enabled user returns valid=true with mfa_required, a challenge
+    token, and no access or refresh token.
+    """
     from app.services import license_service
 
     db = _DirectSession()
@@ -403,6 +440,9 @@ def test_license_login_with_mfa_enabled_returns_challenge(client, mfa_user):
 
 
 def test_license_login_without_mfa_unchanged(client):
+    """/license/validate for a user without MFA returns valid=true with mfa_required false, no
+    challenge token and an access token.
+    """
     from app.services import license_service
 
     user = _register_and_login(client)
@@ -429,6 +469,9 @@ def test_license_login_without_mfa_unchanged(client):
 
 
 def test_mfa_challenge_required_audit_event_emitted_without_secrets(client, mfa_user):
+    """Issuing an MFA challenge at login writes one audit event with authentication_method
+    "password" and no secret, code or challenge token.
+    """
     resp = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = resp.json()["challenge_token"]
     user_id = _user_id(client, mfa_user["access_token"])
@@ -442,6 +485,9 @@ def test_mfa_challenge_required_audit_event_emitted_without_secrets(client, mfa_
 
 
 def test_mfa_verified_audit_event_emitted_without_secrets(client, mfa_user):
+    """A successful MFA challenge writes one audit event with authentication_method "password" and
+    no secret or OTP code.
+    """
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
     code = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))
@@ -456,6 +502,9 @@ def test_mfa_verified_audit_event_emitted_without_secrets(client, mfa_user):
 
 
 def test_mfa_verification_failed_audit_event_emitted_on_wrong_code(client, mfa_user):
+    """A wrong code at the MFA challenge writes one audit event with authentication_method
+    "password" and no secret or submitted code.
+    """
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
     challenge_token = login.json()["challenge_token"]
     correct = mfa_service._totp_code_at(mfa_user["secret"], int(time.time()))

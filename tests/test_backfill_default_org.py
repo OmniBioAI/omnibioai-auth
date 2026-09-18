@@ -1,6 +1,8 @@
 """Phase 1 PR3: scripts/backfill_default_org.py correctness --
 transactional, idempotent, never touches user_roles, has a real
 verify-only mode.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import uuid
@@ -20,6 +22,7 @@ _DirectSession = sessionmaker(bind=_direct_engine)
 
 @pytest.fixture
 def db(client):
+    """Yield a direct DB session once app startup has created the Default Organization."""
     # `client` fixture (unused directly) guarantees app.main has already
     # run -- which is what actually creates the Default Organization this
     # backfill script requires to exist (app/db/init_admin.py's
@@ -32,6 +35,7 @@ def db(client):
 
 
 def _make_user_with_role(db, permission_names):
+    """Create an active user holding a fresh role with the given permission names."""
     role = role_service.get_or_create_role(db, f"backfill-role-{uuid.uuid4().hex[:8]}", permission_names)
     db.commit()
     user = User(
@@ -54,6 +58,9 @@ def _default_org(db):
 
 
 def test_backfill_creates_membership_matching_global_permissions(db):
+    """Backfill gives the user an active Default Organization membership whose roles match their
+    global roles, reports no mismatches, and leaves the original user_roles rows untouched.
+    """
     user = _make_user_with_role(db, ["read:samples", "write:samples"])
     original_role_ids = sorted(r.id for r in user.roles)
 
@@ -93,6 +100,9 @@ def test_backfill_never_touches_global_config(db):
 
 
 def test_backfill_is_idempotent(db):
+    """Running the backfill twice leaves exactly one membership row for the user and reports no
+    mismatches.
+    """
     user = _make_user_with_role(db, ["read:samples"])
 
     first = backfill(db, verify_only=False)
@@ -141,6 +151,7 @@ def test_backfill_detects_diverged_existing_membership(db):
 
 
 def test_verify_mode_writes_nothing(db):
+    """Verify-only mode reports the would-be backfill count but writes no membership rows."""
     user = _make_user_with_role(db, ["read:samples"])
     org = _default_org(db)
 

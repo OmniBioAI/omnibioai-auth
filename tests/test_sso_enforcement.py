@@ -2,6 +2,8 @@
 real behavior change for *existing* users' *existing* login attempts --
 strictly opt-in per org (an admin must explicitly set enforced=true, and
 only after the lockout guard is satisfied).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import base64
@@ -228,6 +230,9 @@ def _complete_one_sso_login(client, monkeypatch, rsa_keypair, org, sub=None, ema
 
 
 def test_enforced_true_rejected_without_prior_sso_login(client, org_with_sso):
+    """Enabling SSO enforcement before any member has completed an SSO login is rejected with 400
+    ("at least one member") and enforced stays false.
+    """
     resp = client.patch(
         f"/orgs/{org_with_sso['org_id']}/sso", json={"enforced": True}, headers=org_with_sso["owner_headers"]
     )
@@ -239,6 +244,7 @@ def test_enforced_true_rejected_without_prior_sso_login(client, org_with_sso):
 
 
 def test_enforced_true_succeeds_after_a_completed_sso_login(client, org_with_sso, monkeypatch, rsa_keypair):
+    """Enabling SSO enforcement succeeds after a member has completed an SSO login."""
     _complete_one_sso_login(client, monkeypatch, rsa_keypair, org_with_sso)
 
     resp = client.patch(
@@ -259,6 +265,9 @@ def _enable_enforcement(client, monkeypatch, rsa_keypair, org):
 
 
 def test_password_login_rejected_without_calling_verify_password(client, org_with_sso, monkeypatch, rsa_keypair):
+    """With OIDC SSO enforcement on, a password login by an enforced-domain member returns 403
+    without invoking password verification.
+    """
     # Registered (and logged in once, successfully) *before* enforcement
     # is turned on -- this is an existing password account that predates
     # the org enforcing SSO, exactly the case enforcement must still catch.
@@ -297,6 +306,9 @@ def test_password_login_still_works_with_wrong_domain_email(client, org_with_sso
 
 
 def test_google_oauth_login_rejected_for_enforced_org_member(client, org_with_sso, monkeypatch, rsa_keypair):
+    """A Google OAuth login by an enforced-organization member returns 403 with reason
+    "sso_required".
+    """
     _enable_enforcement(client, monkeypatch, rsa_keypair, org_with_sso)
 
     from app.core.jwt import create_oauth_state_token
@@ -318,6 +330,9 @@ def test_google_oauth_login_rejected_for_enforced_org_member(client, org_with_ss
 
 
 def test_get_callback_redirect_carries_sso_required_reason_as_query_params(client, org_with_sso, monkeypatch, rsa_keypair):
+    """The GET OAuth callback for an enforced-organization member redirects with status=error and
+    reason=sso_required in the query.
+    """
     _enable_enforcement(client, monkeypatch, rsa_keypair, org_with_sso)
 
     from app.core.jwt import create_oauth_state_token
@@ -377,6 +392,9 @@ def second_org_not_enforced(client, monkeypatch, public_dns, configured_crypto):
 def test_non_enforced_org_user_unaffected_by_other_orgs_enforcement(
     client, org_with_sso, second_org_not_enforced, monkeypatch, rsa_keypair
 ):
+    """A user of an organization that does not enforce SSO can still log in with a password while
+    another organization enforces it.
+    """
     _enable_enforcement(client, monkeypatch, rsa_keypair, org_with_sso)
 
     member = _register_and_login(client, email=f"frank-{uuid.uuid4().hex[:8]}@other-org-test.example.com")
@@ -388,6 +406,9 @@ def test_non_enforced_org_user_unaffected_by_other_orgs_enforcement(
 
 
 def test_override_requires_global_permission_not_org_admin(client, org_with_sso, monkeypatch, rsa_keypair):
+    """Creating an SSO enforcement override as an organization admin returns 403 because it needs a
+    global permission.
+    """
     _enable_enforcement(client, monkeypatch, rsa_keypair, org_with_sso)
 
     resp = client.post(
@@ -401,6 +422,9 @@ def test_override_requires_global_permission_not_org_admin(client, org_with_sso,
 def test_override_bypasses_enforcement_and_clear_restores_it(
     client, org_with_sso, admin_headers, monkeypatch, rsa_keypair
 ):
+    """An OIDC SSO enforcement override lets an enforced member log in with a password while
+    enforced stays true, and clearing it restores the 403 block.
+    """
     member = _register_and_login(client, email=f"grace-{uuid.uuid4().hex[:8]}@{org_with_sso['domain']}")
     _enable_enforcement(client, monkeypatch, rsa_keypair, org_with_sso)
 
@@ -466,6 +490,9 @@ def test_override_is_recorded_with_reason_and_actor(client, org_with_sso, admin_
 
 
 def test_enforced_can_be_disabled_without_the_lockout_guard(client, org_with_sso, monkeypatch, rsa_keypair):
+    """OIDC SSO enforcement can be switched off without the lockout guard, after which the member's
+    password login works again.
+    """
     _enable_enforcement(client, monkeypatch, rsa_keypair, org_with_sso)
 
     resp = client.patch(

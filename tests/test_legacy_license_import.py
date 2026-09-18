@@ -1,6 +1,8 @@
 """Phase 1 PR4: scripts/import_legacy_licenses.py correctness -- correct
 field mapping from the legacy license_server.py schema, transactional,
 idempotent, never overwrites a real collision.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import datetime
@@ -40,6 +42,7 @@ def _legacy_row(
     activated_at=None,
     is_active=1,
 ):
+    """Build a legacy license_server.py row dict with overridable fields."""
     return {
         "key": key,
         "email": email,
@@ -60,6 +63,9 @@ def _default_org(db):
 
 
 def test_import_maps_fields_correctly(db):
+    """Importing a legacy row maps its email, tier (to plan), platform, machine id, dates and usage
+    onto a license_keys row in the Default Organization, with no collisions.
+    """
     row = _legacy_row(
         key="OMNI-LEGA-CY01-TEST-0001",
         email="mapped@omnibioai.test",
@@ -94,6 +100,9 @@ def test_import_maps_fields_correctly(db):
 
 
 def test_import_maps_inactive_license_as_revoked(db):
+    """A legacy license marked inactive is imported as revoked, with a revoke reason mentioning
+    "legacy".
+    """
     row = _legacy_row(key="OMNI-LEGA-CY02-TEST-0002", is_active=0)
 
     import_legacy_licenses(db, [row], verify_only=False)
@@ -104,6 +113,9 @@ def test_import_maps_inactive_license_as_revoked(db):
 
 
 def test_import_never_activated_license_has_zero_usage(db):
+    """A legacy license that was never activated imports with usage_count 0 and no last-used time or
+    machine id.
+    """
     row = _legacy_row(key="OMNI-LEGA-CY03-TEST-0003", activated_at=None, machine_id=None)
 
     import_legacy_licenses(db, [row], verify_only=False)
@@ -118,6 +130,9 @@ def test_import_never_activated_license_has_zero_usage(db):
 
 
 def test_import_is_idempotent(db):
+    """Running the import twice imports the row once; the second run reports 0 imported, 1 already
+    present and no collisions.
+    """
     row = _legacy_row(key="OMNI-LEGA-CY04-TEST-0004")
 
     first = import_legacy_licenses(db, [row], verify_only=False)
@@ -170,6 +185,7 @@ def test_import_flags_real_collision_without_overwriting(db):
 
 
 def test_verify_mode_writes_nothing(db):
+    """Verify-only mode reports the would-be import count but writes no license rows."""
     row = _legacy_row(key="OMNI-LEGA-CY06-TEST-0006")
 
     result = import_legacy_licenses(db, [row], verify_only=True)

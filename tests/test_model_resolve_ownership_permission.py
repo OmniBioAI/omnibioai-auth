@@ -28,6 +28,8 @@ Covers the full focused checklist:
      companion updates in test_permission_registry.py (new
      MODEL_REGISTRY_OWNERSHIP_NAMES group) and
      test_platform_permissions_api.py (updated counts).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -95,6 +97,9 @@ def _scientist_role(db):
 # ── 1. Registered and recognized ────────────────────────────────────────────
 
 def test_model_resolve_ownership_is_registered_and_recognized():
+    """model.resolve_ownership is a known, non-legacy model-category permission with scope BOTH and
+    a valid resource.action format.
+    """
     assert is_known_permission("model.resolve_ownership")
     entry = REGISTRY["model.resolve_ownership"]
     assert entry.resource == "model"
@@ -108,6 +113,9 @@ def test_model_resolve_ownership_is_registered_and_recognized():
 # ── 2. Invalid permission names still rejected ──────────────────────────────
 
 def test_two_dot_variant_fails_format_validation():
+    """The two-dot name model.ownership.resolve fails permission format validation and is not a
+    known permission.
+    """
     # The originally-discussed name (model.ownership.resolve) has two dots
     # and must fail the single-dot resource.action validator -- confirming
     # why model.resolve_ownership (one dot) was used instead.
@@ -116,6 +124,9 @@ def test_two_dot_variant_fails_format_validation():
 
 
 def test_role_creation_still_rejects_unknown_permission_names(client):
+    """Creating a role with an unknown permission name still raises ValueError ("Unknown
+    permission").
+    """
     db = _DirectSession()
     try:
         with pytest.raises(ValueError, match="Unknown permission"):
@@ -127,6 +138,9 @@ def test_role_creation_still_rejects_unknown_permission_names(client):
 # ── 3 & 4. Grant / no-grant behavior ─────────────────────────────────────────
 
 def test_principal_without_permission_does_not_receive_it(client):
+    """A member whose role grants model.use but not model.resolve_ownership does not receive
+    model.resolve_ownership.
+    """
     db = _DirectSession()
     try:
         user = _make_user(db)
@@ -142,6 +156,9 @@ def test_principal_without_permission_does_not_receive_it(client):
 
 
 def test_principal_explicitly_granted_permission_receives_it(client):
+    """A member whose role explicitly includes model.resolve_ownership receives it in their
+    effective permissions.
+    """
     db = _DirectSession()
     try:
         user = _make_user(db)
@@ -172,6 +189,7 @@ def test_custom_role_can_be_granted_the_permission_via_role_crud(client):
 # ── 5. model.use and model.resolve_ownership are independent ────────────────
 
 def test_model_use_does_not_imply_model_resolve_ownership(client):
+    """Holding model.use does not grant model.resolve_ownership."""
     db = _DirectSession()
     try:
         user = _make_user(db)
@@ -209,6 +227,9 @@ def test_model_resolve_ownership_does_not_imply_model_use(client):
 # ── 6. Existing model.use authorization behavior unchanged ──────────────────
 
 def test_existing_scientist_permission_set_unchanged():
+    """SCIENTIST_PERMISSIONS is exactly workflow.execute, dataset.read, model.use and model.read,
+    without model.resolve_ownership.
+    """
     # SCIENTIST_PERMISSIONS (the role that carries model.use) must not have
     # gained model.resolve_ownership as a side effect of this change.
     # model.read was added later by the Model Registry read/use
@@ -223,6 +244,9 @@ def test_existing_scientist_permission_set_unchanged():
 # ── 7. Existing organization/UserContext behavior unchanged ─────────────────
 
 def test_org_admin_permission_list_is_additive_only():
+    """ORG_ADMIN_PERMISSIONS still contains every previously established permission and additionally
+    includes model.resolve_ownership.
+    """
     # model.resolve_ownership must be a pure addition to ORG_ADMIN_PERMISSIONS
     # -- every permission that was already there (the established
     # PR13/Phase-2 precedent set) must still be present.
@@ -235,6 +259,9 @@ def test_org_admin_permission_list_is_additive_only():
 
 
 def test_org_admin_role_still_grants_manage_org_alongside_new_permission(client):
+    """An org_admin member's permissions include manage_org and model.resolve_ownership but not the
+    platform-scoped manage_all_orgs.
+    """
     db = _DirectSession()
     try:
         user = _make_user(db)
@@ -253,6 +280,9 @@ def test_org_admin_role_still_grants_manage_org_alongside_new_permission(client)
 # ── 8. No client-controlled organization identity introduced ────────────────
 
 def test_permission_registry_entry_carries_no_organization_field():
+    """The registry definition of model.resolve_ownership has no organization_id or other
+    caller-suppliable identity field.
+    """
     # The registry entry itself is pure vocabulary -- no organization_id or
     # any other client-suppliable identity field is part of a PermissionDef.
     entry = REGISTRY["model.resolve_ownership"]

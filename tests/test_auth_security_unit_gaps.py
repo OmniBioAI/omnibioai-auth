@@ -1,4 +1,7 @@
-"""Hermetic coverage for authentication security helpers and provider edges."""
+"""Hermetic coverage for authentication security helpers and provider edges.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 
 from __future__ import annotations
 
@@ -33,6 +36,9 @@ from app.services.service_tokens import ServiceTokenIssuer
 
 
 def test_access_token_round_trip_and_invalid_signature_are_rejected():
+    """An access token decodes to its sub, type, issuer and audience claims, and a token whose
+    signature is replaced is rejected with JWTError.
+    """
     token = create_access_token({"sub": "7", "email": "user@example.test"})
     claims = decode_token(token)
     assert claims["sub"] == "7"
@@ -46,6 +52,9 @@ def test_access_token_round_trip_and_invalid_signature_are_rejected():
 
 
 def test_decode_token_rejects_wrong_audience_and_issuer():
+    """decode_token rejects a validly signed token carrying a foreign audience (JWTError) or an
+    untrusted issuer (JWTClaimsError "Invalid issuer").
+    """
     wrong_aud = jwt.encode(
         {"sub": "7", "aud": "other", "iss": settings.JWT_ISSUER},
         settings.SECRET_KEY,
@@ -64,6 +73,9 @@ def test_decode_token_rejects_wrong_audience_and_issuer():
 
 
 def test_oauth_state_token_contains_provider_and_optional_pkce_verifier():
+    """An OAuth state token has type "oauth_state" and carries the provider and PKCE code_verifier,
+    and omits code_verifier when none was supplied.
+    """
     token = create_oauth_state_token("google", code_verifier="verifier")
     claims = decode_token(token)
     assert claims["type"] == "oauth_state"
@@ -75,6 +87,10 @@ def test_oauth_state_token_contains_provider_and_optional_pkce_verifier():
 
 
 def test_specialized_tokens_have_distinct_types_and_bound_claims():
+    """SSO-state, SAML relay/SLO-relay, service, MFA-challenge and account-link tokens each decode
+    to their own type claim, with the SSO token bound to its organization and nonce and the MFA
+    challenge carrying user_id but no sub.
+    """
     tokens = [
         (create_sso_state_token(4, 5, "verifier", "nonce"), "sso_state"),
         (create_saml_relay_state_token(4, 6, "request-1"), "saml_relay_state"),
@@ -95,6 +111,9 @@ def test_specialized_tokens_have_distinct_types_and_bound_claims():
 
 
 def test_rs256_issuance_and_verification_uses_the_configured_algorithm(monkeypatch):
+    """With JWT_ALGORITHM set to RS256, access tokens are issued with an RS256 header and verify
+    back to their claims.
+    """
     monkeypatch.setattr(settings, "JWT_ALGORITHM", "RS256")
     token = create_access_token({"sub": "7"})
     assert jwt.get_unverified_header(token)["alg"] == "RS256"
@@ -102,6 +121,10 @@ def test_rs256_issuance_and_verification_uses_the_configured_algorithm(monkeypat
 
 
 def test_provider_configuration_and_userinfo_normalization_edges():
+    """OAuth provider configuration and userinfo parsing: unconfigured providers are reported as
+    such, GitHub userinfo takes only a verified email, missing required fields raise KeyError and
+    unknown providers raise ValueError.
+    """
     with patch.dict(
         oauth_providers.PROVIDERS["google"],
         {"client_id": "id", "client_secret": "secret"},
@@ -130,6 +153,8 @@ def test_provider_configuration_and_userinfo_normalization_edges():
 
 
 def test_pkce_and_authorize_urls_include_security_parameters():
+    """The OAuth authorize URL carries an S256 PKCE code_challenge, its method and a redirect_uri.
+    """
     verifier = "a" * 43
     challenge = _code_challenge_s256(verifier)
     assert len(challenge) > 40
@@ -145,6 +170,10 @@ def test_pkce_and_authorize_urls_include_security_parameters():
 
 
 def test_oidc_key_selection_and_authorize_url_fail_closed():
+    """OIDC signing-key selection refuses an unmatched kid or an ambiguous key set without a kid
+    (SSOLoginError), and the SSO authorize URL carries client_id, nonce and the org-specific
+    callback.
+    """
     assert _find_signing_key({"keys": [{"kid": "k1"}]}, "k1")["kid"] == "k1"
     assert _find_signing_key({"keys": [{"kid": "only"}]}, None)["kid"] == "only"
     with pytest.raises(SSOLoginError, match="does not match"):
@@ -160,6 +189,9 @@ def test_oidc_key_selection_and_authorize_url_fail_closed():
 
 
 def test_service_tokens_are_short_lived_and_audienced():
+    """ServiceTokenIssuer issues a service-typed token bound to the requested audience whose
+    lifetime equals the requested 30-second TTL.
+    """
     token = ServiceTokenIssuer("secret").issue_token("worker", ["api"], ttl_seconds=30)
     claims = jwt.decode(token, "secret", algorithms=["HS256"], audience="api")
     assert claims["type"] == "service"
@@ -169,6 +201,9 @@ def test_service_tokens_are_short_lived_and_audienced():
 
 
 def test_auth_dependency_fails_closed_and_permission_wrapper_checks_claims():
+    """get_current_user rejects an invalid token with 401, and require_permission passes a user
+    holding the permission but raises 403 when the permission is absent.
+    """
     with pytest.raises(HTTPException) as exc:
         get_current_user(SimpleNamespace(credentials="bad-token"))
     assert exc.value.status_code == 401
@@ -181,6 +216,9 @@ def test_auth_dependency_fails_closed_and_permission_wrapper_checks_claims():
 
 
 def test_blacklist_access_token_uses_remaining_ttl_and_fails_open():
+    """Blacklisting an access token writes a blacklist:jti: key with a TTL of at least one second,
+    and an undecodable token is skipped without any blacklist write or error.
+    """
     token = create_access_token({"sub": "7"})
     with patch("app.core.token_revocation._blacklist") as blacklist:
         blacklist_access_token(token)
@@ -196,6 +234,10 @@ def test_blacklist_access_token_uses_remaining_ttl_and_fails_open():
 
 
 def test_assert_token_usable_handles_redis_failure_and_revoked_or_inactive_users():
+    """assert_token_usable tolerates a Redis outage on the blacklist lookup (fail-open), but raises
+    "Token revoked" for a blacklisted jti or a jti recorded as revoked in the database, and "User
+    inactive" for a non-active user.
+    """
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = None
 

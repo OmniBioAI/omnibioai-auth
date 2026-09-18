@@ -7,6 +7,8 @@ tests/test_worker_integration_real_backends.py pattern) run only when a
 real Redis is reachable -- skipped, not failed, in CI or any environment
 without one. They use their own isolated stream name, never
 `interactions:events` itself, and are cleaned up (XDEL) after.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 import os
@@ -29,6 +31,9 @@ from _redis_integration_guard import (
 # ---------------------------------------------------------------------------
 
 def test_publish_interaction_calls_xadd_with_correct_stream():
+    """publish_interaction adds the event to the "interactions:events" Redis stream with a single
+    XADD.
+    """
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query", action="search",
     )
@@ -41,6 +46,9 @@ def test_publish_interaction_calls_xadd_with_correct_stream():
 
 
 def test_publish_interaction_payload_is_the_event_json():
+    """The XADD payload is the event's JSON and preserves its interaction_id, trace_id and
+    organization_id.
+    """
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query", action="search",
         trace_id="trace-xyz",
@@ -66,6 +74,9 @@ def test_publish_interaction_never_raises_when_redis_unavailable():
 
 
 def test_publish_interaction_never_raises_on_generic_exception():
+    """publish_interaction swallows an arbitrary exception raised by Redis instead of propagating it
+    to the caller.
+    """
     event = interaction_service.build_interaction_event(
         organization_id=1, service="rag", interaction_type="query",
     )
@@ -80,6 +91,8 @@ def test_publish_interaction_never_raises_on_generic_exception():
 # ---------------------------------------------------------------------------
 
 def test_create_interaction_persists_and_publishes():
+    """create_interaction stores an Interaction row and publishes one XADD for the returned event.
+    """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -102,6 +115,9 @@ def test_create_interaction_persists_and_publishes():
 
 
 def test_create_interaction_returns_event_even_if_redis_fails():
+    """create_interaction still returns an event with an interaction_id and persists the row when
+    Redis publishing fails.
+    """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -140,6 +156,7 @@ TEST_STREAM = f"interactions:events:b2-test-{uuid.uuid4().hex[:8]}"
 
 
 def _real_redis_available() -> bool:
+    """Return True only when the configured test Redis endpoint answers a ping."""
     if TEST_REDIS_URL is None:
         return False
     try:
