@@ -52,12 +52,18 @@ logger = logging.getLogger("omnibioai.auth.interactions")
 STREAM = "interactions:events"
 MAX_STREAM_LENGTH = int(os.getenv("INTERACTIONS_MAXLEN", "1000000"))
 
-# Same env var/default api-gateway's/security-audit's REDIS_URL and this
-# repo's own app/core/token_revocation.py already use -- already wired
-# into auth-service's compose environment (REDIS_URL: redis://redis:6379),
-# no omnibioai-studio change required.
+# Redis P1-5 role separation: this producer's own identity
+# (redis_interaction_producer -- ~interactions:events, +xadd only) must
+# be independently selectable from the security-state cluster's identity
+# (redis_auth -- rate_limit.py/token_revocation.py/routes_auth.py, which
+# keep reading plain REDIS_URL). INTERACTION_REDIS_URL falls back to
+# REDIS_URL so an unconfigured deployment is unaffected, and a deployment
+# that has moved REDIS_URL to redis_auth's credential fails safely
+# (NOPERM on the actual XADD call, not a silent auth/security-key leak)
+# rather than needing this module to widen redis_auth's ACL to compensate.
 _redis = redis.from_url(
-    os.getenv("REDIS_URL", "redis://redis:6379"), decode_responses=True
+    os.getenv("INTERACTION_REDIS_URL", os.getenv("REDIS_URL", "redis://redis:6379")),
+    decode_responses=True,
 )
 
 # Deny-list of metadata key *names* that must never carry a value into a
