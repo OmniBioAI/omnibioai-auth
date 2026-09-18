@@ -10,6 +10,8 @@ Not a test of any specific route's business logic -- see
 test_idor_org_scoping.py for that. This only asks: "does this route's
 dependency chain contain something more specific than 'is this a valid
 token'?"
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from app.main import app
 
@@ -78,6 +80,9 @@ def _org_scoped_routes():
 
 
 def test_every_org_scoped_route_has_a_real_authorization_dependency():
+    """Every route registered under an {org_id} path depends on an organization membership or
+    permission check (or a deliberate global permission or role), not merely on authentication.
+    """
     unprotected = []
     for route in _org_scoped_routes():
         qualnames = _dependency_qualnames(route.dependant)

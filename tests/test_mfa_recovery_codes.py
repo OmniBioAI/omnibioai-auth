@@ -3,6 +3,8 @@ repo's established convention: real HTTP calls through real routes/
 services against the shared sqlite test DB, rows/audit events read
 back via a second, direct session. Each test file is self-contained
 (local helpers), matching this repo's per-file duplication convention.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import re
 import time
@@ -52,6 +54,7 @@ def _user_row(user_id: int) -> User:
 
 
 def _recovery_code_rows(user_id: int) -> list[MFARecoveryCode]:
+    """Return the user's stored recovery-code rows."""
     db = _DirectSession()
     try:
         return db.query(MFARecoveryCode).filter(MFARecoveryCode.user_id == user_id).all()
@@ -60,6 +63,7 @@ def _recovery_code_rows(user_id: int) -> list[MFARecoveryCode]:
 
 
 def _device_rows(user_id: int) -> list[MFADevice]:
+    """Return the user's stored MFA device rows."""
     db = _DirectSession()
     try:
         return db.query(MFADevice).filter(MFADevice.user_id == user_id).all()
@@ -158,6 +162,9 @@ def platform_admin(client):
 
 
 def test_generate_recovery_codes_returns_10_codes_in_expected_format(client, mfa_user):
+    """Generating recovery codes returns 201 with ten distinct codes that all match the expected
+    code format.
+    """
     resp = client.post("/users/me/mfa/recovery-codes", headers=_auth_header(mfa_user["access_token"]))
 
     assert resp.status_code == 201
@@ -169,6 +176,9 @@ def test_generate_recovery_codes_returns_10_codes_in_expected_format(client, mfa
 
 
 def test_generate_recovery_codes_stores_hash_not_plaintext(client, mfa_user):
+    """Ten recovery-code rows are stored, each as a 64-character SHA-256 hex hash, and no plaintext
+    code equals or appears inside a stored value.
+    """
     user_id = _user_id(client, mfa_user["access_token"])
     resp = client.post("/users/me/mfa/recovery-codes", headers=_auth_header(mfa_user["access_token"]))
     codes = resp.json()["codes"]
@@ -186,6 +196,9 @@ def test_generate_recovery_codes_stores_hash_not_plaintext(client, mfa_user):
 
 
 def test_generate_recovery_codes_twice_invalidates_first_batch(client, mfa_user):
+    """Generating a second batch invalidates the first: a code from the first batch is rejected with
+    400 at the challenge.
+    """
     headers = _auth_header(mfa_user["access_token"])
     first = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
     client.post("/users/me/mfa/recovery-codes", headers=headers)  # second call, no active batch yet to worry about
@@ -201,6 +214,7 @@ def test_generate_recovery_codes_twice_invalidates_first_batch(client, mfa_user)
 
 
 def test_recovery_code_challenge_valid_code_returns_tokens(client, mfa_user):
+    """A valid recovery code completes the MFA challenge with 200 and access and refresh tokens."""
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
 
@@ -216,6 +230,7 @@ def test_recovery_code_challenge_valid_code_returns_tokens(client, mfa_user):
 
 
 def test_recovery_code_reused_fails(client, mfa_user):
+    """A recovery code that has already been used is rejected with 400 on a new challenge."""
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
 
@@ -233,6 +248,8 @@ def test_recovery_code_reused_fails(client, mfa_user):
 
 
 def test_recovery_code_lowercase_and_whitespace_normalized(client, mfa_user):
+    """A recovery code submitted in lowercase or with extra whitespace is normalized and accepted.
+    """
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
     variant = f"  {codes[0].lower()}  "
@@ -246,6 +263,7 @@ def test_recovery_code_lowercase_and_whitespace_normalized(client, mfa_user):
 
 
 def test_recovery_code_cross_user_isolation(client, mfa_user):
+    """Another user's recovery code is rejected with 400 at this user's challenge."""
     other = _register_and_login(client)
     other_headers = _auth_header(other["access_token"])
     _enable_mfa(client, other_headers)
@@ -264,6 +282,7 @@ def test_recovery_code_cross_user_isolation(client, mfa_user):
 
 
 def test_totp_still_works_after_recovery_codes_generated(client, mfa_user):
+    """A valid TOTP code still completes the challenge after recovery codes have been generated."""
     client.post("/users/me/mfa/recovery-codes", headers=_auth_header(mfa_user["access_token"]))
 
     login = client.post("/auth/login", json={"email": mfa_user["email"], "password": mfa_user["password"]})
@@ -274,6 +293,8 @@ def test_totp_still_works_after_recovery_codes_generated(client, mfa_user):
 
 
 def test_recovery_code_status_reflects_remaining_after_use(client, mfa_user):
+    """The recovery-code status reports remaining 10 after generation and 9 after one code is used.
+    """
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
     assert client.get("/users/me/mfa/recovery-codes", headers=headers).json() == {"remaining": 10}
@@ -285,6 +306,7 @@ def test_recovery_code_status_reflects_remaining_after_use(client, mfa_user):
 
 
 def test_recovery_codes_status_never_returns_codes(client, mfa_user):
+    """The recovery-code status response contains only the remaining count, never the codes."""
     headers = _auth_header(mfa_user["access_token"])
     client.post("/users/me/mfa/recovery-codes", headers=headers)
 
@@ -298,6 +320,9 @@ def test_recovery_codes_status_never_returns_codes(client, mfa_user):
 
 
 def test_regenerate_invalidates_old_codes_and_issues_new(client, mfa_user):
+    """Regenerating returns ten new codes disjoint from the old ones, and an old code is then
+    rejected with 400 at the challenge.
+    """
     headers = _auth_header(mfa_user["access_token"])
     old_codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
 
@@ -324,17 +349,23 @@ def test_regenerate_invalidates_old_codes_and_issues_new(client, mfa_user):
 
 
 def test_admin_reset_requires_platform_admin(client, mfa_user):
+    """Resetting a user's MFA as an ordinary user returns 403."""
     user_id = _user_id(client, mfa_user["access_token"])
     resp = client.post(f"/platform/users/{user_id}/mfa/reset", headers=_auth_header(mfa_user["access_token"]))
     assert resp.status_code == 403
 
 
 def test_admin_reset_nonexistent_user_returns_404(client, platform_admin):
+    """A platform admin resetting MFA for a nonexistent user id gets 404."""
     resp = client.post("/platform/users/999999999/mfa/reset", headers=platform_admin["headers"])
     assert resp.status_code == 404
 
 
 def test_admin_reset_disables_mfa_devices_and_recovery_codes(client, mfa_user, platform_admin):
+    """A platform admin's MFA reset returns MFA disabled, clears the user's primary method and MFA
+    timestamps, keeps the account active, disables every device and marks every recovery code
+    used.
+    """
     headers = _auth_header(mfa_user["access_token"])
     client.post("/users/me/mfa/recovery-codes", headers=headers)
     user_id = _user_id(client, mfa_user["access_token"])
@@ -392,6 +423,9 @@ def test_admin_reset_invalidates_stale_challenge_totp_and_recovery(client, mfa_u
 
 
 def test_recovery_codes_generated_audit_event_without_secret_leakage(client, mfa_user):
+    """Generating recovery codes writes one audit event with codes_issued 10 and none of the
+    plaintext codes.
+    """
     user_id = _user_id(client, mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=_auth_header(mfa_user["access_token"])).json()["codes"]
 
@@ -403,6 +437,9 @@ def test_recovery_codes_generated_audit_event_without_secret_leakage(client, mfa
 
 
 def test_recovery_codes_regenerated_audit_event(client, mfa_user):
+    """Regenerating writes one regenerated event (codes_issued 10, codes_invalidated 10) with no
+    plaintext codes, alongside only the single original generation event.
+    """
     headers = _auth_header(mfa_user["access_token"])
     user_id = _user_id(client, mfa_user["access_token"])
     old_codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
@@ -419,6 +456,9 @@ def test_recovery_codes_regenerated_audit_event(client, mfa_user):
 
 
 def test_recovery_code_used_audit_event_without_secret_leakage(client, mfa_user):
+    """Using a recovery code writes one audit event for the user with authentication_method
+    "password" and no secret or plaintext code.
+    """
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
     user_id = _user_id(client, mfa_user["access_token"])
@@ -435,6 +475,9 @@ def test_recovery_code_used_audit_event_without_secret_leakage(client, mfa_user)
 
 
 def test_admin_reset_audit_event_actor_target_attribution(client, mfa_user, platform_admin):
+    """An admin MFA reset writes one audit event with the admin as actor, the user as target and
+    after-state MFA disabled, without the TOTP secret.
+    """
     user_id = _user_id(client, mfa_user["access_token"])
     admin_id = platform_admin["id"]
 

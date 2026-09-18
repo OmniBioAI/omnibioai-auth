@@ -3,6 +3,8 @@ POST/GET/PUT/DELETE /organizations/{organization_id}/roles(/permissions).
 Neither surface's mutation endpoints existed before this PR (only read +
 user-role-assignment did) -- these are genuinely new API contracts, not
 regression tests of existing behavior.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -59,6 +61,9 @@ def _create_org(client, headers, name="PR13 CRUD Org"):
 
 
 def test_platform_admin_creates_edits_deletes_role(client):
+    """A platform admin can create a platform-wide role (201, no organization_id), edit its
+    permissions and delete it.
+    """
     admin = _platform_admin(client)
     name = _unique_role_name()
 
@@ -84,6 +89,7 @@ def test_platform_admin_creates_edits_deletes_role(client):
 
 
 def test_create_platform_role_duplicate_name_returns_409(client):
+    """Creating a platform role with an existing name returns 409."""
     admin = _platform_admin(client)
     name = _unique_role_name()
     client.post("/platform/roles", json={"name": name, "permissions": []}, headers=admin["headers"])
@@ -92,6 +98,7 @@ def test_create_platform_role_duplicate_name_returns_409(client):
 
 
 def test_create_platform_role_unknown_permission_returns_400(client):
+    """Creating a platform role with a permission not in the registry returns 400."""
     admin = _platform_admin(client)
     resp = client.post(
         "/platform/roles", json={"name": _unique_role_name(), "permissions": ["not.a.real.permission"]},
@@ -101,6 +108,7 @@ def test_create_platform_role_unknown_permission_returns_400(client):
 
 
 def test_delete_platform_role_in_use_returns_409(client):
+    """Deleting a platform role that is assigned to a user returns 409."""
     admin = _platform_admin(client)
     name = _unique_role_name()
     role_id = client.post("/platform/roles", json={"name": name, "permissions": []}, headers=admin["headers"]).json()["id"]
@@ -120,6 +128,9 @@ def _user_id(client, access_token):
 
 
 def test_platform_role_endpoints_cannot_reach_an_org_custom_role(client):
+    """The platform role endpoints return 404 when editing or deleting an organization's custom
+    role.
+    """
     admin = _platform_admin(client)
     org_id = _create_org(client, admin["headers"])
     name = _unique_role_name()
@@ -136,6 +147,7 @@ def test_platform_role_endpoints_cannot_reach_an_org_custom_role(client):
 
 
 def test_non_platform_admin_cannot_create_platform_role(client):
+    """A user without platform-admin permission gets 403 when creating a platform role."""
     regular = _register_and_login(client)
     resp = client.post(
         "/platform/roles", json={"name": _unique_role_name(), "permissions": []},
@@ -148,6 +160,9 @@ def test_non_platform_admin_cannot_create_platform_role(client):
 
 
 def test_org_admin_creates_edits_deletes_own_custom_role(client):
+    """An organization admin can create (201, scoped to the organization), edit and delete their own
+    organization's custom role.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     org_id = _create_org(client, headers)
@@ -172,6 +187,7 @@ def test_org_admin_creates_edits_deletes_own_custom_role(client):
 
 
 def test_org_scoped_role_list_excludes_other_orgs_custom_roles(client):
+    """An organization's role listing does not include another organization's custom roles."""
     owner_a = _register_and_login(client)
     headers_a = _auth_header(owner_a["access_token"])
     org_a = _create_org(client, headers_a, "Org A")
@@ -189,6 +205,9 @@ def test_org_scoped_role_list_excludes_other_orgs_custom_roles(client):
 
 
 def test_org_scoped_role_permissions_registry_excludes_global_scope(client):
+    """The organization permission catalog offers both-scope permissions such as dataset.read but
+    not global-scope ones such as manage_all_orgs.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     org_id = _create_org(client, headers)
@@ -201,6 +220,9 @@ def test_org_scoped_role_permissions_registry_excludes_global_scope(client):
 
 
 def test_org_admin_cannot_edit_another_orgs_custom_role(client):
+    """An organization admin editing another organization's custom role through their own
+    organization's URL gets 404.
+    """
     owner_a = _register_and_login(client)
     headers_a = _auth_header(owner_a["access_token"])
     org_a = _create_org(client, headers_a, "Org A2")

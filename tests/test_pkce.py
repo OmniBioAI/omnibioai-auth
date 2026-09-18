@@ -3,6 +3,8 @@ flow. Hardening only -- test_oauth.py's full existing suite (unmodified in
 behavior, only its mock's signature was extended) proves this didn't
 change the client-visible login contract; these tests prove the PKCE
 mechanics themselves.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import asyncio
@@ -28,6 +30,7 @@ def configured_google(monkeypatch):
 
 
 def test_state_token_embeds_code_verifier():
+    """A state token minted with a PKCE verifier carries that verifier in its payload."""
     state = create_oauth_state_token("google", code_verifier="abc123verifier")
     payload = decode_token(state)
     assert payload["code_verifier"] == "abc123verifier"
@@ -47,6 +50,7 @@ def test_state_token_without_code_verifier_omits_the_field():
 
 
 def test_build_authorize_url_includes_pkce_params(configured_google):
+    """The provider authorize URL contains a code_challenge and code_challenge_method=S256."""
     url = oauth_service.build_authorize_url("google")
     assert "code_challenge=" in url
     assert "code_challenge_method=S256" in url
@@ -71,6 +75,7 @@ def test_authorize_url_challenge_matches_state_token_verifier(configured_google)
 
 
 def test_login_route_redirect_contains_pkce_params(client, configured_google):
+    """The /auth/google/login redirect carries a PKCE code_challenge and the S256 method."""
     resp = client.get("/auth/google/login", follow_redirects=False)
     assert resp.status_code in (302, 307)
     location = resp.headers["location"]
@@ -132,6 +137,7 @@ def _reset_fake_client_capture():
 
 
 def test_exchange_sends_code_verifier_when_present(monkeypatch, configured_google):
+    """The provider token exchange sends the code_verifier in its POST body when one is supplied."""
     monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _FakeAsyncClient)
 
     asyncio.run(
@@ -142,6 +148,7 @@ def test_exchange_sends_code_verifier_when_present(monkeypatch, configured_googl
 
 
 def test_exchange_omits_code_verifier_when_absent(monkeypatch, configured_google):
+    """The provider token exchange omits code_verifier from its POST body when none is supplied."""
     monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _FakeAsyncClient)
 
     asyncio.run(oauth_service.exchange_code_for_userinfo("google", "fake-code"))

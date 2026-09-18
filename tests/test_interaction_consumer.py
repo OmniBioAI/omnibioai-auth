@@ -12,6 +12,8 @@ proof lives in scripts/verify_interaction_consumer.py (this PR's own
 integration validation script; see the PR-B4 report for why it is a
 standalone script rather than a pytest-collected test -- neither
 infrastructure is available in this repo's CI today).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import json
 import logging
@@ -23,6 +25,9 @@ import app.workers.interaction_consumer as consumer
 
 
 def _raw(interaction_id="int-1", tz_aware=False, metadata=None, **overrides):
+    """Build the JSON string of a stream message payload with overridable fields, optionally with a
+    tz-aware timestamp or metadata.
+    """
     payload = {
         "interaction_id": interaction_id,
         "timestamp": (
@@ -50,6 +55,9 @@ def _raw(interaction_id="int-1", tz_aware=False, metadata=None, **overrides):
 # ---------------------------------------------------------------------------
 
 def test_parse_event_valid():
+    """_parse_event turns a valid JSON payload into an InteractionEvent with its interaction_id,
+    organization_id and service.
+    """
     event = consumer._parse_event(_raw())
     assert event.interaction_id == "int-1"
     assert event.organization_id == 1
@@ -57,11 +65,15 @@ def test_parse_event_valid():
 
 
 def test_parse_event_malformed_json_raises():
+    """_parse_event raises json.JSONDecodeError for a payload that is not valid JSON."""
     with pytest.raises(json.JSONDecodeError):
         consumer._parse_event("not-json")
 
 
 def test_parse_event_missing_required_field_raises():
+    """_parse_event raises when required fields (organization_id, service, interaction_type) are
+    absent.
+    """
     # organization_id/service/interaction_type are required, non-default
     # InteractionEvent fields.
     with pytest.raises(Exception):
@@ -78,6 +90,7 @@ def test_parse_event_normalizes_tz_aware_timestamp_to_naive_utc():
 
 
 def test_parse_event_naive_timestamp_passes_through_unchanged():
+    """A timezone-naive timestamp is parsed unchanged, staying naive."""
     event = consumer._parse_event(_raw(tz_aware=False))
     assert event.timestamp.tzinfo is None
     assert event.timestamp.isoformat() == "2026-01-01T12:00:00"
@@ -98,6 +111,7 @@ def test_parse_event_redacts_secret_shaped_metadata():
 
 
 def test_parse_event_empty_metadata_stays_empty():
+    """An event with empty metadata is parsed with metadata equal to {}."""
     event = consumer._parse_event(_raw(metadata={}))
     assert event.metadata == {}
 
@@ -107,6 +121,9 @@ def test_parse_event_empty_metadata_stays_empty():
 # ---------------------------------------------------------------------------
 
 def test_handle_message_persists_and_acks():
+    """handle_message persists a valid message through persist_interaction, acknowledges its stream
+    id, closes the DB session and returns True.
+    """
     reader = MagicMock()
     fake_record = MagicMock()
 
@@ -124,6 +141,9 @@ def test_handle_message_persists_and_acks():
 
 
 def test_handle_message_passes_parsed_event_to_persist_interaction():
+    """handle_message hands the parsed InteractionEvent (with its interaction_id and service) to
+    persist_interaction.
+    """
     reader = MagicMock()
 
     with patch("app.workers.interaction_consumer.SessionLocal"), \
@@ -136,6 +156,7 @@ def test_handle_message_passes_parsed_event_to_persist_interaction():
 
 
 def test_handle_message_does_not_ack_on_parse_failure():
+    """A message whose data is not valid JSON returns False and is not acknowledged."""
     reader = MagicMock()
 
     result = consumer.handle_message(reader, "1-0", {"data": "not-json"})
@@ -145,6 +166,7 @@ def test_handle_message_does_not_ack_on_parse_failure():
 
 
 def test_handle_message_does_not_ack_on_missing_required_field():
+    """A message missing required event fields returns False and is not acknowledged."""
     reader = MagicMock()
 
     result = consumer.handle_message(
@@ -221,6 +243,7 @@ def test_handle_message_closes_db_session_even_on_parse_failure_path():
 # ---------------------------------------------------------------------------
 
 def _reader(pending=None, new=None):
+    """Build a MagicMock stream reader returning the given pending and new messages."""
     mock_reader = MagicMock()
     mock_reader.read_own_pending.return_value = pending or []
     mock_reader.read_new.return_value = new or []
@@ -228,6 +251,7 @@ def _reader(pending=None, new=None):
 
 
 def test_run_creates_consumer_group_on_startup():
+    """run() ensures the consumer group exists once at startup."""
     mock_reader = _reader()
     with patch("app.workers.interaction_consumer.InteractionStreamReader", return_value=mock_reader):
         consumer.run(max_iterations=1)
@@ -277,6 +301,9 @@ def test_run_own_pending_drain_pages_forward_past_stuck_message():
 
 
 def test_run_processes_messages_from_read_new():
+    """run() passes each message returned by read_new to handle_message with the reader, stream id
+    and fields.
+    """
     mock_reader = _reader(
         new=[(consumer.STREAM, [("1-0", {"data": _raw(interaction_id="evt-a")})])]
     )
@@ -289,6 +316,7 @@ def test_run_processes_messages_from_read_new():
 
 
 def test_run_stops_after_max_iterations():
+    """run(max_iterations=3) stops after exactly three read_new polls."""
     mock_reader = _reader()
     with patch("app.workers.interaction_consumer.InteractionStreamReader", return_value=mock_reader):
         consumer.run(max_iterations=3)
@@ -305,6 +333,9 @@ def test_run_stops_after_max_iterations():
 # ---------------------------------------------------------------------------
 
 def test_run_continues_after_read_timeout():
+    """run() treats a Redis read timeout as an idle poll and keeps polling for all iterations
+    without raising.
+    """
     from redis.exceptions import TimeoutError as RedisTimeoutError
 
     mock_reader = _reader()
@@ -317,6 +348,9 @@ def test_run_continues_after_read_timeout():
 
 
 def test_run_processes_a_message_after_a_timeout():
+    """A message that arrives on the poll after a Redis read timeout is still passed to
+    handle_message.
+    """
     from redis.exceptions import TimeoutError as RedisTimeoutError
 
     mock_reader = _reader()
@@ -335,6 +369,9 @@ def test_run_processes_a_message_after_a_timeout():
 
 
 def test_run_logs_but_survives_unexpected_read_exception(caplog):
+    """run() logs an unexpected Redis read error (connection reset) as a warning and continues to
+    the next poll instead of raising.
+    """
     from redis.exceptions import ConnectionError as RedisConnectionError
 
     mock_reader = _reader()
@@ -351,6 +388,8 @@ def test_run_logs_but_survives_unexpected_read_exception(caplog):
 
 
 def test_run_does_not_swallow_keyboard_interrupt():
+    """A KeyboardInterrupt raised while reading propagates out of run() rather than being swallowed.
+    """
     mock_reader = _reader()
     mock_reader.read_new.side_effect = KeyboardInterrupt()
 
@@ -415,6 +454,7 @@ def test_duplicate_delivery_across_two_runs_yields_one_persist_success_one_idemp
 # ---------------------------------------------------------------------------
 
 def test_run_stops_on_shutdown_flag_between_iterations():
+    """run() exits between iterations once the shutdown flag is set, after two read polls."""
     mock_reader = _reader()
     call_count = {"n": 0}
 
@@ -433,6 +473,7 @@ def test_run_stops_on_shutdown_flag_between_iterations():
 
 
 def test_sigterm_handler_sets_shutdown_flag():
+    """The SIGTERM handler sets the consumer's shutdown-requested flag."""
     consumer._shutdown_requested = False
     try:
         consumer._request_shutdown(15, None)

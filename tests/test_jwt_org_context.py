@@ -1,6 +1,8 @@
 """Phase 1 PR3: JWT v2 org context (org_id, org_role, auth_method,
 token_version), and proof that the existing v1 shape keeps working
 unmodified for anything still reading only sub/email/roles/permissions.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import uuid
@@ -162,6 +164,9 @@ def test_auth_validate_defaults_gracefully_for_v1_token(client):
 
 
 def test_auth_validate_reports_schema_version_2_for_fresh_token(client):
+    """/auth/validate reports schema_version 2 and auth_method "password" for a freshly issued login
+    token.
+    """
     user = _register_and_login(client)
     resp = client.post("/auth/validate", json={"token": user["access_token"]})
     data = resp.json()

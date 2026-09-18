@@ -7,6 +7,8 @@ tests/test_audit_ledger.py's own local helpers exactly -- the closest
 existing precedent for "grant a test user manage_all_orgs, then call a
 /platform/* route" -- rather than a new fixture, matching this repo's
 established per-file-helper convention for this exact need.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 from datetime import datetime, timedelta
@@ -108,11 +110,13 @@ def platform_admin(client):
 # ── Authentication ──────────────────────────────────────────────────────
 
 def test_list_interactions_missing_token_401(client):
+    """GET /platform/interactions without a bearer token returns 401."""
     resp = client.get("/platform/interactions")
     assert resp.status_code == 401
 
 
 def test_list_interactions_invalid_token_401(client):
+    """GET /platform/interactions with an invalid token returns 401."""
     resp = client.get("/platform/interactions", headers=_auth_header("not-a-real-token"))
     assert resp.status_code == 401
 
@@ -120,12 +124,14 @@ def test_list_interactions_invalid_token_401(client):
 # ── Authorization ────────────────────────────────────────────────────────
 
 def test_list_interactions_without_manage_all_orgs_403(client):
+    """GET /platform/interactions by a user lacking manage_all_orgs returns 403."""
     ordinary = _register_and_login(client)
     resp = client.get("/platform/interactions", headers=_auth_header(ordinary["access_token"]))
     assert resp.status_code == 403
 
 
 def test_list_interactions_platform_admin_200(client, platform_admin):
+    """A platform admin can GET /platform/interactions with 200."""
     resp = client.get("/platform/interactions", headers=platform_admin["headers"])
     assert resp.status_code == 200
 
@@ -153,6 +159,9 @@ def test_org_member_does_not_gain_access_via_own_org(client):
 # ── List: empty / single / multiple ────────────────────────────────────
 
 def test_list_interactions_empty_result(client, platform_admin):
+    """With no matching interactions the list returns empty items, total 0, page 1, page_size 20 and
+    total_pages 0.
+    """
     resp = client.get(
         "/platform/interactions",
         params={"organization_id": 999999},
@@ -164,6 +173,7 @@ def test_list_interactions_empty_result(client, platform_admin):
 
 
 def test_list_interactions_single_result(client, platform_admin):
+    """A single seeded interaction is returned with total 1 and its interaction_id."""
     org_id = 424242
     row = _seed_interaction(organization_id=org_id)
     try:
@@ -181,6 +191,7 @@ def test_list_interactions_single_result(client, platform_admin):
 
 
 def test_list_interactions_multiple_results(client, platform_admin):
+    """Three seeded interactions are all returned with total 3."""
     org_id = 424243
     rows = [_seed_interaction(organization_id=org_id) for _ in range(3)]
     try:
@@ -200,6 +211,9 @@ def test_list_interactions_multiple_results(client, platform_admin):
 # ── Pagination ───────────────────────────────────────────────────────────
 
 def test_list_interactions_pagination(client, platform_admin):
+    """Five interactions split into pages of two report total 5 and three pages (2, 2 and 1 items),
+    and together cover every seeded interaction.
+    """
     org_id = 424244
     rows = [_seed_interaction(organization_id=org_id) for _ in range(5)]
     try:
@@ -232,11 +246,13 @@ def test_list_interactions_pagination(client, platform_admin):
 
 
 def test_list_interactions_page_size_default(client, platform_admin):
+    """The default page size is 20."""
     resp = client.get("/platform/interactions", headers=platform_admin["headers"])
     assert resp.json()["page_size"] == 20
 
 
 def test_list_interactions_page_size_maximum_accepted(client, platform_admin):
+    """A page_size of 100 is accepted and echoed back."""
     resp = client.get(
         "/platform/interactions", params={"page_size": 100}, headers=platform_admin["headers"]
     )
@@ -245,6 +261,7 @@ def test_list_interactions_page_size_maximum_accepted(client, platform_admin):
 
 
 def test_list_interactions_page_size_above_maximum_rejected(client, platform_admin):
+    """A page_size of 101 is rejected with 422."""
     resp = client.get(
         "/platform/interactions", params={"page_size": 101}, headers=platform_admin["headers"]
     )
@@ -252,6 +269,7 @@ def test_list_interactions_page_size_above_maximum_rejected(client, platform_adm
 
 
 def test_list_interactions_page_below_one_rejected(client, platform_admin):
+    """A page number of 0 is rejected with 422."""
     resp = client.get(
         "/platform/interactions", params={"page": 0}, headers=platform_admin["headers"]
     )
@@ -261,6 +279,9 @@ def test_list_interactions_page_below_one_rejected(client, platform_admin):
 # ── Filtering ────────────────────────────────────────────────────────────
 
 def test_filter_by_organization_id(client, platform_admin):
+    """The organization_id filter returns that organization's interactions and excludes another
+    organization's.
+    """
     org_a, org_b = 434201, 434202
     row_a = _seed_interaction(organization_id=org_a)
     row_b = _seed_interaction(organization_id=org_b)
@@ -277,6 +298,7 @@ def test_filter_by_organization_id(client, platform_admin):
 
 
 def test_filter_by_user_id(client, platform_admin):
+    """The user_id filter returns only that user's interactions."""
     org_id = 434203
     row_a = _seed_interaction(organization_id=org_id, user_id=5001)
     row_b = _seed_interaction(organization_id=org_id, user_id=5002)
@@ -293,6 +315,7 @@ def test_filter_by_user_id(client, platform_admin):
 
 
 def test_filter_by_service(client, platform_admin):
+    """The service filter returns only interactions of that service."""
     org_id = 434204
     row_a = _seed_interaction(organization_id=org_id, service="rag")
     row_b = _seed_interaction(organization_id=org_id, service="lims")
@@ -309,6 +332,7 @@ def test_filter_by_service(client, platform_admin):
 
 
 def test_filter_by_interaction_type(client, platform_admin):
+    """The interaction_type filter returns only interactions of that type."""
     org_id = 434205
     row_a = _seed_interaction(organization_id=org_id, interaction_type="query")
     row_b = _seed_interaction(organization_id=org_id, interaction_type="ingest")
@@ -326,6 +350,7 @@ def test_filter_by_interaction_type(client, platform_admin):
 
 
 def test_filter_by_status(client, platform_admin):
+    """The status filter returns only interactions with that status."""
     org_id = 434206
     row_a = _seed_interaction(organization_id=org_id, status="success")
     row_b = _seed_interaction(organization_id=org_id, status="error")
@@ -342,6 +367,9 @@ def test_filter_by_status(client, platform_admin):
 
 
 def test_filter_by_start_and_end_date(client, platform_admin):
+    """The start_date and end_date filters each return only interactions on the correct side of the
+    boundary.
+    """
     org_id = 434207
     old = _seed_interaction(organization_id=org_id, created_at=datetime(2020, 1, 1))
     recent = _seed_interaction(organization_id=org_id, created_at=datetime.utcnow())
@@ -368,6 +396,7 @@ def test_filter_by_start_and_end_date(client, platform_admin):
 
 
 def test_multi_filter_and_combination(client, platform_admin):
+    """Multiple filters combine with AND, returning only the interaction matching all of them."""
     org_id = 434208
     match = _seed_interaction(organization_id=org_id, service="rag", status="success")
     wrong_service = _seed_interaction(organization_id=org_id, service="lims", status="success")
@@ -389,6 +418,7 @@ def test_multi_filter_and_combination(client, platform_admin):
 # ── Sorting ──────────────────────────────────────────────────────────────
 
 def test_sorting_created_at_desc(client, platform_admin):
+    """Interactions are returned newest first by created_at."""
     org_id = 434209
     older = _seed_interaction(organization_id=org_id, created_at=datetime(2023, 1, 1))
     newer = _seed_interaction(organization_id=org_id, created_at=datetime(2024, 1, 1))
@@ -404,6 +434,9 @@ def test_sorting_created_at_desc(client, platform_admin):
 
 
 def test_sorting_id_desc_tiebreak_on_identical_created_at(client, platform_admin):
+    """Interactions with identical created_at are ordered by id descending, so the later inserted
+    one comes first.
+    """
     org_id = 434210
     same_ts = datetime(2024, 6, 1, 12, 0, 0)
     first = _seed_interaction(organization_id=org_id, created_at=same_ts)
@@ -424,6 +457,9 @@ def test_sorting_id_desc_tiebreak_on_identical_created_at(client, platform_admin
 # ── Single record ────────────────────────────────────────────────────────
 
 def test_get_interaction_existing_200(client, platform_admin):
+    """GET /platform/interactions/{id} for an existing interaction returns 200 with its
+    interaction_id.
+    """
     row = _seed_interaction()
     try:
         resp = client.get(
@@ -436,6 +472,7 @@ def test_get_interaction_existing_200(client, platform_admin):
 
 
 def test_get_interaction_nonexistent_404(client, platform_admin):
+    """GET for a nonexistent interaction id returns 404."""
     resp = client.get(
         f"/platform/interactions/{uuid.uuid4()}", headers=platform_admin["headers"]
     )
@@ -443,6 +480,7 @@ def test_get_interaction_nonexistent_404(client, platform_admin):
 
 
 def test_get_interaction_without_manage_all_orgs_403(client):
+    """GET for a single interaction by a user lacking manage_all_orgs returns 403."""
     ordinary = _register_and_login(client)
     resp = client.get(
         f"/platform/interactions/{uuid.uuid4()}", headers=_auth_header(ordinary["access_token"])
@@ -453,6 +491,9 @@ def test_get_interaction_without_manage_all_orgs_403(client):
 # ── Organization behavior (platform-admin cross-org visibility) ─────────
 
 def test_platform_admin_lists_across_organizations_without_filter(client, platform_admin):
+    """Without an organization filter a platform admin's list spans interactions of different
+    organizations.
+    """
     org_a, org_b = 434211, 434212
     row_a = _seed_interaction(organization_id=org_a)
     row_b = _seed_interaction(organization_id=org_b)
@@ -468,6 +509,7 @@ def test_platform_admin_lists_across_organizations_without_filter(client, platfo
 # ── Response schema ──────────────────────────────────────────────────────
 
 def test_nullable_fields_serialize_as_null(client, platform_admin):
+    """Unset user_id, session_id, trace_id and decision are returned as null."""
     row = _seed_interaction(user_id=None, session_id=None, trace_id=None, decision=None)
     try:
         resp = client.get(
@@ -482,6 +524,7 @@ def test_nullable_fields_serialize_as_null(client, platform_admin):
 
 
 def test_metadata_returned_under_metadata_field_name(client, platform_admin):
+    """Stored event metadata is returned under the "metadata" key, with no "event_metadata" key."""
     row = _seed_interaction(event_metadata={"mode": "rag", "top_k": 5})
     try:
         resp = client.get(
@@ -494,6 +537,9 @@ def test_metadata_returned_under_metadata_field_name(client, platform_admin):
 
 
 def test_no_internal_orm_leakage(client, platform_admin):
+    """A single interaction response contains exactly the public field set and no internal ORM
+    attributes.
+    """
     row = _seed_interaction()
     try:
         resp = client.get(

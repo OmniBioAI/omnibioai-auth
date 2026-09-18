@@ -7,6 +7,8 @@ properties, applied to a different permission/role/env var.
 The one property every test here protects: BIO_AGENT_SVC_EMAIL is
 opt-in. Unset, this whole mechanism is inert -- no role, no permission
 grant, for anyone.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from app.db.models import AuditEvent, Role, User
 
 @pytest.fixture
 def db_session(tmp_path):
+    """Provide a session on a throwaway per-test SQLite database with every table created."""
     db_url = f"sqlite:///{tmp_path / 'bio_agent_service_role.db'}"
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
@@ -32,6 +35,9 @@ def db_session(tmp_path):
 
 
 def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"):
+    """Run create_admin() followed by ensure_bio_agent_service_role() using the given admin
+    bootstrap password.
+    """
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", password)
     create_admin(db)
     ensure_bio_agent_service_role(db)
@@ -41,6 +47,9 @@ def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"
 
 
 def test_unset_env_var_creates_no_role_and_grants_nothing(db_session, monkeypatch):
+    """With BIO_AGENT_SVC_EMAIL unset, no bio_agent_service role is created and no audit event is
+    written.
+    """
     monkeypatch.delenv("BIO_AGENT_SVC_EMAIL", raising=False)
     _bootstrap(db_session, monkeypatch)
 
@@ -49,6 +58,9 @@ def test_unset_env_var_creates_no_role_and_grants_nothing(db_session, monkeypatc
 
 
 def test_blank_env_var_is_treated_the_same_as_unset(db_session, monkeypatch):
+    """A whitespace-only BIO_AGENT_SVC_EMAIL is treated as unset: no bio_agent_service role is
+    created.
+    """
     monkeypatch.setenv("BIO_AGENT_SVC_EMAIL", "   ")
     _bootstrap(db_session, monkeypatch)
 
@@ -59,6 +71,9 @@ def test_blank_env_var_is_treated_the_same_as_unset(db_session, monkeypatch):
 
 
 def test_designates_an_existing_user(db_session, monkeypatch):
+    """BIO_AGENT_SVC_EMAIL designates an existing user, who receives the bio_agent_service role, and
+    that role carries only the service_token.mint permission.
+    """
     svc = User(email="svc-bio-agent@omnibioai.internal", hashed_password="x", status="active")
     db_session.add(svc)
     db_session.commit()
@@ -75,6 +90,9 @@ def test_designates_an_existing_user(db_session, monkeypatch):
 
 
 def test_grant_is_audit_logged_with_no_human_actor(db_session, monkeypatch):
+    """The grant writes exactly one role_assigned audit event with no actor user and source
+    "bootstrap.bio_agent_svc_email".
+    """
     svc = User(email="svc-bio-agent@omnibioai.internal", hashed_password="x", status="active")
     db_session.add(svc)
     db_session.commit()
@@ -92,6 +110,9 @@ def test_grant_is_audit_logged_with_no_human_actor(db_session, monkeypatch):
 
 
 def test_idempotent_across_repeated_startups(db_session, monkeypatch):
+    """Repeated startups leave the designated account with a single bio_agent_service role and a
+    single audit event.
+    """
     svc = User(email="svc-bio-agent@omnibioai.internal", hashed_password="x", status="active")
     db_session.add(svc)
     db_session.commit()
@@ -107,6 +128,9 @@ def test_idempotent_across_repeated_startups(db_session, monkeypatch):
 
 
 def test_env_var_with_no_matching_user_is_a_safe_no_op(db_session, monkeypatch):
+    """When BIO_AGENT_SVC_EMAIL names no existing user, startup does not raise, writes no audit
+    event and grants the role to nobody, while the service_token.mint-only role is still created.
+    """
     monkeypatch.setenv("BIO_AGENT_SVC_EMAIL", "svc-bio-agent@omnibioai.internal")
     _bootstrap(db_session, monkeypatch)  # must not raise -- account doesn't exist yet
 
@@ -143,6 +167,9 @@ def test_a_second_scientist_role_holder_is_not_granted_the_mint_permission(db_se
 
 
 def test_does_not_touch_any_other_role_the_account_already_holds(db_session, monkeypatch):
+    """Granting bio_agent_service leaves the account's existing scientist role in place, giving
+    exactly {scientist, bio_agent_service}.
+    """
     from app.services.role_service import get_or_create_role
 
     svc = User(email="svc-bio-agent@omnibioai.internal", hashed_password="x", status="active")

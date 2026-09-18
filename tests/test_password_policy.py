@@ -15,6 +15,8 @@ file's own tests that don't care about the compromised-password path
 specifically) rely on that default. Tests here that need a different
 provider behavior patch it again themselves, for the duration of that
 one test only.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 from unittest.mock import MagicMock, patch
@@ -29,6 +31,7 @@ def _unique_email():
 
 
 def _hibp_response(text: str):
+    """Build a fake Pwned Passwords range response whose body is the given text."""
     resp = MagicMock()
     resp.raise_for_status.return_value = None
     resp.text = text
@@ -38,6 +41,7 @@ def _hibp_response(text: str):
 # ── Minimum / maximum length ────────────────────────────────────────────
 
 def test_password_below_minimum_rejected(client):
+    """Registration with a password shorter than PASSWORD_MIN_LENGTH returns 400."""
     email = _unique_email()
     short = "x" * (settings.PASSWORD_MIN_LENGTH - 1)
     resp = client.post("/auth/register", json={"email": email, "password": short})
@@ -45,6 +49,7 @@ def test_password_below_minimum_rejected(client):
 
 
 def test_password_exactly_minimum_accepted(client):
+    """A password of exactly PASSWORD_MIN_LENGTH characters registers with 200."""
     email = _unique_email()
     exact = "Xy9!" + "a" * (settings.PASSWORD_MIN_LENGTH - 4)
     assert len(exact) == settings.PASSWORD_MIN_LENGTH
@@ -53,12 +58,14 @@ def test_password_exactly_minimum_accepted(client):
 
 
 def test_password_above_minimum_accepted(client):
+    """A password longer than the minimum registers with 200."""
     email = _unique_email()
     resp = client.post("/auth/register", json={"email": email, "password": "Correct-Horse-Battery-1"})
     assert resp.status_code == 200
 
 
 def test_password_up_to_max_length_accepted(client):
+    """A password of exactly PASSWORD_MAX_LENGTH characters registers with 200."""
     email = _unique_email()
     long_pw = "Aa1!" + "b" * (settings.PASSWORD_MAX_LENGTH - 4)
     assert len(long_pw) == settings.PASSWORD_MAX_LENGTH
@@ -67,6 +74,7 @@ def test_password_up_to_max_length_accepted(client):
 
 
 def test_password_above_max_length_rejected(client):
+    """A password longer than PASSWORD_MAX_LENGTH is rejected with 400."""
     email = _unique_email()
     too_long = "Aa1!" + "b" * settings.PASSWORD_MAX_LENGTH
     resp = client.post("/auth/register", json={"email": email, "password": too_long})
@@ -98,6 +106,7 @@ def test_no_silent_truncation_full_password_required_to_login(client):
 # ── Strength / common-password behavior ─────────────────────────────────
 
 def test_common_password_rejected(client):
+    """A password on the common-password list ("password1234") is rejected with 400."""
     email = _unique_email()
     assert "password1234" in __import__("app.core.common_passwords", fromlist=["COMMON_PASSWORDS"]).COMMON_PASSWORDS
     resp = client.post("/auth/register", json={"email": email, "password": "password1234"})
@@ -105,18 +114,22 @@ def test_common_password_rejected(client):
 
 
 def test_reasonable_passphrase_accepted(client):
+    """A long lowercase passphrase registers with 200."""
     email = _unique_email()
     resp = client.post("/auth/register", json={"email": email, "password": "correct horse battery staple"})
     assert resp.status_code == 200
 
 
 def test_password_with_symbols_accepted(client):
+    """A password containing symbols registers with 200."""
     email = _unique_email()
     resp = client.post("/auth/register", json={"email": email, "password": "Tr@ffic-Light#42$Zebra"})
     assert resp.status_code == 200
 
 
 def test_unicode_password_accepted(client):
+    """A password containing non-ASCII characters registers with 200 and can then be used to log in.
+    """
     email = _unique_email()
     resp = client.post("/auth/register", json={"email": email, "password": "Correct-Häst-日本語-Пароль1"})
     assert resp.status_code == 200
@@ -125,6 +138,7 @@ def test_unicode_password_accepted(client):
 
 
 def test_password_matching_own_email_rejected(client):
+    """A password identical to the registering user's own email is rejected with 400."""
     email = _unique_email()
     resp = client.post("/auth/register", json={"email": email, "password": email})
     assert resp.status_code == 400
@@ -142,6 +156,7 @@ def test_password_not_overconstrained_no_mandatory_character_classes(client):
 # ── Compromised-password checking ───────────────────────────────────────
 
 def test_known_compromised_password_rejected(client):
+    """A password found in the breach-lookup response is rejected with 400."""
     password = "Compr0mised-Example-Pw!"
     _, suffix = password_policy.compromised_password._sha1_prefix_suffix(password)
     fake_text = f"{suffix}:47\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:3\n"
@@ -151,6 +166,7 @@ def test_known_compromised_password_rejected(client):
 
 
 def test_known_safe_password_accepted(client):
+    """A password absent from the breach-lookup response registers with 200."""
     password = "Definitely-Not-Breached-Pw-42!"
     _, _suffix = password_policy.compromised_password._sha1_prefix_suffix(password)
     fake_text = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:9\nBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB:2\n"
@@ -160,6 +176,9 @@ def test_known_safe_password_accepted(client):
 
 
 def test_only_prefix_sent_never_plaintext_or_full_hash(client):
+    """The breach lookup sends only the hash prefix: neither the password nor the rest of its hash
+    appears in the request.
+    """
     password = "Never-Send-This-Plaintext-42!"
     _, real_suffix = password_policy.compromised_password._sha1_prefix_suffix(password)
     captured = {}
@@ -179,6 +198,9 @@ def test_only_prefix_sent_never_plaintext_or_full_hash(client):
 
 
 def test_provider_response_parsed_case_insensitively(client):
+    """Hash suffixes in the breach-lookup response match regardless of letter case, so a compromised
+    password is still rejected.
+    """
     password = "Case-Insensitive-Match-Pw-9!"
     _, suffix = password_policy.compromised_password._sha1_prefix_suffix(password)
     fake_text = f"{suffix.lower()}:5\n"
@@ -188,12 +210,16 @@ def test_provider_response_parsed_case_insensitively(client):
 
 
 def test_provider_unavailable_fails_open_by_default(client):
+    """When the breach provider is unreachable, registration still succeeds by default."""
     with patch("app.core.compromised_password.httpx.get", side_effect=ConnectionError("simulated outage")):
         resp = client.post("/auth/register", json={"email": _unique_email(), "password": "Outage-Fallback-Pw-42!"})
     assert resp.status_code == 200
 
 
 def test_provider_unavailable_fails_closed_when_configured(client, monkeypatch):
+    """With PASSWORD_COMPROMISE_CHECK_FAIL_CLOSED enabled, an unreachable breach provider makes
+    registration fail with 400.
+    """
     monkeypatch.setattr(settings, "PASSWORD_COMPROMISE_CHECK_FAIL_CLOSED", True)
     with patch("app.core.compromised_password.httpx.get", side_effect=ConnectionError("simulated outage")):
         resp = client.post("/auth/register", json={"email": _unique_email(), "password": "Outage-Strict-Pw-42!"})
@@ -201,6 +227,9 @@ def test_provider_unavailable_fails_closed_when_configured(client, monkeypatch):
 
 
 def test_provider_timeout_handled_same_as_connection_error(client):
+    """A breach-provider timeout is handled like a connection error: registration still succeeds by
+    default.
+    """
     import httpx as httpx_module
     with patch("app.core.compromised_password.httpx.get", side_effect=httpx_module.TimeoutException("timed out")):
         resp = client.post("/auth/register", json={"email": _unique_email(), "password": "Timeout-Fallback-Pw-42!"})
@@ -208,6 +237,7 @@ def test_provider_timeout_handled_same_as_connection_error(client):
 
 
 def test_malformed_provider_response_does_not_crash(client):
+    """A malformed breach-provider response does not crash registration, which still succeeds."""
     garbage = "not-a-valid-line\n\nnoColonHere\n:::::\n"
     with patch("app.core.compromised_password.httpx.get", return_value=_hibp_response(garbage)):
         resp = client.post("/auth/register", json={"email": _unique_email(), "password": "Malformed-Resp-Pw-42!"})
@@ -215,6 +245,7 @@ def test_malformed_provider_response_does_not_crash(client):
 
 
 def test_padding_decoy_lines_with_zero_count_are_not_treated_as_matches(client):
+    """Padding decoy lines with a zero count in the breach response do not count as a match."""
     password = "Padding-Decoy-Test-Pw-42!"
     _, suffix = password_policy.compromised_password._sha1_prefix_suffix(password)
     fake_text = f"{suffix}:0\n"  # Add-Padding decoy for this exact suffix, count=0
@@ -226,6 +257,9 @@ def test_padding_decoy_lines_with_zero_count_are_not_treated_as_matches(client):
 # ── Registration enforcement / error shape ──────────────────────────────
 
 def test_registration_rejects_policy_violation_with_generic_message(client):
+    """A password policy violation returns 400 with the generic message "This password cannot be
+    used because it does not meet the security requirements."
+    """
     resp = client.post("/auth/register", json={"email": _unique_email(), "password": "short"})
     assert resp.status_code == 400
     body = resp.json()
@@ -233,6 +267,9 @@ def test_registration_rejects_policy_violation_with_generic_message(client):
 
 
 def test_registration_error_does_not_reveal_which_rule_failed(client):
+    """Common-password and too-short failures return identical bodies that name none of the internal
+    rules.
+    """
     common_resp = client.post("/auth/register", json={"email": _unique_email(), "password": "password1234"})
     short_resp = client.post("/auth/register", json={"email": _unique_email(), "password": "short"})
     assert common_resp.json() == short_resp.json()
@@ -264,6 +301,7 @@ def test_oauth_user_creation_has_no_local_password_and_bypasses_policy(client):
 # ── Existing authentication / hashing regressions ───────────────────────
 
 def test_existing_registered_user_still_authenticates(client, registered_user):
+    """A user registered under the policy can still log in and receive an access token."""
     resp = client.post("/auth/login", json=registered_user)
     assert resp.status_code == 200
     assert "access_token" in resp.json()
@@ -312,11 +350,13 @@ def test_legacy_plain_bcrypt_hash_still_verifies_and_gets_upgraded(client):
 
 
 def test_hash_password_produces_bcrypt_sha256_by_default():
+    """hash_password produces a bcrypt-sha256 hash by default."""
     h = hash_password("some-password-value-1!")
     assert h.startswith("$bcrypt-sha256$")
 
 
 def test_needs_rehash_true_for_legacy_false_for_current():
+    """needs_rehash reports True for a legacy plain-bcrypt hash and False for a current hash."""
     from passlib.context import CryptContext
 
     legacy_ctx = CryptContext(schemes=["bcrypt"])
@@ -328,18 +368,23 @@ def test_needs_rehash_true_for_legacy_false_for_current():
 
 
 def test_needs_rehash_never_raises_on_garbage_input():
+    """needs_rehash returns False rather than raising for an unparseable hash string."""
     assert needs_rehash("not-a-real-hash-at-all") is False
 
 
 # ── Privacy / security regressions ──────────────────────────────────────
 
 def test_registration_response_never_contains_password(client):
+    """The registration response body does not contain the submitted password."""
     password = "Response-Body-Leak-Check-1!"
     resp = client.post("/auth/register", json={"email": _unique_email(), "password": password})
     assert password not in resp.text
 
 
 def test_hashed_password_never_in_register_or_validate_response(client):
+    """Neither the registration response nor the /auth/validate response contains hashed_password or
+    a bcrypt hash.
+    """
     email = _unique_email()
     resp = client.post("/auth/register", json={"email": email, "password": "Serialization-Check-Pw-1!"})
     assert "hashed_password" not in resp.text
@@ -350,6 +395,8 @@ def test_hashed_password_never_in_register_or_validate_response(client):
 
 
 def test_password_not_present_in_application_logs(client, caplog):
+    """Accepted and rejected registrations and a login never write the password to application logs.
+    """
     password = "Must-Never-Appear-In-Logs-42!"
     with caplog.at_level("DEBUG"):
         client.post("/auth/register", json={"email": _unique_email(), "password": password})
@@ -360,6 +407,7 @@ def test_password_not_present_in_application_logs(client, caplog):
 
 
 def test_password_not_present_in_audit_events(client):
+    """Audit events written for a registration and a failed login do not contain the password."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 

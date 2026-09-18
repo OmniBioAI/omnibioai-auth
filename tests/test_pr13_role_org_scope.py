@@ -5,6 +5,8 @@ list_roles_for_scope's visibility rules. Service-level (role_service.py
 directly), not HTTP -- these are internal invariants the API layer relies
 on, exercised directly the same way test_role_service.py-style unit tests
 in this repo already do.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -41,6 +43,9 @@ def _unique_name(prefix="role"):
 
 
 def test_org_scoped_role_can_hold_org_and_both_scope_permissions(db):
+    """An org-scoped role can be created holding org-scope and both-scope permissions, and records
+    its organization_id.
+    """
     org = _make_org(db)
     role = role_service.create_role(db, _unique_name(), ["dataset.read", "workflow.execute"], organization_id=org.id)
     assert role.organization_id == org.id
@@ -48,12 +53,18 @@ def test_org_scoped_role_can_hold_org_and_both_scope_permissions(db):
 
 
 def test_org_scoped_role_rejects_global_scope_permission(db):
+    """Creating an org-scoped role with a global-scope permission raises ValueError about
+    platform-wide permissions.
+    """
     org = _make_org(db)
     with pytest.raises(ValueError, match="platform-wide permissions"):
         role_service.create_role(db, _unique_name(), ["manage_all_orgs"], organization_id=org.id)
 
 
 def test_org_scoped_role_update_rejects_global_scope_permission(db):
+    """Updating an org-scoped role to include a global-scope permission raises ValueError about
+    platform-wide permissions.
+    """
     org = _make_org(db)
     role = role_service.create_role(db, _unique_name(), ["dataset.read"], organization_id=org.id)
     with pytest.raises(ValueError, match="platform-wide permissions"):
@@ -89,6 +100,9 @@ def test_two_different_orgs_can_reuse_the_same_custom_role_name(db):
 
 
 def test_same_org_cannot_reuse_its_own_custom_role_name(db):
+    """Reusing a custom role name within the same organization raises ValueError ("already taken by
+    another role in this organization").
+    """
     org = _make_org(db)
     name = _unique_name()
     role_service.create_role(db, name, ["dataset.read"], organization_id=org.id)
@@ -111,6 +125,9 @@ def test_org_custom_role_cannot_shadow_an_existing_platform_wide_name(db):
 
 
 def test_list_roles_for_scope_includes_platform_wide_and_own_custom_only(db):
+    """An organization's visible roles are the platform-wide roles plus its own custom roles, never
+    another organization's custom roles.
+    """
     org_a, org_b = _make_org(db, "Visible Org"), _make_org(db, "Hidden Org")
     custom_a = role_service.create_role(db, _unique_name("custom-a"), ["dataset.read"], organization_id=org_a.id)
     custom_b = role_service.create_role(db, _unique_name("custom-b"), ["dataset.read"], organization_id=org_b.id)

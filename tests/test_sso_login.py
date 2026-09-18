@@ -3,6 +3,8 @@ on PR3 (org_sso_service, organization_sso_configs) and PR2 (PKCE). Does
 NOT touch, and must not change the behavior of, the existing
 Google/GitHub/Microsoft flow -- see tests/test_oauth.py and
 tests/test_pkce.py, both still run as part of the full suite unmodified.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import base64
@@ -236,6 +238,9 @@ def _set_valid_jwks(rsa_keypair):
 
 
 def test_discover_matching_domain_returns_org(client, org_with_sso):
+    """SSO discovery for an email at a configured domain returns sso_available true with the
+    organization slug and enforced false.
+    """
     resp = client.get("/auth/sso/discover", params={"email": "someone@acme-test.example.com"})
     assert resp.status_code == 200
     data = resp.json()
@@ -245,6 +250,9 @@ def test_discover_matching_domain_returns_org(client, org_with_sso):
 
 
 def test_discover_unknown_domain_returns_false(client, org_with_sso):
+    """SSO discovery for an email at an unconfigured domain returns exactly {"sso_available":
+    false}.
+    """
     resp = client.get("/auth/sso/discover", params={"email": "someone@totally-unrelated.example.com"})
     assert resp.status_code == 200
     assert resp.json() == {"sso_available": False}
@@ -265,12 +273,16 @@ def test_discover_never_leaks_existing_user_existence(client, org_with_sso):
 
 
 def test_login_redirect_targets_correct_authorize_endpoint(client, org_with_sso):
+    """SSO login redirects to the organization's IdP authorize endpoint."""
     resp = _do_login_redirect(client, org_with_sso["org_slug"])
     assert resp.status_code in (302, 307)
     assert resp.headers["location"].startswith(f"{_ISSUER}/authorize?")
 
 
 def test_login_redirect_includes_pkce_and_nonce(client, org_with_sso):
+    """The SSO login redirect carries an S256 PKCE code_challenge, a nonce, the client_id and the
+    scope "openid email profile".
+    """
     resp = _do_login_redirect(client, org_with_sso["org_slug"])
     query = parse_qs(urlparse(resp.headers["location"]).query)
     assert query["code_challenge_method"][0] == "S256"
@@ -281,6 +293,9 @@ def test_login_redirect_includes_pkce_and_nonce(client, org_with_sso):
 
 
 def test_login_redirect_state_contains_org_context(client, org_with_sso):
+    """The SSO state token has type "sso_state" and carries the organization id, SSO config id, PKCE
+    code_verifier, nonce and creation time.
+    """
     resp = _do_login_redirect(client, org_with_sso["org_slug"])
     state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
     payload = decode_token(state)
@@ -293,6 +308,7 @@ def test_login_redirect_state_contains_org_context(client, org_with_sso):
 
 
 def test_login_unknown_org_slug_returns_404(client):
+    """SSO login for an unknown organization slug returns 404."""
     resp = client.get("/auth/sso/does-not-exist-org/login", follow_redirects=False)
     assert resp.status_code == 404
 
@@ -301,6 +317,8 @@ def test_login_unknown_org_slug_returns_404(client):
 
 
 def test_successful_callback_creates_user_and_issues_sso_token(client, org_with_sso, monkeypatch, rsa_keypair):
+    """A valid SSO callback creates the user and returns status "ok" with access and refresh tokens.
+    """
     private_key, private_pem = rsa_keypair
     login_resp = _do_login_redirect(client, org_with_sso["org_slug"])
     state = parse_qs(urlparse(login_resp.headers["location"]).query)["state"][0]
@@ -347,6 +365,8 @@ def test_successful_callback_creates_user_and_issues_sso_token(client, org_with_
 
 
 def test_repeat_login_reuses_same_user_no_duplicate_membership(client, org_with_sso, monkeypatch, rsa_keypair):
+    """Repeated SSO logins for the same identity reuse the same user and keep a single membership.
+    """
     private_key, private_pem = rsa_keypair
     monkeypatch.setattr(org_oidc_service.httpx, "AsyncClient", _FakeOIDCClient)
     _set_valid_jwks(rsa_keypair)
@@ -385,6 +405,9 @@ def test_repeat_login_reuses_same_user_no_duplicate_membership(client, org_with_
 
 
 def test_existing_password_user_requires_link_confirmation(client, org_with_sso, monkeypatch, rsa_keypair):
+    """An SSO identity whose email belongs to an existing password account returns status
+    "link_required" instead of logging in.
+    """
     private_key, private_pem = rsa_keypair
     existing = _register_and_login(client, email=f"john-{uuid.uuid4().hex[:8]}@acme-test.example.com")
 
@@ -493,6 +516,7 @@ def _login_and_get_state_nonce(client, org_slug):
 
 
 def test_callback_wrong_issuer_rejected(client, org_with_sso, monkeypatch, rsa_keypair):
+    """An ID token from the wrong issuer is rejected with 400."""
     private_key, private_pem = rsa_keypair
     state, nonce = _login_and_get_state_nonce(client, org_with_sso["org_slug"])
     claims = _base_claims(sub="s", email="x@acme-test.example.com", nonce=nonce, issuer="https://not-the-real-idp.example.com")
@@ -506,6 +530,7 @@ def test_callback_wrong_issuer_rejected(client, org_with_sso, monkeypatch, rsa_k
 
 
 def test_callback_wrong_audience_rejected(client, org_with_sso, monkeypatch, rsa_keypair):
+    """An ID token with the wrong audience is rejected with 400."""
     private_key, private_pem = rsa_keypair
     state, nonce = _login_and_get_state_nonce(client, org_with_sso["org_slug"])
     claims = _base_claims(sub="s", email="x@acme-test.example.com", nonce=nonce, audience="some-other-client-id")
@@ -541,6 +566,7 @@ def test_callback_invalid_signature_rejected(client, org_with_sso, monkeypatch, 
 
 
 def test_callback_wrong_nonce_rejected(client, org_with_sso, monkeypatch, rsa_keypair):
+    """An ID token whose nonce does not match the login request is rejected with 400."""
     private_key, private_pem = rsa_keypair
     state, nonce = _login_and_get_state_nonce(client, org_with_sso["org_slug"])
     claims = _base_claims(sub="s", email="x@acme-test.example.com", nonce="a-completely-different-nonce")
@@ -554,6 +580,7 @@ def test_callback_wrong_nonce_rejected(client, org_with_sso, monkeypatch, rsa_ke
 
 
 def test_callback_missing_id_token_rejected(client, org_with_sso, monkeypatch, rsa_keypair):
+    """A token response without an ID token is rejected with 400."""
     state, nonce = _login_and_get_state_nonce(client, org_with_sso["org_slug"])
     monkeypatch.setattr(org_oidc_service.httpx, "AsyncClient", _FakeOIDCClient)
     _FakeOIDCClient.token_response = {"access_token": "x"}  # no id_token at all
@@ -563,6 +590,7 @@ def test_callback_missing_id_token_rejected(client, org_with_sso, monkeypatch, r
 
 
 def test_callback_tampered_state_rejected(client, org_with_sso):
+    """A callback with a tampered state is rejected with 400."""
     resp = client.post(
         f"/auth/sso/{org_with_sso['org_slug']}/callback",
         json={"code": "c", "state": "not-a-real-token"},
@@ -571,6 +599,9 @@ def test_callback_tampered_state_rejected(client, org_with_sso):
 
 
 def test_get_callback_failure_redirects_with_error_not_raw_json(client, org_with_sso):
+    """A failing GET callback redirects to /oauth-complete with status=error instead of returning
+    raw JSON.
+    """
     resp = client.get(
         f"/auth/sso/{org_with_sso['org_slug']}/callback?code=c&state=not-a-real-token",
         follow_redirects=False,

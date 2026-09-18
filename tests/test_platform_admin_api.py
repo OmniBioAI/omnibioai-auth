@@ -3,6 +3,8 @@ admin organization discovery API. Every route here is gated by
 require_permission(MANAGE_ALL_ORGS) only (no org membership, no synthetic
 membership -- see routes_platform_admin.py's own comment on why this is
 deliberately different from PR0.4's require_org_permission_or_platform_admin).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -61,6 +63,9 @@ def _platform_admin(client):
 
 
 def test_platform_admin_can_list_organizations(client):
+    """A platform admin can list organizations at /platform/orgs, with each item showing its owner
+    email and a member count.
+    """
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     org = _make_org(client, owner)
@@ -87,6 +92,9 @@ def test_platform_admin_can_list_organizations(client):
 
 
 def test_platform_orgs_list_never_includes_nested_members_or_teams(client):
+    """Organization list items contain only the fixed summary fields, with no nested members or
+    teams.
+    """
     admin = _platform_admin(client)
     resp = client.get("/platform/orgs", headers=admin["headers"])
     assert resp.status_code == 200
@@ -134,6 +142,9 @@ def test_mfa_policy_configured_true_even_when_not_required(client):
 
 
 def test_organization_detail_endpoint_reflects_real_resources(client):
+    """The organization detail endpoint reflects the organization's real teams, API keys and OAuth
+    clients.
+    """
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     org = _make_org(client, owner)
@@ -172,6 +183,7 @@ def test_organization_detail_endpoint_reflects_real_resources(client):
 
 
 def test_detail_endpoint_is_read_only_no_mutation_routes_exist(client):
+    """POST, PUT, PATCH and DELETE on /platform/orgs/{id} all return 405."""
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     org = _make_org(client, owner)
@@ -182,6 +194,7 @@ def test_detail_endpoint_is_read_only_no_mutation_routes_exist(client):
 
 
 def test_nonexistent_organization_returns_404(client):
+    """The detail endpoint returns 404 for a nonexistent organization."""
     admin = _platform_admin(client)
     resp = client.get("/platform/orgs/999999999", headers=admin["headers"])
     assert resp.status_code == 404
@@ -201,6 +214,9 @@ def test_existing_org_scoped_endpoints_untouched(client):
 
 
 def test_pagination_page_size_and_total(client):
+    """Listing five matching organizations with page size 2 reports total 5, page 1, page_size 2 and
+    3 total pages.
+    """
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     marker = uuid.uuid4().hex[:8]
@@ -234,6 +250,7 @@ def test_pagination_page_size_and_total(client):
 
 
 def test_page_size_capped(client):
+    """A page_size above the allowed maximum is rejected with 422."""
     admin = _platform_admin(client)
     resp = client.get("/platform/orgs", params={"page_size": 10000}, headers=admin["headers"])
     assert resp.status_code == 422  # Query(..., le=100)
@@ -243,6 +260,7 @@ def test_page_size_capped(client):
 
 
 def test_search_matches_organization_name(client):
+    """The search parameter matches on organization name."""
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     unique = uuid.uuid4().hex[:10]
@@ -255,6 +273,7 @@ def test_search_matches_organization_name(client):
 
 
 def test_search_matches_owner_email(client):
+    """The search parameter matches on the owner's email."""
     admin = _platform_admin(client)
     unique = uuid.uuid4().hex[:10]
     owner = _register_and_login(client, email=f"owner-{unique}@omnibioai.test")
@@ -266,6 +285,7 @@ def test_search_matches_owner_email(client):
 
 
 def test_search_no_match_returns_empty(client):
+    """A search with no matches returns total 0 and no items."""
     admin = _platform_admin(client)
     resp = client.get(
         "/platform/orgs", params={"search": f"nonexistent-{uuid.uuid4().hex}"}, headers=admin["headers"]
@@ -279,6 +299,7 @@ def test_search_no_match_returns_empty(client):
 
 
 def test_sort_by_name_ascending(client):
+    """Sorting by name ascending returns items in name order."""
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     marker = uuid.uuid4().hex[:8]
@@ -296,6 +317,7 @@ def test_sort_by_name_ascending(client):
 
 
 def test_sort_by_created_at_descending_is_default(client):
+    """Without a sort parameter, newer organizations are listed before older ones."""
     admin = _platform_admin(client)
     owner = _register_and_login(client)
     marker = uuid.uuid4().hex[:8]
@@ -308,6 +330,7 @@ def test_sort_by_created_at_descending_is_default(client):
 
 
 def test_invalid_sort_by_rejected(client):
+    """An unsupported sort_by value (member_count) is rejected with 422."""
     admin = _platform_admin(client)
     resp = client.get("/platform/orgs", params={"sort_by": "member_count"}, headers=admin["headers"])
     assert resp.status_code == 422
@@ -317,6 +340,9 @@ def test_invalid_sort_by_rejected(client):
 
 
 def test_non_platform_admin_forbidden(client):
+    """An organization owner without platform-admin permission gets 403 on both /platform/orgs and
+    /platform/orgs/{id}.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)  # owner is a real org_admin, just not a platform_admin
 
@@ -328,6 +354,7 @@ def test_non_platform_admin_forbidden(client):
 
 
 def test_revoked_token_rejected(client):
+    """After logout revokes the admin's access token, /platform/orgs returns 401."""
     admin = _platform_admin(client)
     assert client.get("/platform/orgs", headers=admin["headers"]).status_code == 200
 
@@ -341,6 +368,9 @@ def test_revoked_token_rejected(client):
 
 
 def test_suspended_account_rejected(client):
+    """After the admin's account is suspended, /platform/orgs returns 401 for its previously valid
+    token.
+    """
     admin = _platform_admin(client)
     assert client.get("/platform/orgs", headers=admin["headers"]).status_code == 200
 
@@ -357,6 +387,7 @@ def test_suspended_account_rejected(client):
 
 
 def test_client_credentials_token_rejected(client):
+    """A client_credentials service token is rejected with 401 by /platform/orgs."""
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     oc = client.post(

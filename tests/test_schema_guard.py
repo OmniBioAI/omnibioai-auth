@@ -5,6 +5,8 @@ silently did nothing against a `roles` table that predated
 `roles.organization_id` crashed with a raw OperationalError instead of a
 clear, actionable message. See docs/MIGRATIONS.md 'Known risk: create_all()
 vs. Alembic drift'.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import pytest
@@ -20,6 +22,8 @@ def engine(tmp_path):
 
 
 def test_passes_when_live_schema_matches_metadata(engine):
+    """assert_schema_matches_models does not raise when the live schema matches the model metadata.
+    """
     metadata = MetaData()
     Table("widgets", metadata, Column("id", Integer, primary_key=True), Column("name", String(50)))
     metadata.create_all(bind=engine)
@@ -28,6 +32,9 @@ def test_passes_when_live_schema_matches_metadata(engine):
 
 
 def test_raises_when_an_existing_table_is_missing_a_column(engine):
+    """assert_schema_matches_models raises SchemaDriftError naming the table when an existing table
+    lacks a column the model defines.
+    """
     # Simulate a table created before a column existed on its ORM class --
     # exactly what create_all() leaves behind for any pre-existing table.
     old_metadata = MetaData()
@@ -42,6 +49,9 @@ def test_raises_when_an_existing_table_is_missing_a_column(engine):
 
 
 def test_error_message_names_the_missing_column_and_points_at_the_fix(engine):
+    """The SchemaDriftError message names the table and the missing column and points to "alembic
+    upgrade head".
+    """
     old_metadata = MetaData()
     Table("roles", old_metadata, Column("id", Integer, primary_key=True))
     old_metadata.create_all(bind=engine)
@@ -64,6 +74,7 @@ def test_error_message_names_the_missing_column_and_points_at_the_fix(engine):
 
 
 def test_does_not_flag_a_table_that_does_not_exist_at_all(engine):
+    """A table that does not exist yet is not reported as schema drift."""
     # A table create_all() (or a pending migration) hasn't created yet is
     # not this guard's concern -- only existing-but-stale tables are.
     metadata = MetaData()
@@ -73,6 +84,7 @@ def test_does_not_flag_a_table_that_does_not_exist_at_all(engine):
 
 
 def test_reports_every_drifted_table_in_one_pass(engine):
+    """One SchemaDriftError names every drifted table rather than only the first."""
     old_metadata = MetaData()
     Table("widgets", old_metadata, Column("id", Integer, primary_key=True))
     Table("gadgets", old_metadata, Column("id", Integer, primary_key=True))

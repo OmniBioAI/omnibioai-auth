@@ -22,6 +22,8 @@ marked reserved) is covered by test_permission_registry.py's
 MODEL_REGISTRY_READ_NAMES assertions; this file covers the role-grant and
 resulting-JWT-claim side instead, mirroring test_pr13_jwt_permission_
 merge.py's/test_model_resolve_ownership_permission.py's own conventions.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -60,11 +62,13 @@ def _make_active_membership(db, user: User, role_name: str) -> OrganizationMembe
 # ── 1. Static role/permission-list assertions ────────────────────────────────
 
 def test_scientist_permission_list_includes_model_read_and_model_use():
+    """SCIENTIST_PERMISSIONS includes both model.read and model.use."""
     assert "model.read" in org_service.SCIENTIST_PERMISSIONS
     assert "model.use" in org_service.SCIENTIST_PERMISSIONS
 
 
 def test_org_admin_permission_list_includes_model_read():
+    """ORG_ADMIN_PERMISSIONS includes model.read but still excludes model.use."""
     assert "model.read" in org_service.ORG_ADMIN_PERMISSIONS
     # Unchanged: org_admin must NOT hold model.use, the same "operator
     # capability, not org-administration" boundary workflow.execute is
@@ -73,6 +77,7 @@ def test_org_admin_permission_list_includes_model_read():
 
 
 def test_viewer_permission_list_unchanged_no_model_read():
+    """VIEWER_PERMISSIONS is still exactly dataset.read and workflow.read, without model.read."""
     # VIEWER_PERMISSIONS was explicitly out of this audit's scope (the
     # task named scientist/org_admin only) -- confirms it wasn't touched
     # as a side effect.
@@ -101,6 +106,9 @@ def test_platform_admin_role_does_not_include_model_read(client):
 # ── 3. Resulting JWT claims ────────────────────────────────────────────────
 
 def test_scientist_org_role_jwt_includes_model_read():
+    """The permissions of a user holding the scientist organization role include both model.use and
+    model.read.
+    """
     db = _DirectSession()
     try:
         user = _make_user(db)
@@ -115,6 +123,9 @@ def test_scientist_org_role_jwt_includes_model_read():
 
 
 def test_org_admin_role_jwt_includes_model_read_not_model_use():
+    """The permissions of a user holding the org_admin organization role include model.read but not
+    model.use.
+    """
     # Unlike scientist/viewer (eagerly seeded at every startup by
     # ensure_default_org_roles), org_admin is only ever created as a side
     # effect of create_organization() -- see ensure_org_admin_permissions'

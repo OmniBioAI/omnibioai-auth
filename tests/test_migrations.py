@@ -2,6 +2,8 @@
 database, never against the app's own configured database (conftest.py's
 SQLite `test.db`, or any real MySQL instance). See docs/MIGRATIONS.md for
 the stamp-vs-upgrade distinction these tests are asserting.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import importlib.util
@@ -45,6 +47,9 @@ ALL_TABLES = (
 
 
 def _alembic_config(db_url: str) -> Config:
+    """Build an Alembic Config whose database URL points at the given throwaway database instead of
+    the app's configured one.
+    """
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
     # env.py only falls back to settings.DATABASE_URL when this is unset --
@@ -348,6 +353,9 @@ def test_sqlite_pre_existing_role_rows_survive_0016_as_platform_wide(sqlite_db_u
 
 
 def test_sqlite_0016_downgrade_restores_global_unique_constraint(sqlite_db_url):
+    """Downgrading past 0016 drops roles.organization_id and restores the global unique constraint
+    on the role name.
+    """
     cfg = _alembic_config(sqlite_db_url)
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "0015_refresh_token_length")
@@ -888,6 +896,7 @@ _THROWAWAY_DB = f"omnibioai_auth_migration_test_{uuid.uuid4().hex[:8]}"
 
 
 def _mysql_reachable() -> bool:
+    """Return True only when the configured MySQL test server accepts a connection."""
     try:
         engine = create_engine(_MYSQL_SERVER_URL, connect_args={"connect_timeout": 2})
         with engine.connect():
@@ -937,6 +946,8 @@ def test_mysql_fresh_upgrade_head_creates_all_tables(mysql_db_url):
 
 
 def test_mysql_downgrade_base_reverses_cleanly(mysql_db_url):
+    """On real MySQL, upgrading to head and downgrading to base leaves no application tables behind.
+    """
     cfg = _alembic_config(mysql_db_url)
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "base")

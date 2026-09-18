@@ -20,6 +20,8 @@ Same convention as the other SAML test files: local, self-contained
 helpers building REAL, genuinely-signed SAMLResponse documents through
 the real, unweakened validate_saml_response path -- see
 tests/test_saml_acs.py's own module docstring for why.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import base64
@@ -281,6 +283,9 @@ def _new_email():
 
 
 def test_new_identity_creates_user_oauthaccount_and_membership(client, idp_keys):
+    """A validated, never-seen SAML identity logs in with status "ok", creating an active
+    passwordless user together with its OAuth account and organization membership.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     email = _new_email()
 
@@ -336,6 +341,9 @@ def test_new_identity_default_membership_role_is_org_member(client, idp_keys):
 
 
 def test_repeat_login_after_jit_does_not_duplicate_anything(client, idp_keys):
+    """A second login for the same SAML identity succeeds without duplicating the user, OAuth
+    account or membership.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     email = _new_email()
     first = _post_acs(client, ctx["org_slug"], _build_response(ctx, idp_keys, name_id=email), ctx["relay_state"])
@@ -403,6 +411,9 @@ def test_existing_email_still_requires_confirmation_not_jit(client, idp_keys):
 
 
 def test_email_collision_wrong_password_does_not_link_or_provision(client, idp_keys):
+    """When the email already belongs to an account, a wrong password at link confirmation returns
+    401 and no SAML link is created.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     existing = _register_and_login(client)
     link_token = _post_acs(client, ctx["org_slug"], _build_response(ctx, idp_keys, name_id=existing["email"]), ctx["relay_state"]).json()["link_token"]
@@ -414,6 +425,9 @@ def test_email_collision_wrong_password_does_not_link_or_provision(client, idp_k
 
 
 def test_email_collision_correct_confirmation_links_safely(client, idp_keys):
+    """When the email already belongs to an account, the correct password at link confirmation
+    returns 200 and creates a single link scoped to the SAML config.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     existing = _register_and_login(client)
     link_token = _post_acs(client, ctx["org_slug"], _build_response(ctx, idp_keys, name_id=existing["email"]), ctx["relay_state"]).json()["link_token"]
@@ -431,6 +445,9 @@ def test_email_collision_correct_confirmation_links_safely(client, idp_keys):
 
 
 def test_jit_membership_scoped_to_originating_org_only(client, idp_keys):
+    """JIT provisioning grants membership only in the organization whose SAML login was used, not in
+    another organization.
+    """
     ctx_a = _org_with_saml_login(client, idp_keys, "SAML JIT Isolation Org A")
     ctx_b = _org_with_saml_login(client, idp_keys, "SAML JIT Isolation Org B")
     email = _new_email()
@@ -532,6 +549,9 @@ def test_inactive_saml_config_cannot_provision(client, idp_keys):
 
 
 def test_name_id_without_at_sign_rejected_not_provisioned(client, idp_keys):
+    """A NameID that is not an email address is rejected with 400 and no user or OAuth account is
+    created.
+    """
     ctx = _org_with_saml_login(client, idp_keys)
     resp = _post_acs(client, ctx["org_slug"], _build_response(ctx, idp_keys, name_id="not-an-email"), ctx["relay_state"])
 
@@ -777,6 +797,7 @@ def test_mfa_enabled_linked_user_gets_challenge_not_token(client, idp_keys, conf
 
 
 def test_existing_oauth_login_unaffected_by_saml_jit_changes(client):
+    """Password login for an ordinary registered user still returns 200 with an access token."""
     user = _register_and_login(client)
     resp = client.post("/auth/login", json={"email": user["email"], "password": user["password"]})
     assert resp.status_code == 200

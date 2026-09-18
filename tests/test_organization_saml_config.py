@@ -4,6 +4,8 @@ or writes this table yet. These tests exercise the ORM model and its
 constraints directly, via a raw session, the same way tests/test_org_sso.py
 covered OrganizationSSOConfig before Phase 2 PR3 added org-admin CRUD
 routes on top of it -- there is no route to test here yet.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import uuid
@@ -42,6 +44,9 @@ def _auth_header(token):
 
 
 def _create_org(client, name_prefix="SAML Config Test Org"):
+    """Create an organization owned by a freshly registered user and return its id and owner
+    credentials.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     created = client.post(
@@ -58,6 +63,7 @@ def org(client):
 
 
 def _config_kwargs(org_id, **overrides):
+    """Build keyword arguments for a valid OrganizationSAMLConfig row for the given organization."""
     kwargs = {
         "organization_id": org_id,
         "entity_id": "https://idp.example.com/metadata",
@@ -72,6 +78,9 @@ def _config_kwargs(org_id, **overrides):
 
 
 def test_organization_saml_config_can_be_created(client, org):
+    """An OrganizationSAMLConfig row can be created and stores its organization_id, entity_id,
+    sso_url and certificate.
+    """
     session = _DirectSession()
     try:
         config = OrganizationSAMLConfig(**_config_kwargs(org["id"]))
@@ -92,6 +101,7 @@ def test_organization_saml_config_can_be_created(client, org):
 
 
 def test_organization_id_is_required(client):
+    """Creating an OrganizationSAMLConfig without an organization_id raises IntegrityError."""
     session = _DirectSession()
     try:
         config = OrganizationSAMLConfig(
@@ -132,6 +142,7 @@ def test_organization_id_has_foreign_key_to_organizations():
 
 
 def test_one_organization_cannot_have_two_saml_configs(client, org):
+    """A second SAML config for the same organization raises IntegrityError."""
     session = _DirectSession()
     try:
         session.add(OrganizationSAMLConfig(**_config_kwargs(
@@ -153,6 +164,7 @@ def test_one_organization_cannot_have_two_saml_configs(client, org):
 
 
 def test_two_different_organizations_each_get_their_own_config(client):
+    """Two different organizations can each hold their own SAML config."""
     org_a = _create_org(client, "SAML Org A")
     org_b = _create_org(client, "SAML Org B")
 
@@ -180,6 +192,7 @@ def test_two_different_organizations_each_get_their_own_config(client):
 
 
 def test_attribute_mapping_accepts_expected_json_structure(client, org):
+    """The attribute_mapping column stores and returns a JSON mapping unchanged."""
     mapping = {
         "email": "NameID",
         "first_name": "givenName",
@@ -202,6 +215,7 @@ def test_attribute_mapping_accepts_expected_json_structure(client, org):
 
 
 def test_enabled_defaults_to_false(client, org):
+    """A new SAML config is disabled by default."""
     session = _DirectSession()
     try:
         config = OrganizationSAMLConfig(**_config_kwargs(org["id"]))
@@ -217,6 +231,7 @@ def test_enabled_defaults_to_false(client, org):
 
 
 def test_status_defaults_to_pending_verification(client, org):
+    """A new SAML config has status "pending_verification" by default."""
     session = _DirectSession()
     try:
         config = OrganizationSAMLConfig(**_config_kwargs(org["id"]))
@@ -252,6 +267,7 @@ def test_created_at_and_updated_at_follow_repository_conventions(client, org):
 
 
 def test_updated_by_user_id_follows_existing_ownership_convention(client, org):
+    """updated_by_user_id stores the id of the user who last changed the configuration."""
     owner_id = client.post(
         "/auth/validate", json={"token": org["owner"]["access_token"]}
     ).json()["user_id"]

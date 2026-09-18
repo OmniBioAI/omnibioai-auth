@@ -4,6 +4,8 @@ Authorization API, the canonical identity projection downstream services
 are meant to consume after validating a JWT. Mirrors
 test_platform_permissions_api.py's/test_organization_role_assignment_api.py's
 own conventions for fixtures and direct-DB test setup.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import uuid
@@ -87,6 +89,7 @@ PERMISSION_METADATA_KEYS = {
 
 
 def test_get_my_identity_returns_user_profile(client):
+    """GET /me returns 200 with the caller's user id, email and "active" status."""
     user = _register_and_login(client)
     user_id = _user_id(client, user["access_token"])
 
@@ -99,6 +102,9 @@ def test_get_my_identity_returns_user_profile(client):
 
 
 def test_get_my_identity_new_user_has_baseline_role_no_orgs(client):
+    """For a newly registered user /me shows only the baseline "user" global role, no global
+    permissions and no organizations.
+    """
     user = _register_and_login(client)
     resp = client.get("/me", headers=_auth_header(user["access_token"]))
     body = resp.json()
@@ -108,6 +114,7 @@ def test_get_my_identity_new_user_has_baseline_role_no_orgs(client):
 
 
 def test_get_my_identity_missing_token_rejected(client):
+    """GET /me without a bearer token is rejected with 401 or 403."""
     resp = client.get("/me")
     assert resp.status_code in (401, 403)
 
@@ -116,6 +123,9 @@ def test_get_my_identity_missing_token_rejected(client):
 
 
 def test_get_my_identity_single_organization(client):
+    """/me lists the owner's single organization with the org_admin role and manage_org among its
+    effective permissions.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
 
@@ -129,6 +139,7 @@ def test_get_my_identity_single_organization(client):
 
 
 def test_get_my_identity_multiple_organizations(client):
+    """/me lists every organization the user belongs to."""
     owner = _register_and_login(client)
     org_a = _make_org(client, owner)
     org_b = _make_org(client, owner)
@@ -176,6 +187,9 @@ def test_get_my_identity_global_permissions_match_jwt_claim(client):
 
 
 def test_get_my_identity_expand_permissions_false_is_default(client):
+    """Omitting expand_permissions gives the same /me response as expand_permissions=false, with
+    permissions returned as plain name strings.
+    """
     owner = _register_and_login(client)
     default = client.get("/me", headers=_auth_header(owner["access_token"])).json()
     explicit_false = client.get(
@@ -186,6 +200,9 @@ def test_get_my_identity_expand_permissions_false_is_default(client):
 
 
 def test_get_my_identity_expand_permissions_true_returns_full_metadata(client):
+    """/me with expand_permissions=true returns each permission as a metadata object with the
+    registry keys, for example manage_org in category "organization".
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
 
@@ -203,6 +220,7 @@ def test_get_my_identity_expand_permissions_true_returns_full_metadata(client):
 
 
 def test_platform_identity_lookup_matches_me_for_same_user(client):
+    """/platform/users/{id}/identity returns exactly the projection that user's own /me returns."""
     owner = _register_and_login(client)
     _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -214,12 +232,14 @@ def test_platform_identity_lookup_matches_me_for_same_user(client):
 
 
 def test_platform_identity_lookup_nonexistent_user_404s(client):
+    """The platform identity lookup for a nonexistent user id returns 404."""
     platform_admin = _platform_admin(client)
     resp = client.get("/platform/users/999999999/identity", headers=platform_admin["headers"])
     assert resp.status_code == 404
 
 
 def test_platform_identity_lookup_unauthorized_caller_403s(client):
+    """The platform identity lookup by a caller without platform-level permission returns 403."""
     owner = _register_and_login(client)
     owner_id = _user_id(client, owner["access_token"])
     outsider = _register_and_login(client)
@@ -228,6 +248,9 @@ def test_platform_identity_lookup_unauthorized_caller_403s(client):
 
 
 def test_platform_identity_lookup_expand_permissions_true(client):
+    """The platform identity lookup with expand_permissions=true returns 200 with permissions as
+    metadata objects.
+    """
     owner = _register_and_login(client)
     _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -247,6 +270,10 @@ def test_platform_identity_lookup_expand_permissions_true(client):
 
 
 def test_me_500s_on_registry_drift_when_expanded(client):
+    """When a granted permission is missing from the permission registry, /me with
+    expand_permissions=true returns 500, while the non-expanded /me still returns 200 including
+    that permission name.
+    """
     owner = _register_and_login(client)
     org = _make_org(client, owner)
     owner_id = _user_id(client, owner["access_token"])
@@ -296,6 +323,9 @@ def test_me_500s_on_registry_drift_when_expanded(client):
 
 
 def test_new_identity_routes_do_not_affect_existing_auth_validate(client):
+    """/auth/validate still returns 200 with a user_id for a valid token alongside the new identity
+    routes.
+    """
     owner = _register_and_login(client)
     resp = client.post("/auth/validate", json={"token": owner["access_token"]})
     assert resp.status_code == 200

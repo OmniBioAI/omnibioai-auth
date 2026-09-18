@@ -8,6 +8,8 @@ connection to the same physical sqlite file conftest.py's `client`
 fixture uses, for setup/assertions no HTTP route exposes a way to do
 (backdating created_at/last_activity_at instead of real sleeps, reading
 persisted revoked_reason, querying AuditEvent directly).
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -113,12 +115,14 @@ def tight_session_limits(monkeypatch):
 # ── Idle timeout ─────────────────────────────────────────────────────────
 
 def test_refresh_succeeds_before_idle_timeout(client, tight_session_limits):
+    """Refreshing before the idle timeout elapses succeeds with 200."""
     user = _register_and_login(client)
     resp = _refresh(client, user["refresh_token"])
     assert resp.status_code == 200
 
 
 def test_refresh_fails_after_idle_timeout(client, tight_session_limits):
+    """Refreshing after the idle timeout has elapsed returns 401."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(session_id, last_activity_at=datetime.utcnow() - timedelta(seconds=3601))
@@ -128,6 +132,7 @@ def test_refresh_fails_after_idle_timeout(client, tight_session_limits):
 
 
 def test_idle_timeout_revokes_session_with_correct_reason(client, tight_session_limits):
+    """An idle-timeout refresh attempt leaves the session revoked with reason idle_timeout."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(session_id, last_activity_at=datetime.utcnow() - timedelta(seconds=3601))
@@ -140,6 +145,7 @@ def test_idle_timeout_revokes_session_with_correct_reason(client, tight_session_
 
 
 def test_activity_timestamp_updates_on_successful_refresh(client, tight_session_limits):
+    """A successful refresh advances the session's last_activity_at."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     before = _get_session_row(session_id).last_activity_at
@@ -173,6 +179,7 @@ def test_idle_timeout_does_not_extend_absolute_lifetime(client, tight_session_li
 # ── Absolute timeout ─────────────────────────────────────────────────────
 
 def test_refresh_succeeds_before_absolute_deadline(client, tight_session_limits):
+    """Refreshing before the absolute session lifetime ends succeeds with 200."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(session_id, created_at=datetime.utcnow() - timedelta(seconds=86399))
@@ -181,6 +188,7 @@ def test_refresh_succeeds_before_absolute_deadline(client, tight_session_limits)
 
 
 def test_refresh_fails_after_absolute_deadline(client, tight_session_limits):
+    """Refreshing after the absolute session lifetime has ended returns 401."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(session_id, created_at=datetime.utcnow() - timedelta(seconds=86401))
@@ -189,6 +197,9 @@ def test_refresh_fails_after_absolute_deadline(client, tight_session_limits):
 
 
 def test_repeated_refreshes_cannot_keep_session_alive_past_absolute_deadline(client, tight_session_limits):
+    """Refreshing never moves the session's created_at, so a session cannot be kept alive past its
+    absolute deadline.
+    """
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     # created_at fixed just under the deadline -- every refresh keeps
@@ -213,6 +224,9 @@ def test_repeated_refreshes_cannot_keep_session_alive_past_absolute_deadline(cli
 # ── Combined / boundary conditions ──────────────────────────────────────
 
 def test_absolute_timeout_takes_priority_when_both_violated(client, tight_session_limits):
+    """When both the idle and absolute limits are exceeded, the session is revoked with the
+    absolute-timeout reason.
+    """
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(
@@ -225,6 +239,7 @@ def test_absolute_timeout_takes_priority_when_both_violated(client, tight_sessio
 
 
 def test_idle_timeout_fires_when_only_idle_violated(client, tight_session_limits):
+    """When only the idle limit is exceeded, the session is revoked with the idle-timeout reason."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(
@@ -239,6 +254,7 @@ def test_idle_timeout_fires_when_only_idle_violated(client, tight_session_limits
 # ── Concurrent session limit ─────────────────────────────────────────────
 
 def test_session_below_limit_succeeds_without_eviction(client, tight_session_limits):
+    """Logins up to SESSION_MAX_CONCURRENT leave every session active."""
     email = f"below-limit-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -254,6 +270,9 @@ def test_session_below_limit_succeeds_without_eviction(client, tight_session_lim
 
 
 def test_session_at_limit_evicts_oldest(client, tight_session_limits):
+    """A login beyond SESSION_MAX_CONCURRENT keeps the active count at the limit by revoking the
+    oldest session with the concurrent-limit reason.
+    """
     email = f"at-limit-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -278,6 +297,9 @@ def test_session_at_limit_evicts_oldest(client, tight_session_limits):
 
 
 def test_oldest_session_selected_correctly_not_arbitrary(client, tight_session_limits):
+    """Eviction chooses the session with the earliest creation time and revokes it with the
+    concurrent-limit reason.
+    """
     email = f"oldest-select-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -301,6 +323,9 @@ def test_oldest_session_selected_correctly_not_arbitrary(client, tight_session_l
 
 
 def test_revoked_sessions_do_not_count_toward_limit(client, tight_session_limits):
+    """A manually revoked session does not count toward the concurrent limit, so a new login evicts
+    nothing.
+    """
     email = f"revoked-not-counted-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -320,6 +345,9 @@ def test_revoked_sessions_do_not_count_toward_limit(client, tight_session_limits
 
 
 def test_idle_expired_sessions_do_not_count_toward_limit(client, tight_session_limits):
+    """An idle-expired session does not count toward the concurrent limit: after a new login the
+    active count is at most the limit plus the stale idle row itself.
+    """
     email = f"idle-not-counted-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -339,6 +367,9 @@ def test_idle_expired_sessions_do_not_count_toward_limit(client, tight_session_l
 
 
 def test_concurrent_logins_cannot_trivially_bypass_limit(client, tight_session_limits):
+    """Concurrent logins all succeed, and the number of active sessions stays within the number of
+    logins made (a small overshoot is tolerated on SQLite).
+    """
     email = f"concurrent-login-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -364,6 +395,7 @@ def test_concurrent_logins_cannot_trivially_bypass_limit(client, tight_session_l
 # ── Manual revocation / logout regressions ──────────────────────────────
 
 def test_manual_session_revocation_still_works(client, tight_session_limits):
+    """Revoking a session through the endpoint returns 200 with status "revoked"."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     resp = client.post(f"/sessions/{session_id}/revoke", headers=_auth(user["access_token"]))
@@ -372,6 +404,7 @@ def test_manual_session_revocation_still_works(client, tight_session_limits):
 
 
 def test_refresh_after_manual_revocation_fails(client, tight_session_limits):
+    """Refreshing after a manual session revocation returns 401."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     client.post(f"/sessions/{session_id}/revoke", headers=_auth(user["access_token"]))
@@ -380,6 +413,7 @@ def test_refresh_after_manual_revocation_fails(client, tight_session_limits):
 
 
 def test_logout_still_revokes_correct_session(client, tight_session_limits):
+    """Logout returns 200 and leaves the user's session revoked."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     logout = client.post(
@@ -393,6 +427,7 @@ def test_logout_still_revokes_correct_session(client, tight_session_limits):
 # ── Account disable / re-enable ───────────────────────────────────────────
 
 def test_disabling_user_revokes_all_active_sessions(client, tight_session_limits):
+    """Disabling a user revokes all of their active sessions with reason account_disabled."""
     email = f"disable-sessions-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -413,6 +448,7 @@ def test_disabling_user_revokes_all_active_sessions(client, tight_session_limits
 
 
 def test_disabled_user_refresh_fails_immediately(client, tight_session_limits):
+    """A disabled user's refresh attempt returns 401."""
     user = _register_and_login(client)
     _set_user_status(user["email"], "suspended")
     resp = _refresh(client, user["refresh_token"])
@@ -420,6 +456,7 @@ def test_disabled_user_refresh_fails_immediately(client, tight_session_limits):
 
 
 def test_disabled_user_authenticated_access_fails(client, tight_session_limits):
+    """/auth/validate reports valid false for a disabled user's access token."""
     user = _register_and_login(client)
     _set_user_status(user["email"], "suspended")
     resp = client.post("/auth/validate", json={"token": user["access_token"]})
@@ -469,6 +506,7 @@ def test_reenabled_user_old_access_token_stays_rejected_until_expiry_semantics_u
 # ── Audit ────────────────────────────────────────────────────────────────
 
 def test_audit_event_on_idle_timeout(client, tight_session_limits):
+    """An idle-timeout revocation writes an audit event with reason idle_timeout."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(session_id, last_activity_at=datetime.utcnow() - timedelta(seconds=3601))
@@ -480,6 +518,7 @@ def test_audit_event_on_idle_timeout(client, tight_session_limits):
 
 
 def test_audit_event_on_absolute_timeout(client, tight_session_limits):
+    """An absolute-timeout revocation writes an audit event with reason absolute_timeout."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(session_id, created_at=datetime.utcnow() - timedelta(seconds=86401))
@@ -491,6 +530,7 @@ def test_audit_event_on_absolute_timeout(client, tight_session_limits):
 
 
 def test_audit_event_on_concurrent_eviction(client, tight_session_limits):
+    """A concurrent-limit eviction writes an audit event with the concurrent-limit reason."""
     email = f"audit-concurrent-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
     client.post("/auth/register", json={"email": email, "password": password})
@@ -503,6 +543,7 @@ def test_audit_event_on_concurrent_eviction(client, tight_session_limits):
 
 
 def test_audit_event_on_account_disable(client, tight_session_limits):
+    """Disabling an account writes an audit event with reason account_disabled."""
     user = _register_and_login(client)
     _set_user_status(user["email"], "suspended")
 
@@ -512,6 +553,7 @@ def test_audit_event_on_account_disable(client, tight_session_limits):
 
 
 def test_audit_events_contain_no_secrets(client, tight_session_limits):
+    """Session audit events contain no access token, refresh token or password."""
     user = _register_and_login(client)
     session_id = _list_sessions(client, user["access_token"]).json()[0]["session_id"]
     _backdate_session(session_id, last_activity_at=datetime.utcnow() - timedelta(seconds=3601))
@@ -530,6 +572,9 @@ def test_audit_events_contain_no_secrets(client, tight_session_limits):
 # ── Security regressions ─────────────────────────────────────────────────
 
 def test_refresh_token_replay_still_detected_and_now_also_audited(client, tight_session_limits):
+    """Replaying a rotated refresh token returns 401 and writes an audit event with the
+    reuse-detected reason.
+    """
     user = _register_and_login(client)
     old_refresh = user["refresh_token"]
     rotated = _refresh(client, old_refresh)
@@ -544,6 +589,7 @@ def test_refresh_token_replay_still_detected_and_now_also_audited(client, tight_
 
 
 def test_session_listing_never_exposes_tokens(client, tight_session_limits):
+    """The session listing response contains neither the user's access token nor refresh token."""
     user = _register_and_login(client)
     resp = _list_sessions(client, user["access_token"])
     assert user["access_token"] not in resp.text

@@ -2,6 +2,8 @@
 admin global role management. Every route here is gated by
 require_permission(MANAGE_ALL_ORGS) only, mirroring
 test_platform_users_api.py's own conventions exactly.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -57,6 +59,9 @@ def _role_id_by_name(roles_list: list[dict], name: str) -> int:
 
 
 def test_platform_admin_can_list_roles(client):
+    """A platform admin can list roles, including platform_admin, admin and user, each with the
+    fixed role field set.
+    """
     admin = _platform_admin(client)
     resp = client.get("/platform/roles", headers=admin["headers"])
     assert resp.status_code == 200
@@ -67,6 +72,7 @@ def test_platform_admin_can_list_roles(client):
 
 
 def test_non_platform_admin_cannot_list_roles(client):
+    """A user without platform-admin permission gets 403 from /platform/roles."""
     owner = _register_and_login(client)
     resp = client.get("/platform/roles", headers=_auth_header(owner["access_token"]))
     assert resp.status_code == 403
@@ -76,6 +82,9 @@ def test_non_platform_admin_cannot_list_roles(client):
 
 
 def test_get_user_roles(client):
+    """A platform admin can read a user's role assignments, which include platform_admin for a
+    platform admin.
+    """
     admin = _platform_admin(client)
     admin_id = _user_id(client, admin["access_token"])
 
@@ -92,6 +101,9 @@ def test_get_user_roles(client):
 
 
 def test_assign_and_remove_global_role(client):
+    """Assigning the admin role to a user returns 201 with roles {user, admin}, and removing it
+    returns 204.
+    """
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
@@ -111,6 +123,7 @@ def test_assign_and_remove_global_role(client):
 
 
 def test_assign_unknown_role_rejected(client):
+    """Assigning a nonexistent role through /platform/users/{id}/roles returns 400."""
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
@@ -122,6 +135,7 @@ def test_assign_unknown_role_rejected(client):
 
 
 def test_remove_role_not_currently_assigned_returns_404(client):
+    """Removing a role the user does not hold returns 404."""
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
@@ -134,6 +148,7 @@ def test_remove_role_not_currently_assigned_returns_404(client):
 
 
 def test_remove_nonexistent_role_id_returns_404(client):
+    """Removing a role id that does not exist from a user's global roles returns 404."""
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
@@ -143,6 +158,7 @@ def test_remove_nonexistent_role_id_returns_404(client):
 
 
 def test_nonexistent_user_returns_404_for_all_three_routes(client):
+    """For a nonexistent user id, reading, assigning and removing roles each return 404."""
     admin = _platform_admin(client)
     assert client.get("/platform/users/999999999/roles", headers=admin["headers"]).status_code == 404
     assert client.post(
@@ -155,6 +171,7 @@ def test_nonexistent_user_returns_404_for_all_three_routes(client):
 
 
 def test_non_platform_admin_cannot_assign_role(client):
+    """A user without platform-admin permission gets 403 when assigning a global role."""
     owner = _register_and_login(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
@@ -166,6 +183,7 @@ def test_non_platform_admin_cannot_assign_role(client):
 
 
 def test_non_platform_admin_cannot_remove_role(client):
+    """A user without platform-admin permission gets 403 when removing a global role."""
     owner = _register_and_login(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
@@ -196,6 +214,9 @@ def test_platform_admin_cannot_grant_self_a_role_with_new_permissions(client):
 
 
 def test_platform_admin_can_grant_self_a_role_with_no_new_permissions(client):
+    """A platform admin re-assigning themselves a role that adds no new permissions succeeds with
+    201.
+    """
     admin = _platform_admin(client)
     admin_id = _user_id(client, admin["access_token"])
 

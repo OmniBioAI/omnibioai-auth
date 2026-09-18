@@ -13,6 +13,8 @@ singleton the session-scoped `client` fixture already configured
 that shared `app` object and the patched module attributes, not on any
 one TestClient instance), rather than trying to spoof
 `request.client.host` some other way.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import uuid
@@ -53,6 +55,7 @@ def _client_at(ip: str) -> TestClient:
 
 
 def _rate_limit_events(email: str | None = None):
+    """Return auth_rate_limit_triggered audit events, optionally filtered by email."""
     db = _DirectSession()
     try:
         q = db.query(AuditEvent).filter(AuditEvent.event_type == "auth_rate_limit_triggered")
@@ -92,6 +95,9 @@ def tight_limits(monkeypatch):
 # ── Normal authentication ────────────────────────────────────────────────
 
 def test_valid_credentials_succeed(client, tight_limits):
+    """Valid credentials still log in with 200 and both tokens while the tight throttle limits are
+    active.
+    """
     user = _register(client, _unique_email())
     resp = client.post("/auth/login", json=user)
     assert resp.status_code == 200
@@ -100,12 +106,16 @@ def test_valid_credentials_succeed(client, tight_limits):
 
 
 def test_single_invalid_password_fails_normally(client, tight_limits):
+    """A single wrong password returns a plain 401, not a throttle response."""
     user = _register(client, _unique_email())
     resp = client.post("/auth/login", json={"email": user["email"], "password": "wrong"})
     assert resp.status_code == 401
 
 
 def test_unknown_user_fails_same_as_wrong_password(client, tight_limits):
+    """An unknown email and a known email with a wrong password both return 401 with identical
+    bodies.
+    """
     known = _register(client, _unique_email())
     wrong_pw = client.post("/auth/login", json={"email": known["email"], "password": "wrong"})
     unknown = client.post("/auth/login", json={"email": _unique_email(), "password": "anything"})
@@ -114,6 +124,7 @@ def test_unknown_user_fails_same_as_wrong_password(client, tight_limits):
 
 
 def test_successful_login_issues_normal_tokens(client, tight_limits):
+    """A successful login returns a bearer access token that /auth/validate accepts."""
     user = _register(client, _unique_email())
     resp = client.post("/auth/login", json=user)
     body = resp.json()
@@ -125,6 +136,9 @@ def test_successful_login_issues_normal_tokens(client, tight_limits):
 # ── Account-based throttling ─────────────────────────────────────────────
 
 def test_account_locked_after_max_attempts_across_different_ips(client, tight_limits):
+    """Failures spread over different IPs still lock the account: attempts up to the account
+    threshold return 401 and the next attempt returns 429.
+    """
     user = _register(client, _unique_email())
     # Each IP stays well under its own IP/pair thresholds (max_attempts-1
     # per IP), so only the account dimension can be what locks this. The
@@ -140,6 +154,7 @@ def test_account_locked_after_max_attempts_across_different_ips(client, tight_li
 
 
 def test_account_lockout_blocks_even_the_correct_password(client, tight_limits):
+    """While an account is locked, the correct password from a fresh IP is refused with 429."""
     user = _register(client, _unique_email())
     for i in range(settings.RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS):
         c = _client_at(f"10.0.1.{i}")
@@ -150,6 +165,9 @@ def test_account_lockout_blocks_even_the_correct_password(client, tight_limits):
 
 
 def test_account_lockout_expires_after_window(client, tight_limits):
+    """Once the account lockout window elapses, a correct-password login from a fresh IP succeeds
+    again.
+    """
     user = _register(client, _unique_email())
     for i in range(settings.RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS):
         c = _client_at(f"10.0.2.{i}")
@@ -163,6 +181,9 @@ def test_account_lockout_expires_after_window(client, tight_limits):
 
 
 def test_successful_login_resets_account_failure_counter(client, tight_limits):
+    """A successful login resets the account failure counter, so a fresh batch of failures just
+    under the threshold does not lock the account.
+    """
     user = _register(client, _unique_email())
     # One under the threshold, from distinct IPs so the pair/ip counters
     # don't confound this.
@@ -187,6 +208,9 @@ def test_successful_login_resets_account_failure_counter(client, tight_limits):
 # ── IP-based protection ───────────────────────────────────────────────────
 
 def test_ip_locked_after_many_failures_across_different_accounts(client, tight_limits):
+    """Many failures from one IP against different accounts lock that IP: 401 up to the IP
+    threshold, then 429.
+    """
     attacker = _client_at("203.0.113.9")
     responses = [
         attacker.post("/auth/login", json={"email": _unique_email(), "password": "guess"})
@@ -209,6 +233,9 @@ def test_changing_account_does_not_bypass_ip_limit(client, tight_limits):
 # ── (account, IP) pair dimension ──────────────────────────────────────────
 
 def test_pair_locks_faster_than_account_or_ip_alone(client, tight_limits):
+    """The account-plus-IP pair threshold is lower than both the account and IP thresholds, and
+    repeated failures for one pair reach 429 at the pair threshold.
+    """
     assert settings.RATE_LIMIT_PAIR_MAX_ATTEMPTS < settings.RATE_LIMIT_ACCOUNT_MAX_ATTEMPTS
     assert settings.RATE_LIMIT_PAIR_MAX_ATTEMPTS < settings.RATE_LIMIT_IP_MAX_ATTEMPTS
 
@@ -265,6 +292,9 @@ def test_concurrent_failures_are_atomic_no_overshoot(client, tight_limits):
 
 
 def test_concurrent_requests_do_not_double_trigger_audit(client, tight_limits):
+    """Concurrent failing logins from one account and IP pair record exactly one pair-dimension
+    throttle audit event.
+    """
     user = _register(client, _unique_email())
     ip = "192.0.2.50"
 
@@ -282,6 +312,9 @@ def test_concurrent_requests_do_not_double_trigger_audit(client, tight_limits):
 # ── Reset / recovery behavior ──────────────────────────────────────────────
 
 def test_expired_window_starts_fresh_without_locking(client, tight_limits):
+    """Failures just under the pair threshold followed by an expired window start a fresh count: the
+    next failed attempt is still a plain 401.
+    """
     user = _register(client, _unique_email())
     ip = "192.0.2.77"
     for _ in range(settings.RATE_LIMIT_PAIR_MAX_ATTEMPTS - 1):
@@ -299,6 +332,10 @@ def test_expired_window_starts_fresh_without_locking(client, tight_limits):
 # ── Redis failure behavior ──────────────────────────────────────────────────
 
 def test_redis_unavailable_falls_back_and_still_throttles(client, tight_limits, monkeypatch):
+    """With Redis unavailable, throttling falls back to in-process counters: attempts within the
+    fallback budget return 401 and the login is throttled with 429 once the fallback threshold is
+    crossed.
+    """
     class _Broken:
         def __getattr__(self, name):
             raise ConnectionError("simulated redis outage")
@@ -320,6 +357,7 @@ def test_redis_unavailable_falls_back_and_still_throttles(client, tight_limits, 
 
 
 def test_redis_unavailable_does_not_break_normal_login(client, tight_limits, monkeypatch):
+    """A valid login still succeeds with 200 while Redis is unavailable."""
     class _Broken:
         def __getattr__(self, name):
             raise ConnectionError("simulated redis outage")
@@ -331,6 +369,9 @@ def test_redis_unavailable_does_not_break_normal_login(client, tight_limits, mon
 
 
 def test_redis_recovery_uses_normal_thresholds_again(client, tight_limits, monkeypatch):
+    """After Redis recovers, a fresh IP and account authenticate normally and are not blocked by
+    fallback state.
+    """
     class _Broken:
         def __getattr__(self, name):
             raise ConnectionError("simulated redis outage")
@@ -353,6 +394,7 @@ def test_redis_recovery_uses_normal_thresholds_again(client, tight_limits, monke
 # ── Audit ────────────────────────────────────────────────────────────────
 
 def test_normal_failure_still_emits_login_failure_event(client, tight_limits):
+    """A normal failed login writes exactly one additional login_failure audit event."""
     user = _register(client, _unique_email())
     db = _DirectSession()
     try:
@@ -371,6 +413,7 @@ def test_normal_failure_still_emits_login_failure_event(client, tight_limits):
 
 
 def test_successful_login_still_emits_login_success_event(client, tight_limits):
+    """A successful login writes exactly one additional login_success audit event."""
     user = _register(client, _unique_email())
     db = _DirectSession()
     try:
@@ -389,6 +432,9 @@ def test_successful_login_still_emits_login_success_event(client, tight_limits):
 
 
 def test_rate_limit_trigger_emits_audit_event_with_expected_fields(client, tight_limits):
+    """Reaching the pair threshold emits one pair-dimension rate-limit audit event carrying the
+    email, IP and pair lockout seconds.
+    """
     user = _register(client, _unique_email())
     ip = "192.0.2.150"
     for _ in range(settings.RATE_LIMIT_PAIR_MAX_ATTEMPTS):
@@ -404,6 +450,7 @@ def test_rate_limit_trigger_emits_audit_event_with_expected_fields(client, tight
 
 
 def test_audit_events_never_contain_password_or_tokens(client, tight_limits):
+    """Throttle audit events never contain the submitted password or access/refresh token text."""
     user = _register(client, _unique_email())
     ip = "192.0.2.151"
     for _ in range(settings.RATE_LIMIT_PAIR_MAX_ATTEMPTS):
@@ -418,6 +465,9 @@ def test_audit_events_never_contain_password_or_tokens(client, tight_limits):
 
 
 def test_no_duplicate_audit_events_while_lockout_still_active(client, tight_limits):
+    """Further failed logins during an active pair lockout still yield exactly one pair-dimension
+    audit event.
+    """
     user = _register(client, _unique_email())
     ip = "192.0.2.152"
     for _ in range(settings.RATE_LIMIT_PAIR_MAX_ATTEMPTS + 4):
@@ -431,6 +481,9 @@ def test_no_duplicate_audit_events_while_lockout_still_active(client, tight_limi
 # ── Enumeration resistance ─────────────────────────────────────────────────
 
 def test_throttled_response_identical_for_real_and_fake_accounts(client, tight_limits):
+    """A throttled login returns the same 429 body and a Retry-After header for a real and a
+    nonexistent account, so throttling does not reveal account existence.
+    """
     real_user = _register(client, _unique_email())
     fake_email = _unique_email()
 
@@ -452,6 +505,9 @@ def test_throttled_response_identical_for_real_and_fake_accounts(client, tight_l
 # ── SSO exclusion ──────────────────────────────────────────────────────────
 
 def test_sso_enforced_login_bypasses_password_throttle_entirely(client, tight_limits, monkeypatch):
+    """For an SSO-enforced account every password login returns 403 with reason "sso_required" and
+    never trips the password throttle.
+    """
     db = _DirectSession()
     try:
         org_id = db.execute(
@@ -487,6 +543,7 @@ def test_sso_enforced_login_bypasses_password_throttle_entirely(client, tight_li
 # ── Malformed / adversarial requests ────────────────────────────────────────
 
 def test_malformed_login_request_returns_validation_error_not_crash(client, tight_limits):
+    """A login request without a password returns 422 rather than crashing."""
     resp = client.post("/auth/login", json={"email": "missing-password@omnibioai.test"})
     assert resp.status_code == 422
 
@@ -505,6 +562,7 @@ def test_very_long_password_handled_safely(client, tight_limits):
 
 
 def test_very_long_email_handled_safely(client, tight_limits):
+    """An extremely long email is handled with 401 or 422, not a server error."""
     long_email = "a" * 5000 + "@omnibioai.test"
     resp = client.post("/auth/login", json={"email": long_email, "password": "whatever"})
     assert resp.status_code in (401, 422)
@@ -529,6 +587,9 @@ def test_spoofed_forwarded_for_header_does_not_change_effective_ip(client, tight
 # ── Config wiring sanity ────────────────────────────────────────────────────
 
 def test_rate_limiting_disableable_via_settings(client, tight_limits, monkeypatch):
+    """With RATE_LIMIT_ENABLED set to false, repeated failed logins keep returning 401 and are never
+    throttled.
+    """
     monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
     user = _register(client, _unique_email())
     ip = "198.18.9.9"

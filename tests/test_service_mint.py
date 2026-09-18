@@ -5,6 +5,8 @@ override" boundary test, applied here as "an ordinary permission holder
 cannot mint tokens"), the lightweight-mint design decision (no session/
 refresh-token row, no last_login_at write), JIT-provisioning vs.
 existing-user reuse, and the audit trail.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -66,6 +68,7 @@ def _user_row(email: str):
 
 
 def test_mint_rejected_for_a_caller_with_no_permissions_at_all(client):
+    """POST /service/mint-user-token by a caller with no permissions returns 403."""
     caller = _register_and_login(client)
     resp = client.post(
         "/service/mint-user-token",
@@ -98,6 +101,9 @@ def test_mint_rejected_for_scientist_role_holder(client):
 
 
 def test_mint_succeeds_for_a_caller_holding_service_token_mint(client):
+    """A caller holding service_token.mint gets 200 with a bearer access token that expires in 15
+    minutes.
+    """
     caller = _mint_caller(client)
     target_email = f"chat-user-{uuid.uuid4().hex[:8]}@example.test"
 
@@ -114,6 +120,9 @@ def test_mint_succeeds_for_a_caller_holding_service_token_mint(client):
 
 
 def test_minted_token_carries_the_target_users_own_identity_not_the_callers(client):
+    """The minted token's sub and email are the target user's, not the caller's, and its auth_method
+    is "service_mint".
+    """
     caller = _mint_caller(client)
     target_email = f"chat-user-{uuid.uuid4().hex[:8]}@example.test"
 
@@ -135,6 +144,7 @@ def test_minted_token_carries_the_target_users_own_identity_not_the_callers(clie
 
 
 def test_mint_jit_provisions_a_real_user_for_an_unknown_email(client):
+    """Minting for an unknown email provisions a real user without a password."""
     caller = _mint_caller(client)
     target_email = f"brand-new-chat-user-{uuid.uuid4().hex[:8]}@example.test"
     assert _user_row(target_email) is None
@@ -151,6 +161,7 @@ def test_mint_jit_provisions_a_real_user_for_an_unknown_email(client):
 
 
 def test_mint_reuses_an_existing_account_rather_than_duplicating_it(client):
+    """Minting for an existing email reuses that account and does not create a second one."""
     caller = _mint_caller(client)
     existing = _register_and_login(client)
 
@@ -175,6 +186,7 @@ def test_mint_reuses_an_existing_account_rather_than_duplicating_it(client):
 
 
 def test_mint_creates_no_refresh_token_or_session_row(client):
+    """Minting creates no refresh token and no session row for the target user."""
     caller = _mint_caller(client)
     target_email = f"chat-user-{uuid.uuid4().hex[:8]}@example.test"
 
@@ -195,6 +207,7 @@ def test_mint_creates_no_refresh_token_or_session_row(client):
 
 
 def test_mint_does_not_write_last_login_at(client):
+    """Minting does not set the target user's last_login_at."""
     caller = _mint_caller(client)
     target_email = f"chat-user-{uuid.uuid4().hex[:8]}@example.test"
 
@@ -211,6 +224,9 @@ def test_mint_does_not_write_last_login_at(client):
 
 
 def test_mint_is_audit_logged_with_actor_and_target(client):
+    """Minting writes exactly one service_token_minted audit event with the caller as actor and the
+    target email in its metadata.
+    """
     caller = _mint_caller(client)
     target_email = f"chat-user-{uuid.uuid4().hex[:8]}@example.test"
 

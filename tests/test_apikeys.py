@@ -1,3 +1,11 @@
+"""Organization API-key lifecycle through /orgs/{id}/api-keys: creation returns
+the full omni_sk_ key only once, listing never exposes key material, revocation
+marks the key revoked, non-members and other organizations cannot list or
+revoke a key, and apikey_service.verify_api_key accepts only active, issued
+keys.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import uuid
 
 import pytest
@@ -31,6 +39,9 @@ def _register_and_login(client, email=None):
 
 @pytest.fixture
 def org(client):
+    """Create an organization owned by a freshly registered user and return its id, owner
+    credentials and owner auth headers.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     created = client.post(
@@ -42,6 +53,9 @@ def org(client):
 
 
 def test_create_api_key_returns_full_key_once(client, org):
+    """Creating an API key returns 201 with the requested name and scopes plus the full omni_sk_
+    key, whose key_prefix is the leading part of that key.
+    """
     resp = client.post(
         f"/orgs/{org['id']}/api-keys",
         json={"name": "CI pipeline", "scopes": ["manage_teams"]},
@@ -68,6 +82,9 @@ def test_create_api_key_rejects_scope_caller_does_not_hold(client, org):
 
 
 def test_list_api_keys_never_exposes_full_key_or_hash(client, org):
+    """Listing an organization's API keys returns the key by name but never includes the full key
+    value or the key_hash.
+    """
     create = client.post(
         f"/orgs/{org['id']}/api-keys",
         json={"name": "Listed key", "scopes": []},
@@ -85,6 +102,7 @@ def test_list_api_keys_never_exposes_full_key_or_hash(client, org):
 
 
 def test_revoke_api_key(client, org):
+    """Revoking an API key returns 204 and the key is subsequently listed with status "revoked"."""
     create = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "Revoke me", "scopes": []}, headers=org["owner_headers"]
     )
@@ -99,6 +117,7 @@ def test_revoke_api_key(client, org):
 
 
 def test_missing_token_rejected(client, org):
+    """Listing an organization's API keys without a bearer token is rejected with 401 or 403."""
     resp = client.get(f"/orgs/{org['id']}/api-keys")
     assert resp.status_code in (401, 403)
 
@@ -107,6 +126,9 @@ def test_missing_token_rejected(client, org):
 
 
 def test_non_member_cannot_list_or_revoke_api_keys(client, org):
+    """A non-member gets 404 when listing or revoking an organization's API keys, and the rejected
+    revoke leaves the key active.
+    """
     create = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "Protected", "scopes": []}, headers=org["owner_headers"]
     )
@@ -128,6 +150,9 @@ def test_non_member_cannot_list_or_revoke_api_keys(client, org):
 
 
 def test_api_key_from_org_a_not_reachable_via_org_b(client, org):
+    """An API key of organization A cannot be revoked through organization B's URL by B's owner; the
+    request returns 404.
+    """
     create = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "Org A key", "scopes": []}, headers=org["owner_headers"]
     )
@@ -152,6 +177,7 @@ def test_api_key_from_org_a_not_reachable_via_org_b(client, org):
 
 
 def test_verify_api_key_accepts_active_key(client, org):
+    """verify_api_key returns the matching key record for an active issued key."""
     create = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "Direct-verify", "scopes": []}, headers=org["owner_headers"]
     )
@@ -169,6 +195,7 @@ def test_verify_api_key_accepts_active_key(client, org):
 
 
 def test_verify_api_key_rejects_revoked_key(client, org):
+    """verify_api_key returns None for a key that has been revoked."""
     create = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "To-be-revoked", "scopes": []}, headers=org["owner_headers"]
     )
@@ -188,6 +215,7 @@ def test_verify_api_key_rejects_revoked_key(client, org):
 
 
 def test_verify_api_key_rejects_unknown_key(client, org):
+    """verify_api_key returns None for a key string that was never issued."""
     db = _DirectSession()
     try:
         result = apikey_service.verify_api_key(db, "omni_sk_this_key_was_never_issued_by_anything")

@@ -1,3 +1,10 @@
+"""Team endpoints under /orgs/{id}/teams: creation, listing, detail, rename and
+deletion; membership management (invite, role change, removal, leaving) with
+last-admin protection; authorization by organization permission or live team
+role; and isolation between organizations.
+
+Developer: Manish Kumar <manish@omnibioai.org>
+"""
 import uuid
 
 import pytest
@@ -87,6 +94,8 @@ def org(client):
 
 
 def test_create_and_list_team(client, org):
+    """A team can be created (201, no members yet) and then appears in the organization's team list.
+    """
     resp = client.post(f"/orgs/{org['id']}/teams", json={"name": "Wet Lab"}, headers=org["owner_headers"])
     assert resp.status_code == 201
     assert resp.json()["name"] == "Wet Lab"
@@ -98,12 +107,14 @@ def test_create_and_list_team(client, org):
 
 
 def test_list_teams_requires_membership(client, org):
+    """A non-member gets 404 when listing an organization's teams."""
     outsider = _register_and_login(client)
     resp = client.get(f"/orgs/{org['id']}/teams", headers=_auth_header(outsider["access_token"]))
     assert resp.status_code == 404
 
 
 def test_create_team_requires_manage_teams(client, org):
+    """A non-member gets 404 when creating a team in the organization."""
     outsider = _register_and_login(client)
     resp = client.post(
         f"/orgs/{org['id']}/teams", json={"name": "Nope"}, headers=_auth_header(outsider["access_token"])
@@ -112,6 +123,9 @@ def test_create_team_requires_manage_teams(client, org):
 
 
 def test_set_team_members_org_owner_only(client, org):
+    """The organization owner can set a team's members, and the response lists the assigned member
+    id.
+    """
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "Core"}, headers=org["owner_headers"]).json()
     owner_id = _user_id(client, org["owner"]["access_token"])
 
@@ -140,6 +154,7 @@ def test_set_team_members_rejects_non_org_member(client, org):
 
 
 def test_delete_team(client, org):
+    """Deleting a team returns 204 and the team no longer appears in the team list."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "Temp"}, headers=org["owner_headers"]).json()
     resp = client.delete(f"/orgs/{org['id']}/teams/{team['id']}", headers=org["owner_headers"])
     assert resp.status_code == 204
@@ -152,6 +167,7 @@ def test_delete_team(client, org):
 
 
 def test_team_not_visible_via_other_org(client, org):
+    """A team is not reachable through another organization's URL: deleting it there returns 404."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "Private"}, headers=org["owner_headers"]).json()
 
     other_owner = _register_and_login(client)
@@ -171,6 +187,7 @@ def test_team_not_visible_via_other_org(client, org):
 
 
 def test_get_team_detail(client, org):
+    """GET on a team returns its name and description."""
     created = client.post(
         f"/orgs/{org['id']}/teams", json={"name": "Detail", "description": "desc"}, headers=org["owner_headers"]
     ).json()
@@ -182,6 +199,7 @@ def test_get_team_detail(client, org):
 
 
 def test_get_team_detail_requires_membership(client, org):
+    """A non-member gets 404 when reading a team's detail."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     outsider = _register_and_login(client)
     resp = client.get(f"/orgs/{org['id']}/teams/{team['id']}", headers=_auth_header(outsider["access_token"]))
@@ -189,6 +207,7 @@ def test_get_team_detail_requires_membership(client, org):
 
 
 def test_rename_team_by_org_admin(client, org):
+    """An organization admin can update a team's name and description."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "Old"}, headers=org["owner_headers"]).json()
 
     resp = client.patch(
@@ -201,6 +220,7 @@ def test_rename_team_by_org_admin(client, org):
 
 
 def test_rename_team_partial_update_leaves_other_field_unchanged(client, org):
+    """Renaming a team without a description leaves the description unchanged."""
     team = client.post(
         f"/orgs/{org['id']}/teams", json={"name": "Keep Desc", "description": "original"}, headers=org["owner_headers"]
     ).json()
@@ -248,6 +268,9 @@ def test_rename_team_allowed_for_team_admin_without_manage_teams(client, org):
 
 
 def test_invite_to_team_success(client, org):
+    """Inviting an organization member to a team returns 201 with the given role and the inviter
+    recorded, and the member appears in the team's member list.
+    """
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     invitee = _register_and_login(client)
     _invite_to_org(client, org, invitee["email"])
@@ -263,12 +286,14 @@ def test_invite_to_team_success(client, org):
 
 
 def test_invite_to_team_unknown_email_404(client, org):
+    """Inviting an email with no user account returns 404."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     resp = _invite_to_team(client, org["id"], team["id"], "nobody@omnibioai.test", org["owner_headers"])
     assert resp.status_code == 404
 
 
 def test_invite_to_team_rejects_non_org_member(client, org):
+    """Inviting a user who is not a member of the organization returns 400."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     outsider = _register_and_login(client)
     resp = _invite_to_team(client, org["id"], team["id"], outsider["email"], org["owner_headers"])
@@ -276,6 +301,7 @@ def test_invite_to_team_rejects_non_org_member(client, org):
 
 
 def test_invite_to_team_forbidden_for_plain_member(client, org):
+    """An ordinary organization member cannot invite to a team: 403."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     plain = _register_and_login(client)
     _invite_to_org(client, org, plain["email"])
@@ -292,6 +318,7 @@ def test_invite_to_team_forbidden_for_plain_member(client, org):
 
 
 def test_update_team_member_role(client, org):
+    """A team member's role can be changed (here to admin) with 200."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     invitee = _register_and_login(client)
     _invite_to_org(client, org, invitee["email"])
@@ -306,6 +333,7 @@ def test_update_team_member_role(client, org):
 
 
 def test_update_team_member_role_blocks_demoting_last_admin(client, org):
+    """Demoting the team's only admin returns 400."""
     owner_id = _user_id(client, org["owner"]["access_token"])
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     # Owner invites themselves as the team's sole admin.
@@ -319,6 +347,7 @@ def test_update_team_member_role_blocks_demoting_last_admin(client, org):
 
 
 def test_remove_team_member(client, org):
+    """Removing a team member returns 204 and the user no longer appears in the member list."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     invitee = _register_and_login(client)
     _invite_to_org(client, org, invitee["email"])
@@ -334,6 +363,7 @@ def test_remove_team_member(client, org):
 
 
 def test_remove_team_member_blocks_removing_last_admin(client, org):
+    """Removing the team's only admin returns 400."""
     owner_id = _user_id(client, org["owner"]["access_token"])
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     _invite_to_team(client, org["id"], team["id"], org["owner"]["email"], org["owner_headers"], role="admin")
@@ -348,6 +378,7 @@ def test_remove_team_member_blocks_removing_last_admin(client, org):
 
 
 def test_leave_team(client, org):
+    """A member can leave a team with 204 and is no longer listed."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     leaver = _register_and_login(client)
     _invite_to_org(client, org, leaver["email"])
@@ -361,6 +392,7 @@ def test_leave_team(client, org):
 
 
 def test_leave_team_blocks_last_admin(client, org):
+    """The team's only admin cannot leave: 400."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     _invite_to_team(client, org["id"], team["id"], org["owner"]["email"], org["owner_headers"], role="admin")
 
@@ -369,6 +401,7 @@ def test_leave_team_blocks_last_admin(client, org):
 
 
 def test_leave_team_not_a_member_404(client, org):
+    """Leaving a team the caller is not on returns 404."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     non_member = _register_and_login(client)
     _invite_to_org(client, org, non_member["email"])
@@ -461,6 +494,7 @@ def test_manage_endpoints_cross_org_404_not_leaked(client, org, endpoint_name):
 
 
 def test_invite_allowed_for_team_admin_without_manage_teams(client, org):
+    """A team admin who lacks the manage_teams permission can still invite members (201)."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     team_admin = _add_team_member(client, org, team["id"], role="admin")
     target = _register_and_login(client)
@@ -471,6 +505,7 @@ def test_invite_allowed_for_team_admin_without_manage_teams(client, org):
 
 
 def test_update_role_allowed_for_team_admin_without_manage_teams(client, org):
+    """A team admin who lacks manage_teams can change a member's role (200)."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     team_admin = _add_team_member(client, org, team["id"], role="admin")
     viewer = _add_team_member(client, org, team["id"], role="viewer")
@@ -485,6 +520,7 @@ def test_update_role_allowed_for_team_admin_without_manage_teams(client, org):
 
 
 def test_remove_member_allowed_for_team_admin_without_manage_teams(client, org):
+    """A team admin who lacks manage_teams can remove a member (204)."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     team_admin = _add_team_member(client, org, team["id"], role="admin")
     member = _add_team_member(client, org, team["id"], role="member")
@@ -498,6 +534,7 @@ def test_remove_member_allowed_for_team_admin_without_manage_teams(client, org):
 
 
 def test_update_role_nonexistent_member_404(client, org):
+    """Changing the role of a user who is not on the team returns 404."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     resp = client.put(
         f"/orgs/{org['id']}/teams/{team['id']}/members/999999/role",
@@ -507,6 +544,7 @@ def test_update_role_nonexistent_member_404(client, org):
 
 
 def test_remove_member_nonexistent_member_404(client, org):
+    """Removing a user who is not on the team returns 404."""
     team = client.post(f"/orgs/{org['id']}/teams", json={"name": "T"}, headers=org["owner_headers"]).json()
     resp = client.delete(
         f"/orgs/{org['id']}/teams/{team['id']}/members/999999", headers=org["owner_headers"],

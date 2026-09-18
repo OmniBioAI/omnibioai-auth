@@ -6,6 +6,8 @@ Uses the same direct-DB-session pattern as tests/test_apikeys.py and
 tests/test_token_revocation.py -- a second connection to the same physical
 sqlite file conftest.py's `client` fixture uses, so these tests can grant/
 revoke roles and flip User.status directly, which no HTTP route exposes.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -73,6 +75,7 @@ def _suspend_user(email: str) -> None:
 
 
 def test_refresh_returns_a_different_refresh_token(client):
+    """A successful refresh returns 200 with a new access token and a different refresh token."""
     user = _register_and_login(client)
     resp = _refresh(client, user["refresh_token"])
     assert resp.status_code == 200
@@ -81,6 +84,9 @@ def test_refresh_returns_a_different_refresh_token(client):
 
 
 def test_refresh_after_role_removal_produces_updated_claims(client):
+    """After a role is removed from the user, refreshing produces tokens whose claims no longer
+    include that role.
+    """
     role_name = f"temp-role-{uuid.uuid4().hex[:8]}"
     perm_name = f"temp-perm-{uuid.uuid4().hex[:8]}"
 
@@ -110,6 +116,7 @@ def test_refresh_after_role_removal_produces_updated_claims(client):
 
 
 def test_refresh_after_user_suspension_fails(client):
+    """Refreshing after the user has been suspended returns 401."""
     user = _register_and_login(client)
     _suspend_user(user["email"])
 
@@ -121,6 +128,7 @@ def test_refresh_after_user_suspension_fails(client):
 
 
 def test_replay_of_already_rotated_refresh_token_fails(client):
+    """Presenting an already rotated refresh token a second time returns 401."""
     user = _register_and_login(client)
 
     first = _refresh(client, user["refresh_token"])

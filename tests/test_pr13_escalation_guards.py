@@ -8,6 +8,8 @@ test_pr13_role_org_scope.py's org-scope tests for the creation-time half).
 Every denial must also be audit-logged (ROLE_ASSIGNMENT_DENIED), not just
 surfaced as a 400/403 with nothing recorded server-side. A Platform Admin
 performing the identical assignment must still succeed.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
 
@@ -76,6 +78,9 @@ def _denial_events_for(role_name: str) -> list[AuditEvent]:
 
 
 def test_org_admin_cannot_assign_admin_role_to_another_member_via_new_surface(client):
+    """An organization admin assigning the global admin role to a member through /organizations/...
+    is refused with 403 with a detail mentioning Platform Admin.
+    """
     owner = _register_and_login(client)
     owner_headers = _auth_header(owner["access_token"])
     org_id = _create_org(client, owner_headers)
@@ -104,6 +109,9 @@ def test_org_admin_cannot_assign_admin_role_to_another_member_via_new_surface(cl
 
 
 def test_org_admin_cannot_assign_admin_role_via_legacy_surface(client):
+    """An organization admin assigning platform_admin through the legacy /orgs/... single-role POST
+    or bulk PUT is refused with 403.
+    """
     owner = _register_and_login(client)
     owner_headers = _auth_header(owner["access_token"])
     org_id = _create_org(client, owner_headers)
@@ -134,6 +142,9 @@ def test_org_admin_cannot_assign_admin_role_via_legacy_surface(client):
 
 
 def test_denied_assignment_is_audit_logged(client):
+    """A refused escalation attempt returns 403 and writes one audit event naming the organization,
+    target member, role and the offending permissions.
+    """
     owner = _register_and_login(client)
     owner_headers = _auth_header(owner["access_token"])
     org_id = _create_org(client, owner_headers)
@@ -167,6 +178,7 @@ def test_denied_assignment_is_audit_logged(client):
 
 
 def test_platform_admin_can_assign_admin_role_to_org_member(client):
+    """A platform admin can assign the admin role to an organization member (201)."""
     platform_admin = _platform_admin(client)
     org_id = _create_org(client, platform_admin["headers"], name="Platform Admin Assign Org")
 
@@ -196,6 +208,9 @@ def test_platform_admin_can_assign_admin_role_to_org_member(client):
 
 
 def test_org_admin_cannot_create_custom_role_with_global_permission_via_api(client):
+    """An organization admin creating a custom role that includes a global-scope permission is
+    rejected with 400.
+    """
     owner = _register_and_login(client)
     owner_headers = _auth_header(owner["access_token"])
     org_id = _create_org(client, owner_headers)

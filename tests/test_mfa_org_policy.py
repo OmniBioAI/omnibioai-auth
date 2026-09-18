@@ -6,6 +6,8 @@ routes/services against the shared sqlite test DB, audit rows read back
 via a second, direct session -- never mocks of auth_service/mfa_service
 themselves. Each test file is self-contained (local helpers), matching
 this repo's per-file duplication convention.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import time
@@ -128,6 +130,9 @@ def _events(**filters) -> list[dict]:
 
 
 def _assert_no_secret_leakage(event: dict) -> None:
+    """Assert that an audit event's states and metadata contain none of the words secret, code,
+    token, recovery_code, otpauth:// or challenge_token.
+    """
     blob = str(event["before_state"]) + str(event["after_state"]) + str(event["metadata"])
     for forbidden in ("secret", "code", "token", "recovery_code", "otpauth://", "challenge_token"):
         assert forbidden not in blob.lower(), f"{forbidden!r} leaked into audit event: {event}"
@@ -166,6 +171,9 @@ def _enable_mfa(client, headers) -> str:
 
 
 def test_create_policy_defaults_to_not_required(client, org):
+    """Creating an MFA policy with an empty body returns 201 with required false, no override and no
+    enabled_at, enabled_by or override reason.
+    """
     resp = client.post(f"/orgs/{org['id']}/mfa-policy", json={}, headers=org["owner_headers"])
     assert resp.status_code == 201
     data = resp.json()
@@ -177,6 +185,9 @@ def test_create_policy_defaults_to_not_required(client, org):
 
 
 def test_create_policy_required_true_sets_enabled_at_and_emits_event(client, org):
+    """Creating a policy with required true records enabled_at and the enabling owner's email and
+    writes one audit event whose after-state is {"required": true}.
+    """
     resp = client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
     assert resp.status_code == 201
     data = resp.json()
@@ -190,6 +201,7 @@ def test_create_policy_required_true_sets_enabled_at_and_emits_event(client, org
 
 
 def test_create_second_policy_for_same_org_rejected(client, org):
+    """Creating a second MFA policy for the same organization returns 409."""
     first = client.post(f"/orgs/{org['id']}/mfa-policy", json={}, headers=org["owner_headers"])
     assert first.status_code == 201
 
@@ -198,11 +210,15 @@ def test_create_second_policy_for_same_org_rejected(client, org):
 
 
 def test_get_policy_404_when_none_exists(client, org):
+    """GET on an organization's MFA policy returns 404 when none has been created."""
     resp = client.get(f"/orgs/{org['id']}/mfa-policy", headers=org["owner_headers"])
     assert resp.status_code == 404
 
 
 def test_patch_enable_policy_emits_event_with_reason(client, org):
+    """Enabling the policy via PATCH returns required true and writes one audit event whose metadata
+    carries the supplied reason.
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": False}, headers=org["owner_headers"])
 
     resp = client.patch(
@@ -219,6 +235,7 @@ def test_patch_enable_policy_emits_event_with_reason(client, org):
 
 
 def test_patch_disable_policy_emits_event(client, org):
+    """Disabling the policy via PATCH returns required false and writes one audit event."""
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
 
     resp = client.patch(
@@ -232,6 +249,7 @@ def test_patch_disable_policy_emits_event(client, org):
 
 
 def test_patch_with_no_actual_flip_emits_no_event(client, org):
+    """A PATCH that leaves required unchanged returns 200 and writes no audit event."""
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
     before = len(_events(organization_id=org["id"]))
 
@@ -244,6 +262,9 @@ def test_patch_with_no_actual_flip_emits_no_event(client, org):
 
 
 def test_member_without_manage_sso_receives_403(client, org, admin_headers):
+    """A member whose role lacks the manage_sso permission gets 403 when creating the organization's
+    MFA policy.
+    """
     owner_id = _user_id(client, org["owner"]["access_token"])
 
     narrow_role = f"mfa-policy-narrow-{uuid.uuid4().hex[:8]}"
@@ -263,6 +284,7 @@ def test_member_without_manage_sso_receives_403(client, org, admin_headers):
 
 
 def test_org_a_cannot_view_org_b_policy(client, org):
+    """An owner of another organization gets 404 when reading this organization's MFA policy."""
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
 
     other_owner = _register_and_login(client)
@@ -278,6 +300,9 @@ def test_org_a_cannot_view_org_b_policy(client, org):
 
 
 def test_org_a_cannot_update_org_b_policy(client, org):
+    """An owner of another organization gets 404 when patching this organization's MFA policy, which
+    stays unchanged.
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": False}, headers=org["owner_headers"])
 
     other_owner = _register_and_login(client)
@@ -313,6 +338,9 @@ def test_personal_mfa_enabled_policy_absent_still_challenges(client, org, config
 
 
 def test_no_mfa_no_policy_normal_login_unchanged(client):
+    """A user with no MFA and no organization policy logs in normally with 200, tokens and no
+    mfa_required key.
+    """
     user = _register_and_login(client)
     resp = client.post("/auth/login", json={"email": user["email"], "password": user["password"]})
     assert resp.status_code == 200
@@ -335,6 +363,9 @@ def test_personal_mfa_enabled_policy_enabled_challenges_not_enrollment_required(
 
 
 def test_no_personal_mfa_policy_required_returns_enrollment_required(client, org):
+    """A user without personal MFA in an organization that requires it is refused at login with 403
+    and error "mfa_enrollment_required".
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
 
     resp = client.post(
@@ -346,6 +377,8 @@ def test_no_personal_mfa_policy_required_returns_enrollment_required(client, org
 
 
 def test_no_personal_mfa_policy_disabled_normal_login(client, org):
+    """A user without personal MFA logs in normally when the organization's policy is not required.
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": False}, headers=org["owner_headers"])
 
     resp = client.post(
@@ -383,6 +416,9 @@ def test_license_login_respects_org_mfa_policy(client, org, admin_headers):
 
 
 def test_override_requires_manage_all_orgs_not_org_admin(client, org):
+    """Creating an MFA policy override as an organization admin returns 403 because it needs the
+    manage_all_orgs permission.
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
 
     resp = client.post(
@@ -394,6 +430,9 @@ def test_override_requires_manage_all_orgs_not_org_admin(client, org):
 
 
 def test_override_active_bypasses_enrollment_requirement(client, org, platform_admin_headers):
+    """With a platform-admin override active, a required policy stays set but a user without MFA
+    logs in normally without an mfa_required response.
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
 
     override = client.post(
@@ -416,6 +455,9 @@ def test_override_active_bypasses_enrollment_requirement(client, org, platform_a
 
 
 def test_override_removed_restores_enforcement(client, org, platform_admin_headers):
+    """Removing the override clears override_active and the override reason, and login is refused
+    again with "mfa_enrollment_required".
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
     client.post(
         f"/orgs/{org['id']}/mfa-policy/override", json={"reason": "temporary"}, headers=platform_admin_headers
@@ -457,6 +499,9 @@ def test_override_active_does_not_disable_personal_mfa(client, org, platform_adm
 
 
 def test_override_events_contain_org_actor_reason_and_no_secrets(client, org, platform_admin_headers):
+    """Override created and removed events each carry the organization, an actor and the reason
+    ("incident-1234"), with no secret material.
+    """
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
     client.post(
         f"/orgs/{org['id']}/mfa-policy/override", json={"reason": "incident-1234"},
@@ -482,6 +527,7 @@ def test_override_events_contain_org_actor_reason_and_no_secrets(client, org, pl
 
 
 def test_policy_enable_disable_events_no_secret_leakage(client, org, configured_crypto):
+    """Policy enable and disable audit events contain no secret, code or token material."""
     _enable_mfa(client, org["owner_headers"])
     client.post(f"/orgs/{org['id']}/mfa-policy", json={"required": True}, headers=org["owner_headers"])
     client.patch(

@@ -4,6 +4,8 @@ escaping). Does NOT touch, and must not change the behavior of, ACS
 (not implemented -- PR5), identity linking/JIT provisioning (PR6/PR7),
 CRUD (PR8), or the existing OIDC SSO / OAuth / MFA flows -- see
 tests/test_sso_login.py, still run unmodified as part of the full suite.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import uuid
@@ -91,11 +93,13 @@ def _decode_authn_request(location: str) -> etree._Element:
 
 
 def test_login_unknown_org_returns_404(client):
+    """SAML login for an unknown organization slug returns 404."""
     resp = _do_login_redirect(client, "does-not-exist-org-slug-xyz")
     assert resp.status_code == 404
 
 
 def test_login_org_without_saml_config_returns_404(client):
+    """SAML login for an organization with no SAML configuration returns 404."""
     org = _create_org(client, "No SAML Config Org")
     resp = _do_login_redirect(client, org["slug"])
     assert resp.status_code == 404
@@ -103,6 +107,9 @@ def test_login_org_without_saml_config_returns_404(client):
 
 @pytest.mark.parametrize("status", ["pending_verification", "disabled"])
 def test_login_inactive_saml_config_returns_404(client, status):
+    """SAML login returns 404 for an organization whose SAML configuration is pending_verification
+    or disabled.
+    """
     org = _create_org(client, f"Inactive SAML {status} Org")
     _plant_saml_config(org["id"], status=status)
     resp = _do_login_redirect(client, org["slug"])
@@ -130,17 +137,20 @@ def test_login_unconfigured_vs_inactive_vs_unknown_org_are_indistinguishable(cli
 
 
 def test_login_active_config_redirects(client, org_with_active_saml):
+    """SAML login for an organization with an active configuration redirects with 302 or 307."""
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     assert resp.status_code in (302, 307)
 
 
 def test_login_redirect_targets_configured_sso_url(client, org_with_active_saml):
+    """The login redirect targets the configured IdP SSO URL."""
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     location = resp.headers["location"]
     assert location.startswith("https://idp.example.com/sso?")
 
 
 def test_login_redirect_contains_samlrequest(client, org_with_active_saml):
+    """The login redirect carries a non-trivial SAMLRequest query parameter."""
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     query = parse_qs(urlparse(resp.headers["location"]).query)
     assert "SAMLRequest" in query
@@ -148,6 +158,7 @@ def test_login_redirect_contains_samlrequest(client, org_with_active_saml):
 
 
 def test_login_redirect_contains_relaystate(client, org_with_active_saml):
+    """The login redirect carries a non-trivial RelayState query parameter."""
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     query = parse_qs(urlparse(resp.headers["location"]).query)
     assert "RelayState" in query
@@ -190,6 +201,9 @@ def test_destination_corresponds_to_configured_sso_url_not_a_default(client):
 
 
 def test_relaystate_binds_correct_organization_and_config(client, org_with_active_saml):
+    """The RelayState token has type "saml_relay_state" and is bound to the organization and SAML
+    configuration that started the login.
+    """
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     relay_state = parse_qs(urlparse(resp.headers["location"]).query)["RelayState"][0]
     claims = decode_token(relay_state)
@@ -212,6 +226,7 @@ def test_relaystate_is_a_distinct_token_type_from_oidc_sso_state(client, org_wit
 
 
 def test_relaystate_cannot_be_tampered_with(client, org_with_active_saml):
+    """A RelayState whose payload has been altered fails verification."""
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     relay_state = parse_qs(urlparse(resp.headers["location"]).query)["RelayState"][0]
 
@@ -226,6 +241,7 @@ def test_relaystate_cannot_be_tampered_with(client, org_with_active_saml):
 
 
 def test_relaystate_with_wrong_signature_rejected(client, org_with_active_saml):
+    """A RelayState signed with the wrong key is rejected."""
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     relay_state = parse_qs(urlparse(resp.headers["location"]).query)["RelayState"][0]
     header, payload, _signature = relay_state.split(".")
@@ -239,6 +255,9 @@ def test_relaystate_with_wrong_signature_rejected(client, org_with_active_saml):
 
 
 def test_two_organizations_produce_isolated_login_requests(client):
+    """Two organizations produce login requests with different Destination, Issuer and request ID,
+    and each RelayState binds its own organization.
+    """
     org_a = _create_org(client, "SAML Login Org A")
     config_a_id = _plant_saml_config(org_a["id"], sso_url="https://idp-a.example.com/sso",
                                       entity_id="https://idp-a.example.com/entity")
@@ -282,6 +301,9 @@ def test_two_logins_for_same_org_produce_fresh_authn_request_ids(client, org_wit
 
 
 def test_certificate_and_config_values_not_leaked_into_redirect_url(client, org_with_active_saml):
+    """The configured IdP certificate value appears neither in the redirect URL nor in the decoded
+    AuthnRequest.
+    """
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     location = resp.headers["location"]
     assert "SENTINEL-CERT-SHOULD-NOT-LEAK" not in location
@@ -292,6 +314,9 @@ def test_certificate_and_config_values_not_leaked_into_redirect_url(client, org_
 
 
 def test_relaystate_does_not_carry_the_certificate_or_raw_config(client, org_with_active_saml):
+    """The RelayState claims stay within a fixed allowed set and carry no certificate or raw
+    configuration.
+    """
     resp = _do_login_redirect(client, org_with_active_saml["org_slug"])
     relay_state = parse_qs(urlparse(resp.headers["location"]).query)["RelayState"][0]
     claims = decode_token(relay_state)

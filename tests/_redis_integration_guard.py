@@ -24,6 +24,8 @@ Two guards:
    override. Production's Redis is always reachable on port 6380 on this
    architecture; a genuinely isolated test instance must run on a
    different port. There is deliberately no escape hatch.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 from __future__ import annotations
 

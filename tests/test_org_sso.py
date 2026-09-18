@@ -1,5 +1,7 @@
 """Phase 2 PR3: per-org OIDC IdP registration -- admin CRUD only. No login
 path exists yet (Phase 2 PR4); this whole feature is inert until then.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 
 import os
@@ -57,6 +59,9 @@ def admin_headers(admin_token):
 
 @pytest.fixture
 def org(client):
+    """Create an organization owned by a freshly registered user and return its id, owner
+    credentials and owner auth headers.
+    """
     owner = _register_and_login(client)
     headers = _auth_header(owner["access_token"])
     created = client.post(
@@ -163,6 +168,9 @@ def configured_discovery(monkeypatch, public_dns, configured_crypto):
 
 
 def test_create_sso_config_success(client, org, configured_discovery):
+    """Creating an organization's OIDC configuration after successful discovery returns 201 echoing
+    the issuer, client_id, provider_type "oidc", allowed domains and status "active".
+    """
     resp = client.post(
         f"/orgs/{org['id']}/sso",
         json={
@@ -185,6 +193,9 @@ def test_create_sso_config_success(client, org, configured_discovery):
 
 
 def test_created_secret_is_encrypted_not_plaintext(client, org, configured_discovery):
+    """The stored client secret is ciphertext: it differs from and does not contain the submitted
+    plaintext.
+    """
     client.post(
         f"/orgs/{org['id']}/sso",
         json={
@@ -212,6 +223,9 @@ def test_created_secret_is_encrypted_not_plaintext(client, org, configured_disco
 
 
 def test_create_sso_config_stores_discovery_endpoints(client, org, configured_discovery):
+    """Creation stores the authorization, token and JWKS endpoints from the discovery document and
+    sets last_verified_at.
+    """
     resp = client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "secret", "allowed_domains": []},
@@ -241,11 +255,15 @@ def test_create_sso_config_stores_discovery_endpoints(client, org, configured_di
 
 
 def _assert_nothing_persisted(client, org, headers):
+    """Assert that the organization has no stored SSO configuration (GET returns 404)."""
     check = client.get(f"/orgs/{org['id']}/sso", headers=headers)
     assert check.status_code == 404
 
 
 def test_discovery_unreachable_rejected(client, org, public_dns, monkeypatch):
+    """Creation is rejected with 400 and nothing is persisted when the discovery endpoint is
+    unreachable.
+    """
     import httpx
 
     monkeypatch.setattr(org_sso_service.httpx, "AsyncClient", _FakeDiscoveryClient)
@@ -261,6 +279,9 @@ def test_discovery_unreachable_rejected(client, org, public_dns, monkeypatch):
 
 
 def test_discovery_invalid_json_rejected(client, org, public_dns, monkeypatch):
+    """Creation is rejected with 400 and nothing is persisted when the discovery response is not
+    valid JSON.
+    """
     monkeypatch.setattr(org_sso_service.httpx, "AsyncClient", _FakeDiscoveryClient)
     _FakeDiscoveryClient.next_response = _FakeDiscoveryResponse(200, raise_json_error=True)
 
@@ -274,6 +295,9 @@ def test_discovery_invalid_json_rejected(client, org, public_dns, monkeypatch):
 
 
 def test_discovery_non_200_rejected(client, org, public_dns, monkeypatch):
+    """Creation is rejected with 400 and nothing is persisted when discovery returns a non-200
+    status.
+    """
     monkeypatch.setattr(org_sso_service.httpx, "AsyncClient", _FakeDiscoveryClient)
     _FakeDiscoveryClient.next_response = _FakeDiscoveryResponse(404, {})
 
@@ -288,6 +312,9 @@ def test_discovery_non_200_rejected(client, org, public_dns, monkeypatch):
 
 @pytest.mark.parametrize("missing_field", ["authorization_endpoint", "token_endpoint", "jwks_uri"])
 def test_discovery_missing_required_field_rejected(client, org, public_dns, monkeypatch, missing_field):
+    """Creation is rejected with 400 naming the missing field, and nothing is persisted, when the
+    discovery document lacks the authorization endpoint, token endpoint or jwks_uri.
+    """
     monkeypatch.setattr(org_sso_service.httpx, "AsyncClient", _FakeDiscoveryClient)
     doc = _valid_discovery_doc()
     del doc[missing_field]
@@ -304,6 +331,9 @@ def test_discovery_missing_required_field_rejected(client, org, public_dns, monk
 
 
 def test_discovery_issuer_mismatch_rejected(client, org, public_dns, monkeypatch):
+    """Creation is rejected with 400 mentioning the issuer, and nothing is persisted, when the
+    discovery document's issuer differs from the requested one.
+    """
     monkeypatch.setattr(org_sso_service.httpx, "AsyncClient", _FakeDiscoveryClient)
     doc = _valid_discovery_doc(issuer="https://not-the-requested-issuer.example.com")
     _FakeDiscoveryClient.next_response = _FakeDiscoveryResponse(200, doc)
@@ -322,6 +352,9 @@ def test_discovery_issuer_mismatch_rejected(client, org, public_dns, monkeypatch
 
 
 def test_issuer_resolving_to_private_ip_rejected(client, org, monkeypatch):
+    """An issuer whose host resolves to a private IP address is rejected with 400 and nothing is
+    persisted.
+    """
     def fake_getaddrinfo(host, port, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443))]
     monkeypatch.setattr(org_sso_service.socket, "getaddrinfo", fake_getaddrinfo)
@@ -336,6 +369,9 @@ def test_issuer_resolving_to_private_ip_rejected(client, org, monkeypatch):
 
 
 def test_issuer_resolving_to_loopback_rejected(client, org, monkeypatch):
+    """An issuer whose host resolves to a loopback address is rejected with 400 and nothing is
+    persisted.
+    """
     def fake_getaddrinfo(host, port, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
     monkeypatch.setattr(org_sso_service.socket, "getaddrinfo", fake_getaddrinfo)
@@ -366,6 +402,7 @@ def test_issuer_resolving_to_cloud_metadata_link_local_rejected(client, org, mon
 
 
 def test_issuer_unresolvable_host_rejected(client, org, monkeypatch):
+    """An issuer whose host cannot be resolved is rejected with 400 and nothing is persisted."""
     def fake_getaddrinfo(host, port, *args, **kwargs):
         raise socket.gaierror("nodename nor servname provided, or not known")
     monkeypatch.setattr(org_sso_service.socket, "getaddrinfo", fake_getaddrinfo)
@@ -380,6 +417,7 @@ def test_issuer_unresolvable_host_rejected(client, org, monkeypatch):
 
 
 def test_http_issuer_rejected_by_default(client, org):
+    """A plain http issuer URL is rejected with 400 by default and nothing is persisted."""
     resp = client.post(
         f"/orgs/{org['id']}/sso",
         json={
@@ -395,6 +433,7 @@ def test_http_issuer_rejected_by_default(client, org):
 
 
 def test_non_http_scheme_issuer_rejected(client, org):
+    """An issuer URL with a non-HTTP scheme is rejected with 400."""
     resp = client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": "ftp://example.com", "client_id": "cid", "client_secret": "secret", "allowed_domains": []},
@@ -407,6 +446,9 @@ def test_non_http_scheme_issuer_rejected(client, org):
 
 
 def test_org_admin_with_manage_sso_can_create(client, org, configured_discovery):
+    """An organization owner, who receives manage_sso through the org_admin role, can create the SSO
+    configuration.
+    """
     # org_owner created the org, so holds org_admin -> manage_sso via
     # ensure_org_admin_permissions' self-healing top-up (same mechanism
     # Phase 2 PR1 introduced).
@@ -419,6 +461,9 @@ def test_org_admin_with_manage_sso_can_create(client, org, configured_discovery)
 
 
 def test_member_without_manage_sso_receives_403(client, org, configured_discovery, admin_headers):
+    """A member whose role holds manage_org but not manage_sso is refused with 403 when creating the
+    SSO configuration.
+    """
     owner_id = _user_id(client, org["owner"]["access_token"])
 
     # Downgrade the org owner from org_admin to a custom role that holds
@@ -449,6 +494,9 @@ def test_member_without_manage_sso_receives_403(client, org, configured_discover
 
 
 def test_missing_token_rejected(client, org):
+    """Reading an organization's SSO configuration without a bearer token is rejected with 401 or
+    403.
+    """
     resp = client.get(f"/orgs/{org['id']}/sso")
     assert resp.status_code in (401, 403)
 
@@ -457,6 +505,8 @@ def test_missing_token_rejected(client, org):
 
 
 def test_get_never_returns_secret(client, org, configured_discovery):
+    """GET on the SSO configuration never returns the client secret, in plaintext or encrypted form.
+    """
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "super-secret-value", "allowed_domains": []},
@@ -476,6 +526,9 @@ def test_get_never_returns_secret(client, org, configured_discovery):
 
 
 def test_org_a_cannot_view_org_b_sso_config(client, org, configured_discovery):
+    """An owner of another organization gets 404 when reading this organization's SSO configuration,
+    and vice versa.
+    """
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "secret", "allowed_domains": []},
@@ -498,6 +551,9 @@ def test_org_a_cannot_view_org_b_sso_config(client, org, configured_discovery):
 
 
 def test_org_a_cannot_update_or_delete_org_b_sso_config(client, org, configured_discovery):
+    """An owner of another organization gets 404 when updating or deleting this organization's SSO
+    configuration, which stays unchanged.
+    """
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "secret", "allowed_domains": []},
@@ -531,6 +587,9 @@ def test_org_a_cannot_update_or_delete_org_b_sso_config(client, org, configured_
 
 
 def test_second_sso_config_for_same_org_rejected(client, org, configured_discovery):
+    """Creating a second SSO configuration for the same organization returns 409 and leaves the
+    original untouched.
+    """
     first = client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid-1", "client_secret": "secret", "allowed_domains": []},
@@ -554,6 +613,7 @@ def test_second_sso_config_for_same_org_rejected(client, org, configured_discove
 
 
 def test_update_allowed_domains_without_rerunning_discovery(client, org, configured_discovery):
+    """Updating only allowed_domains succeeds without re-running OIDC discovery."""
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "secret", "allowed_domains": ["a.test"]},
@@ -573,6 +633,7 @@ def test_update_allowed_domains_without_rerunning_discovery(client, org, configu
 
 
 def test_update_issuer_reruns_discovery(client, org, configured_discovery):
+    """Changing the issuer re-runs discovery and stores the new issuer."""
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "secret", "allowed_domains": []},
@@ -592,6 +653,7 @@ def test_update_issuer_reruns_discovery(client, org, configured_discovery):
 
 
 def test_update_issuer_failed_discovery_leaves_existing_config_untouched(client, org, configured_discovery):
+    """An issuer update whose discovery fails returns 400 and leaves the stored issuer unchanged."""
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "secret", "allowed_domains": []},
@@ -611,6 +673,7 @@ def test_update_issuer_failed_discovery_leaves_existing_config_untouched(client,
 
 
 def test_delete_sso_config(client, org, configured_discovery):
+    """Deleting the SSO configuration returns 204 and a following GET returns 404."""
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "cid", "client_secret": "secret", "allowed_domains": []},
@@ -625,5 +688,6 @@ def test_delete_sso_config(client, org, configured_discovery):
 
 
 def test_get_sso_config_404_when_none_exists(client, org):
+    """GET returns 404 when the organization has no SSO configuration."""
     resp = client.get(f"/orgs/{org['id']}/sso", headers=org["owner_headers"])
     assert resp.status_code == 404

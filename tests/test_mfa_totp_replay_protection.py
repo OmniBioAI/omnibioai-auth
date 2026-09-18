@@ -21,6 +21,8 @@ database engine's own constraint enforcement, which is exactly what
 makes this mechanism correct across any number of horizontally-scaled
 app instances sharing one production database, not from anything
 Python-level.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import time
 import urllib.parse
@@ -105,6 +107,7 @@ def _events(**filters) -> list[dict]:
 
 
 def _used_steps_for_device(device_id: int) -> list[int]:
+    """Return the TOTP time steps recorded as consumed for the device."""
     db = _DirectSession()
     try:
         rows = db.query(MFAUsedTOTPStep).filter(MFAUsedTOTPStep.device_id == device_id).all()
@@ -137,6 +140,9 @@ def mfa_user(client, configured_crypto):
 
 
 def test_same_valid_totp_accepted_once(client, mfa_user):
+    """A valid TOTP code completes the challenge with 200 and records exactly one consumed step for
+    the device.
+    """
     now = int(time.time())
     code = mfa_service._totp_code_at(mfa_user["secret"], now)
     token = _fresh_challenge_token(client, mfa_user)
@@ -194,6 +200,9 @@ def test_replay_falls_through_to_recovery_code_check_and_then_fails_generically(
 
 
 def test_concurrent_duplicate_submissions_result_in_exactly_one_success(client, mfa_user):
+    """Eight concurrent challenges submitting the same TOTP code produce exactly one success and one
+    consumed step row.
+    """
     now = int(time.time())
     code = mfa_service._totp_code_at(mfa_user["secret"], now)
     tokens = [_fresh_challenge_token(client, mfa_user) for _ in range(8)]
@@ -322,6 +331,7 @@ def test_old_consumed_step_does_not_block_unrelated_later_step(client, mfa_user)
 
 
 def test_same_challenge_token_cannot_be_completed_twice(client, mfa_user):
+    """The same challenge token cannot be completed twice: the second attempt returns 401."""
     now = int(time.time())
     code = mfa_service._totp_code_at(mfa_user["secret"], now)
     token = _fresh_challenge_token(client, mfa_user)
@@ -400,6 +410,9 @@ def test_concurrent_recovery_code_race_yields_exactly_one_success_not_500(client
 
 
 def test_cross_user_replay_fails(client, configured_crypto):
+    """Another user's consumed TOTP step does not affect this user's device: each user's own valid
+    code succeeds.
+    """
     user_a = _register_and_login(client)
     headers_a = _auth_header(user_a["access_token"])
     user_a["secret"], user_a["device_id"] = _enable_mfa(client, headers_a)
@@ -429,6 +442,7 @@ def test_cross_user_replay_fails(client, configured_crypto):
 
 
 def test_recovery_code_single_use_still_enforced_unchanged(client, mfa_user):
+    """A recovery code still works once and is rejected with 400 on reuse."""
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
     recovery_code = codes[0]
@@ -445,6 +459,7 @@ def test_recovery_code_single_use_still_enforced_unchanged(client, mfa_user):
 
 
 def test_recovery_code_success_does_not_touch_totp_step_table(client, mfa_user):
+    """A recovery-code success records no consumed TOTP step for the device."""
     headers = _auth_header(mfa_user["access_token"])
     codes = client.post("/users/me/mfa/recovery-codes", headers=headers).json()["codes"]
     client.post("/users/me/mfa/challenge", json={
@@ -457,6 +472,9 @@ def test_recovery_code_success_does_not_touch_totp_step_table(client, mfa_user):
 
 
 def test_replay_rejection_leaks_no_secret_code_or_token_in_audit(client, mfa_user):
+    """Audit events after a rejected TOTP replay contain no secret, code, challenge token or
+    encrypted_secret.
+    """
     now = int(time.time())
     code = mfa_service._totp_code_at(mfa_user["secret"], now)
     client.post("/users/me/mfa/challenge", json={

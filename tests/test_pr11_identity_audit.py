@@ -10,6 +10,8 @@ audit_service itself. Reuses tests/test_apikeys.py's/test_oauth_clients.py's/
 test_org_sso.py's own local `org`/discovery fixtures rather than
 inventing a different registration flow, same "each test file is
 self-contained" convention this repo already follows throughout.
+
+Developer: Manish Kumar <manish@omnibioai.org>
 """
 import os
 import uuid
@@ -115,6 +117,9 @@ def _events(**filters) -> list[dict]:
 
 
 def test_suspending_a_user_emits_user_disabled_event(client, platform_admin):
+    """Suspending a user writes exactly one user_disabled audit event with the platform admin as
+    actor and before-state status "active".
+    """
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
 
@@ -135,6 +140,7 @@ def test_suspending_a_user_emits_user_disabled_event(client, platform_admin):
 
 
 def test_reactivating_a_user_emits_user_enabled_event(client, platform_admin):
+    """Reactivating a suspended user writes exactly one user_enabled audit event."""
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
     client.patch(
@@ -154,6 +160,9 @@ def test_reactivating_a_user_emits_user_enabled_event(client, platform_admin):
 
 
 def test_resubmitting_the_same_status_emits_no_event(client, platform_admin):
+    """Setting a user to the status they already have returns 200 and writes neither a user_enabled
+    nor a user_disabled event.
+    """
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
 
@@ -169,6 +178,9 @@ def test_resubmitting_the_same_status_emits_no_event(client, platform_admin):
 
 
 def test_create_api_key_emits_event_with_no_secret(client, org):
+    """Creating an API key writes exactly one audit event for the organization naming the key,
+    without the key secret.
+    """
     resp = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "CI Pipeline", "scopes": []}, headers=org["owner_headers"],
     )
@@ -184,6 +196,9 @@ def test_create_api_key_emits_event_with_no_secret(client, org):
 
 
 def test_revoke_api_key_emits_event_with_actor_and_no_secret(client, org):
+    """Revoking an API key writes exactly one audit event attributed to the owner, without the key
+    secret.
+    """
     created = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "Revoke Me", "scopes": []}, headers=org["owner_headers"],
     ).json()
@@ -206,6 +221,9 @@ def test_revoke_api_key_emits_event_with_actor_and_no_secret(client, org):
 
 
 def test_create_oauth_client_emits_event_with_no_secret(client, org):
+    """Creating an OAuth client writes exactly one audit event for the organization naming the
+    client, without the client secret.
+    """
     resp = client.post(
         f"/orgs/{org['id']}/oauth-clients", json={"name": "ETL Worker", "scopes": []}, headers=org["owner_headers"],
     )
@@ -222,6 +240,9 @@ def test_create_oauth_client_emits_event_with_no_secret(client, org):
 
 
 def test_revoke_oauth_client_emits_event_with_actor_and_no_secret(client, org):
+    """Revoking an OAuth client writes exactly one audit event attributed to the owner, without the
+    client secret.
+    """
     created = client.post(
         f"/orgs/{org['id']}/oauth-clients", json={"name": "Revoke Me Too", "scopes": []},
         headers=org["owner_headers"],
@@ -313,6 +334,9 @@ def _assert_no_secret_leakage(event: dict) -> None:
 
 
 def test_create_sso_config_emits_event_with_no_secret(client, org, configured_discovery):
+    """Creating an SSO configuration writes exactly one audit event whose after-state carries the
+    issuer and no client secret.
+    """
     resp = client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
@@ -331,6 +355,9 @@ def test_create_sso_config_emits_event_with_no_secret(client, org, configured_di
 
 
 def test_update_sso_config_emits_event_with_before_after_and_no_secret(client, org, configured_discovery):
+    """Updating an SSO configuration writes exactly one audit event with before and after state and
+    no client secret.
+    """
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
@@ -456,6 +483,7 @@ def _sso_config_id(organization_id: int) -> int | None:
 
 
 def test_enable_override_emits_sso_override_created_event(client, org, configured_discovery, admin_headers, admin_token):
+    """Enabling an SSO enforcement override writes exactly one sso_override_created audit event."""
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
@@ -504,6 +532,7 @@ def test_re_triggering_an_active_override_emits_a_second_event(client, org, conf
 
 
 def test_remove_override_emits_sso_override_removed_event(client, org, configured_discovery, admin_headers, admin_token):
+    """Removing an SSO enforcement override writes exactly one sso_override_removed audit event."""
     client.post(
         f"/orgs/{org['id']}/sso",
         json={"issuer": _ISSUER, "client_id": "acme-client", "client_secret": "super-secret-value", "allowed_domains": []},
@@ -549,11 +578,15 @@ def test_removing_an_inactive_override_emits_no_event(client, org, configured_di
 
 
 def test_list_audit_events_requires_platform_admin(client, org):
+    """GET /platform/audit-events by a non-platform-admin owner returns 403."""
     resp = client.get("/platform/audit-events", headers=org["owner_headers"])
     assert resp.status_code == 403
 
 
 def test_list_audit_events_returns_paginated_results(client, org, platform_admin):
+    """The audit event listing returns the requested page and page size along with the matching
+    events.
+    """
     client.post(f"/orgs/{org['id']}/api-keys", json={"name": "Pagination Key", "scopes": []}, headers=org["owner_headers"])
 
     resp = client.get(
@@ -569,6 +602,7 @@ def test_list_audit_events_returns_paginated_results(client, org, platform_admin
 
 
 def test_list_audit_events_filters_by_event_type(client, org, platform_admin):
+    """The audit event listing can be filtered by event type."""
     created = client.post(
         f"/orgs/{org['id']}/api-keys", json={"name": "Filter Key", "scopes": []}, headers=org["owner_headers"],
     ).json()
@@ -586,6 +620,7 @@ def test_list_audit_events_filters_by_event_type(client, org, platform_admin):
 
 
 def test_list_audit_events_filters_by_actor_user_id(client, org, platform_admin):
+    """Filtering audit events by actor_user_id returns only events by that actor."""
     owner_id = _user_id(client, org["owner"]["access_token"])
     client.post(f"/orgs/{org['id']}/api-keys", json={"name": "Actor Filter Key", "scopes": []}, headers=org["owner_headers"])
 
@@ -600,6 +635,7 @@ def test_list_audit_events_filters_by_actor_user_id(client, org, platform_admin)
 
 
 def test_list_audit_events_resolves_actor_email_and_organization_name(client, org, platform_admin):
+    """Listed audit events include the resolved actor email and organization name."""
     client.post(f"/orgs/{org['id']}/api-keys", json={"name": "Resolve Key", "scopes": []}, headers=org["owner_headers"])
 
     resp = client.get(
@@ -614,6 +650,9 @@ def test_list_audit_events_resolves_actor_email_and_organization_name(client, or
 
 
 def test_list_audit_events_never_exposes_secret_fields(client, org, platform_admin):
+    """The audit event listing never contains key_hash, client_secret, client_secret_encrypted or
+    client_secret_hash.
+    """
     client.post(f"/orgs/{org['id']}/api-keys", json={"name": "Secret Check Key", "scopes": []}, headers=org["owner_headers"])
 
     resp = client.get(
@@ -625,6 +664,7 @@ def test_list_audit_events_never_exposes_secret_fields(client, org, platform_adm
 
 
 def test_audit_events_are_immutable_no_update_or_delete_route(client, org, platform_admin):
+    """No route updates or deletes a single audit event: PATCH and DELETE return 404 or 405."""
     client.post(f"/orgs/{org['id']}/api-keys", json={"name": "Immutable Key", "scopes": []}, headers=org["owner_headers"])
     events = _events(event_type="api_key_created", organization_id=org["id"])
     event_id = events[-1]["id"]
