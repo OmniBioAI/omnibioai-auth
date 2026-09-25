@@ -26,3 +26,17 @@ class DelegatedExecutionIntrospectionOut(BaseModel):
     organization_id: str | None = None
     permissions: list[str] = []
     delegation_id: str | None = None
+
+
+class ToolServerRegistrationTokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class ToolServerRegistrationIntrospectionOut(BaseModel):
+    valid: bool
+    client_id: str | None = None
+    organization_id: str | None = None
+    scopes: list[str] = []
+    registration_id: str | None = None

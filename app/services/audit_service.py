@@ -89,6 +89,8 @@ class AuditEventType:
     SERVICE_TOKEN_MINTED = "service_token_minted"
     DELEGATED_EXECUTION_TOKEN_ISSUED = "delegated_execution_token_issued"
     DELEGATED_EXECUTION_TOKEN_DENIED = "delegated_execution_token_denied"
+    TOOLSERVER_REGISTRATION_TOKEN_ISSUED = "toolserver_registration_token_issued"
+    TOOLSERVER_REGISTRATION_TOKEN_DENIED = "toolserver_registration_token_denied"
     # PR11.5.2 (Enterprise TOTP MFA Enrollment). See
     # docs/pr11-totp-enrollment-discovery.md. MFA_RESET_BY_ADMIN and
     # MFA_RECOVERY_USED (named in PR11.5.1's own roadmap) are deliberately
