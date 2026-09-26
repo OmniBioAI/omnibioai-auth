@@ -661,6 +661,10 @@ class AuditEvent(Base):
     # `metadata`, matching the requested schema exactly.
     event_metadata = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    # Nullable so pre-migration rows remain explicitly legacy/unsigned.
+    integrity_version = Column(Integer, nullable=True)
+    integrity_algorithm = Column(String(32), nullable=True)
+    integrity_digest = Column(String(64), nullable=True)
 
 
 class MFADevice(Base):

@@ -11,6 +11,10 @@ class Settings:
     DB_NAME = os.getenv("DB_NAME", "omnibioai")
 
     SECRET_KEY = os.getenv("SECRET_KEY")
+    # Independent HMAC key for Auth audit records. Store as hexadecimal
+    # text representing at least 32 random bytes in the protected runtime
+    # secret store; there is deliberately no application-secret fallback.
+    AUTH_AUDIT_INTEGRITY_KEY = os.getenv("AUTH_AUDIT_INTEGRITY_KEY", "")
     ALGORITHM = "HS256"
 
     # SSO Phase 2 PR15: which algorithm *newly issued* tokens are signed

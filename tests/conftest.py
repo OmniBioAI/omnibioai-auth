@@ -12,6 +12,9 @@ from unittest.mock import patch
 
 # Must be set before any app module is imported so config.settings has a key.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-omnibioai-32-chars-x!")
+# Explicit test-only 256-bit audit key. Production must provision an
+# independent value through its protected secret mechanism.
+os.environ.setdefault("AUTH_AUDIT_INTEGRITY_KEY", "a1" * 32)
 
 # create_admin() (called at app import time, below) no longer bakes in a
 # hardcoded default password -- give it a fixed, known-to-tests-only value

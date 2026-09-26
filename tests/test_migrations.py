@@ -17,7 +17,8 @@ from alembic.config import Config
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session, sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -130,6 +131,7 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     assert {
         "id", "event_type", "actor_user_id", "target_user_id", "organization_id",
         "resource_type", "resource_id", "before_state", "after_state", "metadata", "created_at",
+        "integrity_version", "integrity_algorithm", "integrity_digest",
     } <= audit_event_columns
 
     users_mfa_columns = {c["name"] for c in inspector.get_columns("users")}
@@ -202,6 +204,51 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     } <= org_saml_columns
     org_saml_uqs = inspector.get_unique_constraints("organization_saml_configs")
     assert any(uq["column_names"] == ["organization_id"] for uq in org_saml_uqs)
+
+
+def test_sqlite_auth_audit_integrity_migration_is_additive_and_append_only(sqlite_db_url):
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0011_audit_events")
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO audit_events
+                (event_type, actor_user_id, target_user_id, organization_id,
+                 resource_type, resource_id, before_state, after_state, metadata, created_at)
+            VALUES ('legacy-event', 41, NULL, NULL, '', 'old', NULL, '{}', NULL,
+                    '2026-01-02 03:04:05')
+        """))
+    command.upgrade(cfg, "head")
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT event_type, actor_user_id, resource_type, resource_id,
+                   after_state, created_at, integrity_version, integrity_algorithm, integrity_digest
+            FROM audit_events
+        """)).mappings().one()
+        assert row["event_type"] == "legacy-event"
+        assert row["actor_user_id"] == 41
+        assert row["resource_type"] == ""
+        assert row["resource_id"] == "old"
+        assert row["integrity_version"] is None
+        assert row["integrity_algorithm"] is None
+        assert row["integrity_digest"] is None
+        conn.execute(text("INSERT INTO audit_events (event_type) VALUES ('new-event')"))
+        with pytest.raises(DBAPIError):
+            conn.execute(text("UPDATE audit_events SET event_type='changed' WHERE event_type='legacy-event'"))
+        with pytest.raises(DBAPIError):
+            conn.execute(text("DELETE FROM audit_events WHERE event_type='legacy-event'"))
+        assert conn.execute(text("SELECT COUNT(*) FROM audit_events")).scalar_one() == 2
+    from app.services.audit_service import log_event
+    with Session(engine) as db:
+        log_event(db, "signed-insert-through-trigger", commit=True)
+        signed = db.execute(text("""
+            SELECT integrity_version, integrity_algorithm, integrity_digest
+            FROM audit_events WHERE event_type='signed-insert-through-trigger'
+        """)).mappings().one()
+        assert signed["integrity_version"] == 1
+        assert signed["integrity_algorithm"] == "HMAC-SHA-256"
+        assert len(signed["integrity_digest"]) == 64
+    engine.dispose()
 
 
 def test_sqlite_pre_existing_user_row_survives_0013_with_correct_mfa_defaults(sqlite_db_url):
@@ -429,7 +476,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0027_delegated_execution_grants"
+    assert recorded == "0028_auth_audit_integrity"
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -945,6 +992,44 @@ def test_mysql_fresh_upgrade_head_creates_all_tables(mysql_db_url):
     assert {"organization_id", "machine_id", "max_devices"} <= license_columns
 
 
+def test_mysql_auth_audit_integrity_triggers_block_mutation(mysql_db_url):
+    cfg = _alembic_config(mysql_db_url)
+    command.upgrade(cfg, "0011_audit_events")
+    engine = create_engine(mysql_db_url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO audit_events (event_type, resource_type) VALUES ('legacy-event', '')"))
+    command.upgrade(cfg, "head")
+    with engine.connect() as conn:
+        legacy = conn.execute(text("""
+            SELECT event_type, resource_type, integrity_version, integrity_algorithm, integrity_digest
+            FROM audit_events WHERE event_type='legacy-event'
+        """)).mappings().one()
+        assert legacy["resource_type"] == ""
+        assert legacy["integrity_version"] is None
+        assert legacy["integrity_algorithm"] is None
+        assert legacy["integrity_digest"] is None
+        conn.execute(text("INSERT INTO audit_events (event_type) VALUES ('new-event')"))
+        conn.commit()
+        with pytest.raises(DBAPIError):
+            conn.execute(text("UPDATE audit_events SET event_type='changed' WHERE event_type='legacy-event'"))
+        conn.rollback()
+        with pytest.raises(DBAPIError):
+            conn.execute(text("DELETE FROM audit_events WHERE event_type='legacy-event'"))
+        conn.rollback()
+        assert conn.execute(text("SELECT COUNT(*) FROM audit_events")).scalar_one() == 2
+    from app.services.audit_service import log_event
+    with Session(engine) as db:
+        log_event(db, "signed-insert-through-trigger", commit=True)
+        signed = db.execute(text("""
+            SELECT integrity_version, integrity_algorithm, integrity_digest
+            FROM audit_events WHERE event_type='signed-insert-through-trigger'
+        """)).mappings().one()
+        assert signed["integrity_version"] == 1
+        assert signed["integrity_algorithm"] == "HMAC-SHA-256"
+        assert len(signed["integrity_digest"]) == 64
+    engine.dispose()
+
+
 def test_mysql_downgrade_base_reverses_cleanly(mysql_db_url):
     """On real MySQL, upgrading to head and downgrading to base leaves no application tables behind.
     """
@@ -999,7 +1084,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0027_delegated_execution_grants"
+    assert recorded == "0028_auth_audit_integrity"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

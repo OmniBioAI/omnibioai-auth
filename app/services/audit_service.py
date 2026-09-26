@@ -7,17 +7,10 @@ routes_orgs.py's legacy PUT and routes_organization_roles.py's PR7 POST)
 still emits exactly one event, and a route can never accidentally emit
 zero or two.
 
-Never raises: a failure writing an audit row must not break the real
-mutation it describes, mirroring the "NEVER break core system" principle
-the sibling omnibioai-security-audit service's own AuditLogger.log()
-already applies to its Redis writes. This audit write is a *separate*
-commit from the mutation's own (which has already succeeded by the time
-log_event runs) -- not atomic with it. A crash in the narrow window
-between the two would lose the audit row but keep the real mutation; the
-alternative (folding the audit insert into each mutation's existing
-transaction) would mean editing the commit boundary of every one of those
-functions, a materially larger and riskier change for this PR. Documented
-here as a known, deliberate tradeoff, not an oversight.
+Mutation services pass ``commit=False`` so their business change and signed
+audit row share one transaction. Signing or insert failures propagate to
+the owning transaction and prevent an unaudited mutation from committing.
+Standalone non-mutating events retain their separate commit path.
 """
 import logging
 from datetime import datetime
@@ -25,6 +18,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.db.models import AuditEvent, Organization, User
+from app.services.audit_integrity import set_integrity
 
 logger = logging.getLogger("omnibioai.auth.audit")
 
@@ -189,10 +183,15 @@ def log_event(
         before_state=before_state,
         after_state=after_state,
         event_metadata=metadata,
+        created_at=datetime.utcnow(),
     )
+    # Integrity metadata is computed before INSERT so storage-level
+    # append-only triggers never need a follow-up UPDATE. The signed field
+    # set covers the event content and timestamp, not just the generated ID.
+    set_integrity(event)
     db.add(event)
+    db.flush()
     if not commit:
-        db.flush()
         return
     try:
         db.commit()
