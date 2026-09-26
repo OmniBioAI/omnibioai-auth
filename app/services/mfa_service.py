@@ -179,7 +179,7 @@ def start_totp_enrollment(db: Session, user_id: int, account_email: str) -> tupl
         created_at=datetime.utcnow(),
     )
     db.add(device)
-    db.commit()
+    db.flush()
     db.refresh(device)
 
     # Never include the secret or the derived URI -- device_type only.
@@ -188,7 +188,9 @@ def start_totp_enrollment(db: Session, user_id: int, account_email: str) -> tupl
         actor_user_id=user_id, target_user_id=user_id,
         resource_type="mfa_device", resource_id=device.id,
         metadata={"device_type": device.device_type},
+        commit=False,
     )
+    db.commit()
 
     uri = generate_provisioning_uri(secret, account_email)
     return device, uri
@@ -219,7 +221,7 @@ def verify_totp_enrollment(db: Session, user_id: int, device_id: int, code: str)
 
     now = datetime.utcnow()
     device.verified_at = now
-    db.commit()
+    db.flush()
     db.refresh(device)
 
     audit_service.log_event(
@@ -228,6 +230,7 @@ def verify_totp_enrollment(db: Session, user_id: int, device_id: int, code: str)
         resource_type="mfa_device", resource_id=device.id,
         after_state={"device_type": device.device_type, "verified": True},
         metadata={"device_type": device.device_type},
+        commit=False,
     )
 
     user = db.query(User).filter(User.id == user_id).first()
@@ -237,7 +240,7 @@ def verify_totp_enrollment(db: Session, user_id: int, device_id: int, code: str)
     user.mfa_primary_method = "totp"
     user.mfa_enabled_at = now
     user.mfa_last_verified_at = now
-    db.commit()
+    db.flush()
 
     # Don't log a no-op: only emitted when mfa_enabled actually flips
     # False -> True, same convention org_sso_service.set_enforced already
@@ -249,7 +252,9 @@ def verify_totp_enrollment(db: Session, user_id: int, device_id: int, code: str)
             actor_user_id=user_id, target_user_id=user_id,
             resource_type="user", resource_id=user_id,
             after_state={"mfa_enabled": True, "mfa_primary_method": "totp"},
+            commit=False,
         )
+    db.commit()
 
     return device
 
@@ -293,7 +298,7 @@ def remove_device(db: Session, user_id: int, device_id: int) -> None:
 
     was_verified = device.verified_at is not None
     device.disabled_at = datetime.utcnow()
-    db.commit()
+    db.flush()
 
     audit_service.log_event(
         db, AuditEventType.MFA_DEVICE_REMOVED,
@@ -301,7 +306,9 @@ def remove_device(db: Session, user_id: int, device_id: int) -> None:
         resource_type="mfa_device", resource_id=device.id,
         before_state={"device_type": device.device_type, "verified": was_verified},
         metadata={"device_type": device.device_type},
+        commit=False,
     )
+    db.flush()
 
     remaining_verified = (
         db.query(MFADevice)
@@ -317,7 +324,7 @@ def remove_device(db: Session, user_id: int, device_id: int) -> None:
         if user.mfa_enabled:
             user.mfa_enabled = False
             user.mfa_status = "disabled"
-            db.commit()
+            db.flush()
             # Don't log a no-op: only when this removal actually flipped
             # mfa_enabled True -> False (e.g. removing an already-inert
             # pending device, or a non-last verified device, must not
@@ -327,7 +334,9 @@ def remove_device(db: Session, user_id: int, device_id: int) -> None:
                 actor_user_id=user_id, target_user_id=user_id,
                 resource_type="user", resource_id=user_id,
                 after_state={"mfa_enabled": False},
+                commit=False,
             )
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -705,13 +714,13 @@ def _issue_recovery_codes(db: Session, user_id: int, event_type: str) -> list[st
     now = datetime.utcnow()
     for code in plaintext_codes:
         db.add(MFARecoveryCode(user_id=user_id, code_hash=_hash_recovery_code(code), created_at=now))
-    db.commit()
-
     audit_service.log_event(
         db, event_type, actor_user_id=user_id, target_user_id=user_id,
         resource_type="user", resource_id=user_id,
         metadata={"codes_issued": len(plaintext_codes), "codes_invalidated": invalidated},
+        commit=False,
     )
+    db.commit()
     return plaintext_codes
 
 
@@ -858,15 +867,15 @@ def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None
     user.mfa_primary_method = None
     user.mfa_enabled_at = None
     user.mfa_last_verified_at = None
-    db.commit()
-
     audit_service.log_event(
         db, AuditEventType.MFA_RESET_BY_ADMIN,
         actor_user_id=actor_user_id, target_user_id=target_user_id,
         resource_type="user", resource_id=target_user_id,
         after_state={"mfa_enabled": False, "mfa_status": "disabled"},
         metadata={"devices_disabled": len(devices), "recovery_codes_invalidated": invalidated_codes},
+        commit=False,
     )
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -906,7 +915,7 @@ def create_org_mfa_policy(
         enabled_by_user_id=actor_user_id if required else None,
     )
     db.add(policy)
-    db.commit()
+    db.flush()
     db.refresh(policy)
 
     if required:
@@ -915,7 +924,9 @@ def create_org_mfa_policy(
             organization_id=organization_id, resource_type="organization_mfa_policy", resource_id=policy.id,
             before_state={"required": False}, after_state={"required": True},
             metadata={"reason": None},
+            commit=False,
         )
+    db.commit()
     return policy
 
 
@@ -937,9 +948,6 @@ def set_org_mfa_required(
         policy.enabled_at = datetime.utcnow()
         policy.enabled_by_user_id = actor_user_id
 
-    db.commit()
-    db.refresh(policy)
-
     if before_required != required:
         event_type = AuditEventType.MFA_POLICY_ENABLED if required else AuditEventType.MFA_POLICY_DISABLED
         audit_service.log_event(
@@ -947,7 +955,10 @@ def set_org_mfa_required(
             organization_id=policy.organization_id, resource_type="organization_mfa_policy", resource_id=policy.id,
             before_state={"required": before_required}, after_state={"required": required},
             metadata={"reason": reason},
+            commit=False,
         )
+    db.commit()
+    db.refresh(policy)
     return policy
 
 
@@ -970,16 +981,15 @@ def set_org_mfa_override(
     policy.override_reason = reason
     policy.override_at = now
     policy.override_by_user_id = actor_user_id
-    db.commit()
-    db.refresh(policy)
-
     audit_service.log_event(
         db, AuditEventType.MFA_POLICY_OVERRIDE_CREATED, actor_user_id=actor_user_id,
         organization_id=policy.organization_id, resource_type="organization_mfa_policy", resource_id=policy.id,
         before_state={"override_active": was_active, "required": policy.required},
         after_state={"override_active": True, "required": policy.required},
         metadata={"reason": reason},
+        commit=False,
     )
+    db.commit()
     return policy
 
 
@@ -1000,9 +1010,6 @@ def clear_org_mfa_override(
     policy.override_reason = None
     policy.override_at = None
     policy.override_by_user_id = None
-    db.commit()
-    db.refresh(policy)
-
     if was_active:
         audit_service.log_event(
             db, AuditEventType.MFA_POLICY_OVERRIDE_REMOVED, actor_user_id=actor_user_id,
@@ -1013,5 +1020,8 @@ def clear_org_mfa_override(
             },
             after_state={"override_active": False},
             metadata={"reason": before_reason},
+            commit=False,
         )
+    db.commit()
+    db.refresh(policy)
     return policy

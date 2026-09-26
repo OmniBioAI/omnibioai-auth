@@ -147,7 +147,7 @@ async def configure_sso(
         last_verified_at=now,
     )
     db.add(config)
-    db.commit()
+    db.flush()
     db.refresh(config)
     # PR11.4b: never client_secret/client_secret_encrypted or any token
     # in audit metadata -- provider_type and issuer are not secrets.
@@ -156,7 +156,9 @@ async def configure_sso(
         organization_id=organization_id, resource_type="organization_sso_config", resource_id=config.id,
         after_state={"provider_type": config.provider_type, "issuer": config.issuer, "status": config.status},
         metadata={"provider_type": config.provider_type},
+        commit=False,
     )
+    db.commit()
     return config
 
 
@@ -197,7 +199,7 @@ async def update_sso_config(
 
     config.updated_at = datetime.utcnow()
     config.updated_by_user_id = actor_user_id
-    db.commit()
+    db.flush()
     db.refresh(config)
     # PR11.4b: one event per update call, even when it touches more than
     # one field, mirroring org_service.set_member_roles' identical
@@ -213,7 +215,9 @@ async def update_sso_config(
         before_state={"issuer": before_issuer, "client_id": before_client_id, "allowed_domains": before_domains},
         after_state={"issuer": config.issuer, "client_id": config.client_id, "allowed_domains": config.allowed_domains},
         metadata={"provider_type": config.provider_type},
+        commit=False,
     )
+    db.commit()
     return config
 
 
@@ -257,7 +261,7 @@ def set_enforced(
     config.enforced = enforced
     config.updated_at = datetime.utcnow()
     config.updated_by_user_id = actor_user_id
-    db.commit()
+    db.flush()
     db.refresh(config)
     # PR11.4b: only emitted on an actual flip -- a resubmission of the
     # same value (enforced=False -> False) is a no-op the caller already
@@ -269,7 +273,9 @@ def set_enforced(
             organization_id=config.organization_id, resource_type="organization_sso_config", resource_id=config.id,
             before_state={"enforced": before_enforced}, after_state={"enforced": enforced},
             metadata={"enforced_before": before_enforced, "enforced_after": enforced},
+            commit=False,
         )
+    db.commit()
     return config
 
 
@@ -286,7 +292,7 @@ def set_sso_override(
     config.sso_override_at = datetime.utcnow()
     config.sso_override_reason = reason
     config.sso_override_by_user_id = actor_user_id
-    db.commit()
+    db.flush()
     db.refresh(config)
     # PR11.4c: emitted on every call, including a re-trigger of an
     # already-active override -- see this function's own docstring
@@ -303,7 +309,9 @@ def set_sso_override(
             "action": "override_created", "override_reason": reason,
             "enforced_before": config.enforced, "timestamp": config.sso_override_at.isoformat(),
         },
+        commit=False,
     )
+    db.commit()
     return config
 
 
@@ -321,7 +329,7 @@ def clear_sso_override(
     config.sso_override_at = None
     config.sso_override_reason = None
     config.sso_override_by_user_id = None
-    db.commit()
+    db.flush()
     db.refresh(config)
 
     # Only emitted when an override was actually active before clearing
@@ -339,5 +347,7 @@ def clear_sso_override(
             },
             after_state={"sso_override_active": False},
             metadata={"action": "override_removed", "timestamp": datetime.utcnow().isoformat()},
+            commit=False,
         )
+    db.commit()
     return config

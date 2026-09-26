@@ -167,20 +167,34 @@ def log_event(
     before_state: dict | None = None,
     after_state: dict | None = None,
     metadata: dict | None = None,
+    *,
+    commit: bool = True,
 ) -> None:
+    """Record an audit event.
+
+    ``commit=True`` preserves the historical standalone behavior for
+    non-mutating events. Mutation services must pass ``commit=False`` and
+    commit their business change and this row together on the same session.
+    Transaction-bound failures intentionally propagate so the caller can
+    roll back the business mutation; the old silent-failure behavior is not
+    safe for an audit row required by a committed mutation.
+    """
+    event = AuditEvent(
+        event_type=event_type,
+        actor_user_id=actor_user_id,
+        target_user_id=target_user_id,
+        organization_id=organization_id,
+        resource_type=resource_type,
+        resource_id=str(resource_id) if resource_id is not None else None,
+        before_state=before_state,
+        after_state=after_state,
+        event_metadata=metadata,
+    )
+    db.add(event)
+    if not commit:
+        db.flush()
+        return
     try:
-        event = AuditEvent(
-            event_type=event_type,
-            actor_user_id=actor_user_id,
-            target_user_id=target_user_id,
-            organization_id=organization_id,
-            resource_type=resource_type,
-            resource_id=str(resource_id) if resource_id is not None else None,
-            before_state=before_state,
-            after_state=after_state,
-            event_metadata=metadata,
-        )
-        db.add(event)
         db.commit()
     except Exception:
         logger.exception("audit_event_write_failed event_type=%s", event_type)

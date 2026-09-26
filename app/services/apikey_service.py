@@ -54,7 +54,7 @@ def create_api_key(
         created_at=datetime.utcnow(),
     )
     db.add(api_key)
-    db.commit()
+    db.flush()
     db.refresh(api_key)
     # PR11.4b: never the plaintext key or its hash in audit metadata --
     # only the name/scopes an admin reviewing the trail actually needs.
@@ -63,7 +63,9 @@ def create_api_key(
         organization_id=organization_id, resource_type="api_key", resource_id=api_key.id,
         after_state={"name": api_key.name, "scopes": api_key.scopes, "status": api_key.status},
         metadata={"api_key_name": api_key.name, "scopes": api_key.scopes},
+        commit=False,
     )
+    db.commit()
     return api_key, full_key
 
 
@@ -85,7 +87,7 @@ def revoke_api_key(
     api_key.status = "revoked"
     api_key.revoked_at = datetime.utcnow()
     api_key.revoked_reason = reason
-    db.commit()
+    db.flush()
     db.refresh(api_key)
     # PR11.4b. `actor_user_id` is a new, optional kwarg (see
     # docs/pr11-identity-audit-discovery.md §4b) -- backward compatible
@@ -96,7 +98,9 @@ def revoke_api_key(
         organization_id=api_key.organization_id, resource_type="api_key", resource_id=api_key.id,
         before_state={"status": "active"}, after_state={"status": "revoked"},
         metadata={"api_key_name": api_key.name, "scopes": api_key.scopes, "reason": reason},
+        commit=False,
     )
+    db.commit()
     return api_key
 
 

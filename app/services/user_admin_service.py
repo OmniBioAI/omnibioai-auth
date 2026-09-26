@@ -261,7 +261,7 @@ def set_user_status(
         user.status_changed_reason = reason
         user.status_changed_by_user_id = actor_user_id
 
-    db.commit()
+    db.flush()
     db.refresh(user)
 
     if changed and status != "active":
@@ -283,5 +283,7 @@ def set_user_status(
             resource_type="user", resource_id=user.id,
             before_state={"status": before_status}, after_state={"status": status},
             metadata={"reason": reason},
+            commit=False,
         )
+    db.commit()
     return user

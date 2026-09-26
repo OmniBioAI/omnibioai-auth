@@ -89,7 +89,7 @@ def create_oauth_client(
         created_at=datetime.utcnow(),
     )
     db.add(oauth_client)
-    db.commit()
+    db.flush()
     db.refresh(oauth_client)
     # PR11.4b: never client_secret (or its hash) in audit metadata.
     audit_service.log_event(
@@ -97,7 +97,9 @@ def create_oauth_client(
         organization_id=organization_id, resource_type="oauth_client", resource_id=oauth_client.id,
         after_state={"name": oauth_client.name, "scopes": oauth_client.scopes, "status": oauth_client.status},
         metadata={"client_id": oauth_client.client_id, "client_name": oauth_client.name, "scopes": oauth_client.scopes},
+        commit=False,
     )
+    db.commit()
     return oauth_client, client_secret
 
 
@@ -119,7 +121,7 @@ def revoke_oauth_client(
     oauth_client.status = "revoked"
     oauth_client.revoked_at = datetime.utcnow()
     oauth_client.revoked_reason = reason
-    db.commit()
+    db.flush()
     db.refresh(oauth_client)
     # PR11.4b. `actor_user_id` is a new, optional kwarg, same reasoning
     # as apikey_service.revoke_api_key -- see
@@ -129,7 +131,9 @@ def revoke_oauth_client(
         organization_id=oauth_client.organization_id, resource_type="oauth_client", resource_id=oauth_client.id,
         before_state={"status": "active"}, after_state={"status": "revoked"},
         metadata={"client_id": oauth_client.client_id, "client_name": oauth_client.name, "scopes": oauth_client.scopes, "reason": reason},
+        commit=False,
     )
+    db.commit()
     return oauth_client
 
 
