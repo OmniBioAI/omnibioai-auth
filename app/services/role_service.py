@@ -130,14 +130,16 @@ def create_role(
         description=description, organization_id=organization_id,
     )
     db.add(role)
-    db.commit()
+    db.flush()
     db.refresh(role)
     audit_service.log_event(
         db, AuditEventType.ROLE_CREATED, actor_user_id=actor_user_id,
         organization_id=organization_id,
         resource_type="role", resource_id=role.id,
         after_state={"name": role.name, "description": role.description, "permissions": sorted(permission_names)},
+        commit=False,
     )
+    db.commit()
     return role
 
 
@@ -159,9 +161,6 @@ def update_role_permissions(
     role.permissions = _get_or_create_permissions(db, permission_names)
     if description is not None:
         role.description = description
-    db.commit()
-    db.refresh(role)
-
     after = sorted(permission_names)
     added, removed = set(after) - set(before), set(before) - set(after)
     # PR9: exactly one audit event per call -- a mixed add+remove replace
@@ -177,7 +176,10 @@ def update_role_permissions(
             resource_type="role", resource_id=role.id,
             before_state={"permissions": before}, after_state={"permissions": after},
             metadata={"added": sorted(added), "removed": sorted(removed)},
+            commit=False,
         )
+    db.commit()
+    db.refresh(role)
     return role
 
 
@@ -194,24 +196,28 @@ def update_role_permissions(
 def add_user_role(db: Session, user: User, role: Role, actor_user_id: int | None = None) -> User:
     if role not in user.roles:
         user.roles.append(role)
-        db.commit()
+        db.flush()
         db.refresh(user)
         audit_service.log_event(
             db, AuditEventType.ROLE_ASSIGNED, actor_user_id=actor_user_id, target_user_id=user.id,
             resource_type="role", resource_id=role.id, after_state={"role": role.name},
+            commit=False,
         )
+        db.commit()
     return user
 
 
 def remove_user_role(db: Session, user: User, role: Role, actor_user_id: int | None = None) -> User:
     if role in user.roles:
         user.roles.remove(role)
-        db.commit()
+        db.flush()
         db.refresh(user)
         audit_service.log_event(
             db, AuditEventType.ROLE_REMOVED, actor_user_id=actor_user_id, target_user_id=user.id,
             resource_type="role", resource_id=role.id, before_state={"role": role.name},
+            commit=False,
         )
+        db.commit()
     return user
 
 

@@ -11,6 +11,10 @@ class Settings:
     DB_NAME = os.getenv("DB_NAME", "omnibioai")
 
     SECRET_KEY = os.getenv("SECRET_KEY")
+    # Independent HMAC key for Auth audit records. Store as hexadecimal
+    # text representing at least 32 random bytes in the protected runtime
+    # secret store; there is deliberately no application-secret fallback.
+    AUTH_AUDIT_INTEGRITY_KEY = os.getenv("AUTH_AUDIT_INTEGRITY_KEY", "")
     ALGORITHM = "HS256"
 
     # SSO Phase 2 PR15: which algorithm *newly issued* tokens are signed
@@ -44,6 +48,9 @@ class Settings:
     JWT_ISSUER = os.getenv("JWT_ISSUER", "omnibioai-auth")
     JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "omnibioai-platform")
     DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES = int(os.getenv("DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES", "5"))
+    # Service-only ToolServer registration credential (TES startup). Short:
+    # it is requested immediately before the one POST /register_tools call.
+    TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES = int(os.getenv("TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES", "5"))
 
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))

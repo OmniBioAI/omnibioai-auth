@@ -269,13 +269,14 @@ def ensure_platform_owner(db):
 
     if platform_admin_role not in owner.roles:
         owner.roles.append(platform_admin_role)
-        db.commit()
         audit_service.log_event(
             db, AuditEventType.ROLE_ASSIGNED,
             actor_user_id=None, target_user_id=owner.id,
             resource_type="role", resource_id=platform_admin_role.id,
             metadata={"role": "platform_admin", "source": "bootstrap.platform_owner_email", "email": owner_email},
+            commit=False,
         )
+        db.commit()
 
 
 def ensure_default_organization(db):
@@ -350,10 +351,11 @@ def ensure_bio_agent_service_role(db):
 
     if role not in svc_user.roles:
         svc_user.roles.append(role)
-        db.commit()
         audit_service.log_event(
             db, AuditEventType.ROLE_ASSIGNED,
             actor_user_id=None, target_user_id=svc_user.id,
             resource_type="role", resource_id=role.id,
             metadata={"role": "bio_agent_service", "source": "bootstrap.bio_agent_svc_email", "email": svc_email},
+            commit=False,
         )
+        db.commit()

@@ -380,7 +380,7 @@ def create_saml_config(
         updated_by_user_id=actor_user_id,
     )
     db.add(config)
-    db.commit()
+    db.flush()
     db.refresh(config)
     # x509_certificate is a public certificate, not a secret -- safe in
     # audit metadata, unlike configure_sso's own deliberate omission of
@@ -390,7 +390,9 @@ def create_saml_config(
         organization_id=organization_id, resource_type="organization_saml_config", resource_id=config.id,
         after_state={"entity_id": config.entity_id, "sso_url": config.sso_url, "status": config.status},
         metadata={"entity_id": config.entity_id},
+        commit=False,
     )
+    db.commit()
     return config
 
 
@@ -461,7 +463,7 @@ def update_saml_config(
 
     config.updated_at = datetime.utcnow()
     config.updated_by_user_id = actor_user_id
-    db.commit()
+    db.flush()
     db.refresh(config)
     # Emitted unconditionally, same as update_sso_config's own reasoning
     # -- a no-op resupply is rare enough not to warrant tracking per-field
@@ -472,7 +474,9 @@ def update_saml_config(
         before_state={"entity_id": before_entity_id, "sso_url": before_sso_url, "status": before_status},
         after_state={"entity_id": config.entity_id, "sso_url": config.sso_url, "status": config.status},
         metadata={"entity_id": config.entity_id},
+        commit=False,
     )
+    db.commit()
     return config
 
 
@@ -540,7 +544,7 @@ def set_enforced(
     config.enforced = enforced
     config.updated_at = datetime.utcnow()
     config.updated_by_user_id = actor_user_id
-    db.commit()
+    db.flush()
     db.refresh(config)
     # Only emitted on an actual flip -- same reasoning org_sso_service.
     # set_enforced's identical guard gives: a resubmission of the same
@@ -552,7 +556,9 @@ def set_enforced(
             organization_id=config.organization_id, resource_type="organization_saml_config", resource_id=config.id,
             before_state={"enforced": before_enforced}, after_state={"enforced": enforced},
             metadata={"enforced_before": before_enforced, "enforced_after": enforced},
+            commit=False,
         )
+    db.commit()
     return config
 
 
@@ -569,7 +575,7 @@ def set_saml_override(
     config.sso_override_at = datetime.utcnow()
     config.sso_override_reason = reason
     config.sso_override_by_user_id = actor_user_id
-    db.commit()
+    db.flush()
     db.refresh(config)
     audit_service.log_event(
         db, AuditEventType.SAML_OVERRIDE_CREATED, actor_user_id=actor_user_id,
@@ -580,7 +586,9 @@ def set_saml_override(
             "action": "override_created", "override_reason": reason,
             "enforced_before": config.enforced, "timestamp": config.sso_override_at.isoformat(),
         },
+        commit=False,
     )
+    db.commit()
     return config
 
 
@@ -596,7 +604,7 @@ def clear_saml_override(
     config.sso_override_at = None
     config.sso_override_reason = None
     config.sso_override_by_user_id = None
-    db.commit()
+    db.flush()
     db.refresh(config)
 
     if was_active:
@@ -609,7 +617,9 @@ def clear_saml_override(
             },
             after_state={"sso_override_active": False},
             metadata={"action": "override_removed", "timestamp": datetime.utcnow().isoformat()},
+            commit=False,
         )
+    db.commit()
     return config
 
 

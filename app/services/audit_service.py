@@ -7,17 +7,10 @@ routes_orgs.py's legacy PUT and routes_organization_roles.py's PR7 POST)
 still emits exactly one event, and a route can never accidentally emit
 zero or two.
 
-Never raises: a failure writing an audit row must not break the real
-mutation it describes, mirroring the "NEVER break core system" principle
-the sibling omnibioai-security-audit service's own AuditLogger.log()
-already applies to its Redis writes. This audit write is a *separate*
-commit from the mutation's own (which has already succeeded by the time
-log_event runs) -- not atomic with it. A crash in the narrow window
-between the two would lose the audit row but keep the real mutation; the
-alternative (folding the audit insert into each mutation's existing
-transaction) would mean editing the commit boundary of every one of those
-functions, a materially larger and riskier change for this PR. Documented
-here as a known, deliberate tradeoff, not an oversight.
+Mutation services pass ``commit=False`` so their business change and signed
+audit row share one transaction. Signing or insert failures propagate to
+the owning transaction and prevent an unaudited mutation from committing.
+Standalone non-mutating events retain their separate commit path.
 """
 import logging
 from datetime import datetime
@@ -25,6 +18,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.db.models import AuditEvent, Organization, User
+from app.services.audit_integrity import set_integrity
 
 logger = logging.getLogger("omnibioai.auth.audit")
 
@@ -89,6 +83,8 @@ class AuditEventType:
     SERVICE_TOKEN_MINTED = "service_token_minted"
     DELEGATED_EXECUTION_TOKEN_ISSUED = "delegated_execution_token_issued"
     DELEGATED_EXECUTION_TOKEN_DENIED = "delegated_execution_token_denied"
+    TOOLSERVER_REGISTRATION_TOKEN_ISSUED = "toolserver_registration_token_issued"
+    TOOLSERVER_REGISTRATION_TOKEN_DENIED = "toolserver_registration_token_denied"
     # PR11.5.2 (Enterprise TOTP MFA Enrollment). See
     # docs/pr11-totp-enrollment-discovery.md. MFA_RESET_BY_ADMIN and
     # MFA_RECOVERY_USED (named in PR11.5.1's own roadmap) are deliberately
@@ -165,20 +161,44 @@ def log_event(
     before_state: dict | None = None,
     after_state: dict | None = None,
     metadata: dict | None = None,
+    *,
+    commit: bool = True,
 ) -> None:
+    """Record an audit event.
+
+    ``commit=True`` preserves the historical standalone behavior for
+    non-mutating events. Mutation services must pass ``commit=False`` and
+    commit their business change and this row together on the same session.
+    Transaction-bound failures intentionally propagate so the caller can
+    roll back the business mutation; the old silent-failure behavior is not
+    safe for an audit row required by a committed mutation.
+    """
+    event = AuditEvent(
+        event_type=event_type,
+        actor_user_id=actor_user_id,
+        target_user_id=target_user_id,
+        organization_id=organization_id,
+        resource_type=resource_type,
+        resource_id=str(resource_id) if resource_id is not None else None,
+        before_state=before_state,
+        after_state=after_state,
+        event_metadata=metadata,
+        # MySQL's current audit_events.created_at column is DATETIME(0).
+        # Normalize before signing so the HMAC input is exactly the value
+        # MySQL persists and later verification reads back. Do not add
+        # verifier tolerance: one canonical timestamp representation is
+        # required for each signed record.
+        created_at=datetime.utcnow().replace(microsecond=0),
+    )
+    # Integrity metadata is computed before INSERT so storage-level
+    # append-only triggers never need a follow-up UPDATE. The signed field
+    # set covers the event content and timestamp, not just the generated ID.
+    set_integrity(event)
+    db.add(event)
+    db.flush()
+    if not commit:
+        return
     try:
-        event = AuditEvent(
-            event_type=event_type,
-            actor_user_id=actor_user_id,
-            target_user_id=target_user_id,
-            organization_id=organization_id,
-            resource_type=resource_type,
-            resource_id=str(resource_id) if resource_id is not None else None,
-            before_state=before_state,
-            after_state=after_state,
-            event_metadata=metadata,
-        )
-        db.add(event)
         db.commit()
     except Exception:
         logger.exception("audit_event_write_failed event_type=%s", event_type)

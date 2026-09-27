@@ -126,6 +126,19 @@ _register(
     )
 )
 
+_register(
+    PermissionDef(
+        name="toolserver.register", resource="toolserver", action="register",
+        scope=PermissionScope.BOTH, category=PermissionCategory.WORKFLOW,
+        description=(
+            "Authorize a registered service identity (TES) to obtain a short-lived, ToolServer-audience "
+            "credential for POST /register_tools. Service-only: carries no user identity and grants no "
+            "execution or run access."
+        ),
+        legacy=False,
+    )
+)
+
 
 # --- Platform (global) permissions -- legacy -------------------------------
 

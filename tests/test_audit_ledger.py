@@ -353,16 +353,12 @@ def test_org_member_single_role_add_and_remove_emit_events(client, admin_headers
     assert removed[0]["before_state"]["role"] == role_name
 
 
-# ── Resilience: audit failures must not break the real mutation ────────────
+# ── Atomicity: required audit failures roll back the real mutation ─────────
 
 
-def test_audit_write_failure_does_not_break_role_creation(client, admin_headers, monkeypatch):
-    """Mirrors omnibioai-security-audit's own AuditLogger "NEVER break core
-    system" contract: a broken audit sink must degrade to a missing log
-    entry, never a failed mutation. Patches AuditEvent construction itself
-    (not log_event -- replacing log_event wholesale would also remove its
-    own protective try/except, testing nothing) so log_event's internal
-    error handling is what's actually being exercised."""
+def test_audit_write_failure_rolls_back_role_creation(client, admin_headers, monkeypatch):
+    """A required mutation audit failure must roll back the mutation rather
+    than silently commit business state without audit evidence."""
     from app.services import audit_service
 
     def _boom(*args, **kwargs):
@@ -371,9 +367,11 @@ def test_audit_write_failure_does_not_break_role_creation(client, admin_headers,
     monkeypatch.setattr(audit_service, "AuditEvent", _boom)
 
     name = f"audit-resilience-role-{uuid.uuid4().hex[:8]}"
-    resp = client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
-    assert resp.status_code == 201
+    with pytest.raises(RuntimeError, match="simulated audit sink outage"):
+        client.post("/roles", json={"name": name, "permissions": []}, headers=admin_headers)
 
-    events = _events(event_type="role_created", resource_type="role")
-    matching = [e for e in events if e["after_state"] and e["after_state"].get("name") == name]
-    assert matching == []  # the write failed and was swallowed, not silently succeeded
+    db = _DirectSession()
+    try:
+        assert db.query(Role).filter(Role.name == name).first() is None
+    finally:
+        db.close()

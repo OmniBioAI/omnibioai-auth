@@ -110,6 +110,23 @@ def create_delegated_execution_token(*, client_id: str, user_id: int, organizati
     })
 
 
+def create_toolserver_registration_token(*, client_id: str, organization_id: int, registration_id: str) -> str:
+    """Issue a ToolServer-only, service-only registration credential.
+
+    Deliberately has no `sub`/`email` (there is no user, so it can never be
+    mistaken for or used as a user credential), a type distinct from both
+    `access` and `delegated_execution` (so neither introspection path accepts
+    the other's token), and the ToolServer audience (so decode_token()'s
+    platform-audience check rejects it everywhere else)."""
+    now = datetime.utcnow()
+    return _sign({
+        "client_id": client_id, "org_id": organization_id,
+        "scopes": ["toolserver.register"], "type": "toolserver_registration", "iat": now,
+        "exp": now + timedelta(minutes=settings.TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES),
+        "jti": registration_id, "aud": "omnibioai-toolserver",
+    })
+
+
 def create_oauth_state_token(provider: str, code_verifier: str | None = None):
     """Short-lived, self-contained CSRF token for the OAuth authorize step.
     Avoids needing server-side session storage — verified purely by

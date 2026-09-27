@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 from jose import jwt
 from jose.exceptions import JWTClaimsError, JWTError
+from redis.exceptions import AuthenticationError, ResponseError
 
 from app.api.deps import get_current_user, require_permission
 from app.core import oauth_providers
@@ -215,7 +216,7 @@ def test_auth_dependency_fails_closed_and_permission_wrapper_checks_claims():
     assert denied.value.status_code == 403
 
 
-def test_blacklist_access_token_uses_remaining_ttl_and_fails_open():
+def test_blacklist_access_token_uses_remaining_ttl_and_skips_invalid_tokens():
     """Blacklisting an access token writes a blacklist:jti: key with a TTL of at least one second,
     and an undecodable token is skipped without any blacklist write or error.
     """
@@ -233,17 +234,29 @@ def test_blacklist_access_token_uses_remaining_ttl_and_fails_open():
         blacklist.setex.assert_not_called()
 
 
-def test_assert_token_usable_handles_redis_failure_and_revoked_or_inactive_users():
-    """assert_token_usable tolerates a Redis outage on the blacklist lookup (fail-open), but raises
-    "Token revoked" for a blacklisted jti or a jti recorded as revoked in the database, and "User
-    inactive" for a non-active user.
+def test_blacklist_access_token_fails_closed_when_redis_write_is_unavailable():
+    token = create_access_token({"sub": "7"})
+    with patch("app.core.token_revocation._blacklist") as blacklist:
+        blacklist.setex.side_effect = ConnectionError("redis down")
+        with pytest.raises(HTTPException) as exc:
+            blacklist_access_token(token)
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "Authentication state unavailable"
+
+
+def test_assert_token_usable_fails_closed_and_handles_revoked_or_inactive_users():
+    """assert_token_usable fails closed on Redis outage and raises the expected
+    errors for revoked or inactive users.
     """
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = None
 
     with patch("app.core.token_revocation._blacklist") as blacklist:
         blacklist.exists.side_effect = ConnectionError("redis down")
-        assert_token_usable({"sub": None, "jti": "j1"}, db)
+        with pytest.raises(HTTPException) as exc:
+            assert_token_usable({"sub": None, "jti": "j1"}, db)
+        assert exc.value.status_code == 503
+        assert exc.value.detail == "Authentication state unavailable"
 
     with patch("app.core.token_revocation._blacklist") as blacklist:
         blacklist.exists.return_value = True
@@ -264,3 +277,14 @@ def test_assert_token_usable_handles_redis_failure_and_revoked_or_inactive_users
         blacklist.exists.return_value = False
         with pytest.raises(HTTPException, match="User inactive"):
             assert_token_usable({"sub": "7"}, db)
+
+
+@pytest.mark.parametrize("redis_error", [AuthenticationError("wrongpass"), ResponseError("NOPERM")])
+def test_assert_token_usable_fails_closed_on_redis_auth_or_acl_errors(redis_error):
+    db = MagicMock()
+    with patch("app.core.token_revocation._blacklist") as blacklist:
+        blacklist.exists.side_effect = redis_error
+        with pytest.raises(HTTPException) as exc:
+            assert_token_usable({"jti": "security-state"}, db)
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "Authentication state unavailable"

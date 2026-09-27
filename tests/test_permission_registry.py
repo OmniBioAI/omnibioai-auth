@@ -113,6 +113,9 @@ SERVICE_MINT_NAMES = {
 # silently failing this suite's exact-membership/stats assertions below.
 DELEGATED_EXECUTION_NAMES = {
     "toolserver.delegate": PermissionCategory.WORKFLOW,
+    # Service-only TES -> ToolServer /register_tools credential (no user
+    # principal) -- see app/services/toolserver_registration_service.py.
+    "toolserver.register": PermissionCategory.WORKFLOW,
 }
 
 # HIPAA-V2-001 RAG R1 (authoritative write identity for /v1/ingest,
@@ -597,8 +600,9 @@ def test_registry_stats_by_scope_sums_to_total():
     # Model Registry read/use authorization split audit -- see
     # MODEL_REGISTRY_READ_NAMES above) + 1 (toolserver.delegate -- see
     # DELEGATED_EXECUTION_NAMES above) + 1 (dataset.write -- see
-    # RAG_NAMES above).
-    assert stats["by_scope"]["both"] == 16
+    # RAG_NAMES above) + 1 (toolserver.register -- see
+    # DELEGATED_EXECUTION_NAMES above).
+    assert stats["by_scope"]["both"] == 17
 
 
 def test_registry_stats_by_category_sums_to_total():

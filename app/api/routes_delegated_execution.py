@@ -9,8 +9,14 @@ from app.schemas.delegated_execution import (
     DelegatedExecutionIntrospectionRequest,
     DelegatedExecutionTokenOut,
     DelegatedExecutionTokenRequest,
+    ToolServerRegistrationIntrospectionOut,
+    ToolServerRegistrationTokenOut,
 )
-from app.services import audit_service, delegated_execution_service
+from app.services import (
+    audit_service,
+    delegated_execution_service,
+    toolserver_registration_service,
+)
 
 router = APIRouter(prefix="/service/delegations", tags=["delegated-execution"])
 _bearer = HTTPBearer()
@@ -74,3 +80,50 @@ def introspect_toolserver_delegation(
 ):
     identity = delegated_execution_service.introspect(db, body.token)
     return DelegatedExecutionIntrospectionOut(valid=identity is not None, **(identity or {}))
+
+
+# Service-only registration credential (TES startup -> ToolServer
+# /register_tools). No user principal: see
+# app/services/toolserver_registration_service.py for why this is separate
+# from the delegation endpoints above rather than a mode of them.
+@router.post("/toolserver/registration", response_model=ToolServerRegistrationTokenOut)
+def issue_toolserver_registration(
+    request: Request,
+    caller: HTTPAuthorizationCredentials = Depends(_bearer),  # noqa: B008
+    db: Session = Depends(get_db),  # noqa: B008
+):
+    trace_id = request.headers.get("x-request-id") or request.headers.get("x-trace-id")
+    try:
+        token, client, registration_id = toolserver_registration_service.issue(db, service_token=caller.credentials)
+    except HTTPException as exc:
+        audit_service.log_event(
+            db,
+            audit_service.AuditEventType.TOOLSERVER_REGISTRATION_TOKEN_DENIED,
+            metadata={"audience": toolserver_registration_service.TOOLSERVER_AUDIENCE,
+                      "reason": str(exc.detail), "trace_id": trace_id},
+        )
+        raise
+    audit_service.log_event(
+        db,
+        audit_service.AuditEventType.TOOLSERVER_REGISTRATION_TOKEN_ISSUED,
+        organization_id=client.organization_id,
+        resource_type="toolserver_registration",
+        resource_id=registration_id,
+        metadata={"client_id": client.client_id,
+                  "audience": toolserver_registration_service.TOOLSERVER_AUDIENCE,
+                  "scopes": [toolserver_registration_service.REGISTRATION_SCOPE],
+                  "registration_id": registration_id, "trace_id": trace_id},
+    )
+    return ToolServerRegistrationTokenOut(
+        access_token=token,
+        expires_in=settings.TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+
+@router.post("/toolserver/registration/introspect", response_model=ToolServerRegistrationIntrospectionOut)
+def introspect_toolserver_registration(
+    body: DelegatedExecutionIntrospectionRequest,
+    db: Session = Depends(get_db),  # noqa: B008
+):
+    identity = toolserver_registration_service.introspect(db, body.token)
+    return ToolServerRegistrationIntrospectionOut(valid=identity is not None, **(identity or {}))
