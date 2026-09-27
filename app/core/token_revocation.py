@@ -34,14 +34,24 @@ def blacklist_access_token(access_token: str) -> None:
     """
     try:
         payload = decode_token(access_token)
-        jti = payload.get("jti")
-        if jti:
-            exp = payload.get("exp", 0)
-            now = int(datetime.utcnow().timestamp())
-            ttl = max(exp - now, 1)
-            _blacklist.setex(f"blacklist:jti:{jti}", ttl, "1")
     except Exception:
-        pass  # fail open — never block logout
+        # Malformed or expired input has no revocation entry to write.
+        return
+
+    jti = payload.get("jti")
+    if not jti:
+        return
+
+    exp = payload.get("exp", 0)
+    now = int(datetime.utcnow().timestamp())
+    ttl = max(exp - now, 1)
+    try:
+        _blacklist.setex(f"blacklist:jti:{jti}", ttl, "1")
+    except Exception:
+        # A successful database/session revoke is not enough: the access
+        # token remains usable unless its Redis blacklist write succeeds.
+        # Surface dependency failure instead of reporting logout success.
+        raise HTTPException(503, "Authentication state unavailable")
 
 
 def assert_token_usable(payload: dict, db: Session) -> None:
@@ -54,7 +64,8 @@ def assert_token_usable(payload: dict, db: Session) -> None:
     had no effect on any direct caller of this service, only on callers
     that happened to go through `/auth/validate`'s remote-validation path.
 
-    Raises HTTPException(401) on any failure. Callers that need a boolean
+    Raises HTTPException(401) for revoked/inactive tokens and HTTPException
+    (503) when Redis-backed revocation state is unavailable. Callers that need a boolean
     instead of a raise (e.g. `/auth/validate`'s `{"valid": False}` contract)
     should catch the exception, not reimplement these checks.
 
@@ -72,20 +83,11 @@ def assert_token_usable(payload: dict, db: Session) -> None:
         try:
             blacklisted = _blacklist.exists(f"blacklist:jti:{jti}")
         except Exception:
-            # Fail open on Redis specifically -- matches this codebase's
-            # own established philosophy for this exact blacklist
-            # (_blacklist_access_token's "fail open -- never block
-            # logout"). Without this, an unreachable Redis would raise
-            # uncaught here and 500 every authenticated request in the
-            # service (this function runs inside get_current_user, which
-            # every route depends on) -- turning a transient Redis blip
-            # into a full service outage, a strictly worse outcome than
-            # temporarily not enforcing the blacklist. The RevokedToken
-            # and User.status checks below are deliberately NOT wrapped
-            # this way: the database is already a hard dependency for
-            # every route in this service, so failing open there would
-            # newly mask a real problem rather than avoid introducing one.
-            blacklisted = False
+            # Revocation state is part of the authorization decision. An
+            # unavailable or authentication-rejected Redis must never be
+            # treated as an empty blacklist, because that would silently
+            # make revoked access tokens usable again.
+            raise HTTPException(503, "Authentication state unavailable")
         if blacklisted:
             raise HTTPException(401, "Token revoked")
 

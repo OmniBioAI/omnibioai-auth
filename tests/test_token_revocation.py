@@ -167,14 +167,8 @@ def test_assert_token_usable_raises_for_blacklisted_jti(client):
         db.close()
 
 
-def test_assert_token_usable_fails_open_when_redis_is_unreachable(client, monkeypatch):
-    """A Redis outage must not turn into a 500 for every authenticated
-    request in the service -- assert_token_usable runs inside
-    get_current_user, which every route depends on. Fails open
-    specifically for the blacklist check (matches _blacklist_access_
-    token's own established "fail open -- never block logout"
-    philosophy); the RevokedToken/User.status checks below it are
-    unaffected and still run normally."""
+def test_assert_token_usable_fails_closed_when_redis_is_unreachable(client, monkeypatch):
+    """A Redis outage must not make a revoked token usable."""
     from app.core import token_revocation
 
     def _boom(*args, **kwargs):
@@ -185,8 +179,10 @@ def test_assert_token_usable_fails_open_when_redis_is_unreachable(client, monkey
     user_id = _make_active_user()
     db = _DirectSession()
     try:
-        # Does not raise, despite Redis being unreachable.
-        assert_token_usable({"sub": str(user_id), "jti": str(uuid.uuid4())}, db)
+        with pytest.raises(HTTPException) as exc:
+            assert_token_usable({"sub": str(user_id), "jti": str(uuid.uuid4())}, db)
+        assert exc.value.status_code == 503
+        assert exc.value.detail == "Authentication state unavailable"
     finally:
         db.close()
 
