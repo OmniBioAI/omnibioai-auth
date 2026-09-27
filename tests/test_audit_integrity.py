@@ -95,6 +95,38 @@ def test_transaction_bound_audit_insert_is_signed_without_committing(monkeypatch
     engine.dispose()
 
 
+def test_log_event_normalizes_nonzero_microseconds_before_signing_and_storage(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(settings, "AUTH_AUDIT_INTEGRITY_KEY", TEST_KEY)
+    source_timestamp = datetime(2026, 9, 26, 12, 30, 1, 654321)
+
+    class FixedDateTime:
+        @staticmethod
+        def utcnow():
+            return source_timestamp
+
+    monkeypatch.setattr(audit_service, "datetime", FixedDateTime)
+    engine = create_engine(f"sqlite:///{tmp_path / 'audit-timestamp.db'}")
+    AuditEvent.__table__.create(engine)
+
+    with Session(engine) as db:
+        audit_service.log_event(db, "timestamp_precision_regression")
+        row_id = db.query(AuditEvent.id).filter_by(
+            event_type="timestamp_precision_regression"
+        ).scalar()
+
+    # Verify a fresh ORM load, not the pre-insert object used to calculate
+    # the original HMAC.
+    with Session(engine) as db:
+        reloaded = db.get(AuditEvent, row_id)
+        assert reloaded.created_at == source_timestamp.replace(microsecond=0)
+        assert reloaded.created_at.microsecond == 0
+        assert audit_integrity.verify_record(reloaded) is audit_integrity.IntegrityResult.VALID
+
+    engine.dispose()
+
+
 def test_signing_failure_rolls_back_business_mutation(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "AUTH_AUDIT_INTEGRITY_KEY", "")
     engine = create_engine(f"sqlite:///{tmp_path / 'audit-sign-failure.db'}")

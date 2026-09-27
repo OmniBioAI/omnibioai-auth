@@ -1030,6 +1030,42 @@ def test_mysql_auth_audit_integrity_triggers_block_mutation(mysql_db_url):
     engine.dispose()
 
 
+def test_mysql_audit_timestamp_verifies_after_persist_and_reload(mysql_db_url, monkeypatch):
+    """DATETIME(0) must store the exact timestamp representation used by HMAC."""
+    from datetime import datetime
+
+    from app.core.config import settings
+    from app.db.models import AuditEvent
+    from app.services import audit_integrity, audit_service
+
+    command.upgrade(_alembic_config(mysql_db_url), "head")
+    monkeypatch.setattr(settings, "AUTH_AUDIT_INTEGRITY_KEY", "c3" * 32)
+    source_timestamp = datetime(2026, 9, 26, 12, 30, 1, 654321)
+
+    class FixedDateTime:
+        @staticmethod
+        def utcnow():
+            return source_timestamp
+
+    monkeypatch.setattr(audit_service, "datetime", FixedDateTime)
+    engine = create_engine(mysql_db_url)
+    try:
+        with Session(engine) as db:
+            audit_service.log_event(db, "mysql_timestamp_precision_regression")
+            row_id = db.query(AuditEvent.id).filter_by(
+                event_type="mysql_timestamp_precision_regression"
+            ).scalar()
+
+        # A new session forces a round-trip through MySQL's DATETIME(0).
+        with Session(engine) as db:
+            reloaded = db.get(AuditEvent, row_id)
+            assert reloaded.created_at == source_timestamp.replace(microsecond=0)
+            assert reloaded.created_at.microsecond == 0
+            assert audit_integrity.verify_record(reloaded) is audit_integrity.IntegrityResult.VALID
+    finally:
+        engine.dispose()
+
+
 def test_mysql_downgrade_base_reverses_cleanly(mysql_db_url):
     """On real MySQL, upgrading to head and downgrading to base leaves no application tables behind.
     """

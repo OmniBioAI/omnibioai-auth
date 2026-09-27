@@ -183,7 +183,12 @@ def log_event(
         before_state=before_state,
         after_state=after_state,
         event_metadata=metadata,
-        created_at=datetime.utcnow(),
+        # MySQL's current audit_events.created_at column is DATETIME(0).
+        # Normalize before signing so the HMAC input is exactly the value
+        # MySQL persists and later verification reads back. Do not add
+        # verifier tolerance: one canonical timestamp representation is
+        # required for each signed record.
+        created_at=datetime.utcnow().replace(microsecond=0),
     )
     # Integrity metadata is computed before INSERT so storage-level
     # append-only triggers never need a follow-up UPDATE. The signed field
