@@ -593,3 +593,13 @@ suites per feature area:
 MFA design trail and other feature-specific audits live in `docs/`
 (`pr11-mfa-*.md`); deployment and migration procedure in
 `docs/DEPLOYMENT_CHECKLIST.md` and `docs/MIGRATIONS.md`.
+
+## Authoritative Sources
+
+The live route surface is assembled in `app/main.py` from the routers under
+`app/api/`. JWT and JWKS behavior is implemented in `app/core/jwt.py`,
+`app/core/rsa_keys.py`, and related authentication services. Permission names
+are defined by `app/core/permission_names.py`; database models and migrations
+are authoritative for persistence. Feature and security documents under
+`docs/` are supplements and may be historical unless they identify a current
+contract or verification state.
