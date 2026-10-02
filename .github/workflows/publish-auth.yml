@@ -1,0 +1,449 @@
+name: Publish Auth
+
+# Controlled, manually-dispatched release publisher for
+# ghcr.io/omnibioai/omnibioai-auth -- mirrors the proven OmniBioAI Model
+# Registry release contract (immutable source identity, independent native
+# AMD64/ARM64 builds, deterministic OCI index assembly, digest-exact remote
+# verification, OCI-native SBOM/provenance, and genuine native post-publish
+# runtime smoke on both architectures), adapted to Auth's own runtime
+# dependency contract (a reachable MySQL is required before this service's
+# process can even finish importing -- see app/main.py's module-level
+# Base.metadata.create_all(); Redis is required for full correctness but not
+# for process startup). No QEMU anywhere in this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v0.1.0"
+        required: true
+        type: string
+      source_sha:
+        description: "Exact 40-character lowercase-hex commit SHA to build"
+        required: true
+        type: string
+      publish_latest:
+        description: "Also update the floating :latest tag"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  IMAGE: ghcr.io/omnibioai/omnibioai-auth
+  SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+
+jobs:
+  test_frozen_source:
+    name: Test frozen source
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Assert exact source revision
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -eu
+          test "${#SOURCE_SHA}" -eq 40
+          printf '%s' "$SOURCE_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
+          echo "SOURCE_SHA=$SOURCE_SHA"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Pytest
+        env:
+          PYTHONPATH: .
+        run: pytest --tb=short -q
+
+  build_amd64:
+    name: Native linux/amd64 image
+    needs: test_frozen_source
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Assert native AMD64 and exact source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -eu
+          test "$(uname -m)" = x86_64
+          test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push immutable AMD64 artifact
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}:${{ inputs.version }}-amd64-${{ inputs.source_sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_REPOSITORY }}
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,scope=auth-amd64
+
+  build_arm64:
+    name: Native linux/arm64 image
+    needs: test_frozen_source
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Assert native ARM64 and exact source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -eu
+          test "$(uname -m)" = aarch64
+          test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push immutable ARM64 artifact
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE }}:${{ inputs.version }}-arm64-${{ inputs.source_sha }}
+          labels: |
+            org.opencontainers.image.source=${{ env.SOURCE_REPOSITORY }}
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.version=${{ inputs.version }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,scope=auth-arm64
+
+  assemble_and_verify:
+    name: Assemble and independently verify remote release
+    needs: [build_amd64, build_arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate inputs and assemble immutable OCI index
+        env:
+          AMD64_DIGEST: ${{ needs.build_amd64.outputs.digest }}
+          ARM64_DIGEST: ${{ needs.build_arm64.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -eu
+          printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          test -n "$AMD64_DIGEST"
+          test -n "$ARM64_DIGEST"
+          docker buildx imagetools create \
+            --tag "$IMAGE:$VERSION" \
+            --tag "$IMAGE:$SOURCE_SHA" \
+            "$IMAGE@$AMD64_DIGEST" \
+            "$IMAGE@$ARM64_DIGEST"
+          if [ "${{ inputs.publish_latest }}" = true ]; then
+            docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$VERSION"
+          fi
+
+      - name: Verify remote index platforms and digest
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          docker buildx imagetools inspect "$IMAGE:$VERSION" | tee /tmp/auth-index.txt
+          INDEX_DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ {print $2; exit}')
+          test -n "$INDEX_DIGEST"
+          grep -q 'Platform:    linux/amd64' /tmp/auth-index.txt
+          grep -q 'Platform:    linux/arm64' /tmp/auth-index.txt
+          echo "INDEX_PLATFORMS=PASS"
+          echo "INDEX_DIGEST=$INDEX_DIGEST"
+
+      - name: Verify named architecture, metadata, and attestations
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_REPOSITORY: ${{ env.SOURCE_REPOSITORY }}
+        run: |
+          set -eu
+          test "${#SOURCE_SHA}" -eq 40
+          for arch in amd64 arm64; do
+            ref="$IMAGE:$VERSION-$arch-$SOURCE_SHA"
+
+            # Resolve descriptors explicitly by digest/platform -- never grep
+            # imagetools' human-oriented summary of the attestation-bearing
+            # 2-manifest index that sbom/provenance builds produce for this
+            # per-arch tag (that summary never surfaces the platform image's
+            # own Config.Labels, regardless of what the image contains).
+            index_json=$(docker buildx imagetools inspect "$ref" --raw)
+
+            runtime_digest=$(printf '%s' "$index_json" | jq -r \
+              --arg arch "$arch" \
+              '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch)] | if length == 1 then .[0].digest else empty end')
+            attest_digest=$(printf '%s' "$index_json" | jq -r \
+              '[.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")] | if length == 1 then .[0].digest else empty end')
+            test -n "$runtime_digest"
+            test -n "$attest_digest"
+
+            labels=$(docker buildx imagetools inspect "$IMAGE@$runtime_digest" --format '{{json .Image.Config.Labels}}')
+            actual_source=$(printf '%s' "$labels" | jq -r '."org.opencontainers.image.source" // empty')
+            actual_revision=$(printf '%s' "$labels" | jq -r '."org.opencontainers.image.revision" // empty')
+            actual_version=$(printf '%s' "$labels" | jq -r '."org.opencontainers.image.version" // empty')
+            test "$actual_source" = "$SOURCE_REPOSITORY"
+            test "${#actual_revision}" -eq 40
+            test "$actual_revision" = "$SOURCE_SHA"
+            test "$actual_version" = "$VERSION"
+            echo "${arch^^}_METADATA=PASS"
+
+            attest_json=$(docker buildx imagetools inspect "$IMAGE@$attest_digest" --raw)
+            subject_digest=$(printf '%s' "$attest_json" | jq -r '.subject.digest // empty')
+            test "$subject_digest" = "$runtime_digest"
+            predicate_types=$(printf '%s' "$attest_json" | jq -r '[.layers[]? | select(.mediaType == "application/vnd.in-toto+json") | .annotations["in-toto.io/predicate-type"]] | sort | join(",")')
+            printf '%s' "$predicate_types" | grep -q 'https://spdx.dev/Document'
+            printf '%s' "$predicate_types" | grep -q 'https://slsa.dev/provenance/v1'
+            echo "${arch^^}_SBOM=PASS (OCI-native, subject=$subject_digest)"
+            echo "${arch^^}_PROVENANCE=PASS (OCI-native, subject=$subject_digest)"
+          done
+
+          VERSION_DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ {print $2; exit}')
+          SOURCE_DIGEST=$(docker buildx imagetools inspect "$IMAGE:$SOURCE_SHA" | awk '/^Digest:/ {print $2; exit}')
+          test -n "$VERSION_DIGEST"
+          test "$VERSION_DIGEST" = "$SOURCE_DIGEST"
+          echo "TAG_DIGESTS=PASS"
+
+  smoke_amd64:
+    name: Runtime smoke (native linux/amd64)
+    needs: [build_amd64, build_arm64, assemble_and_verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DIGEST: ${{ needs.build_amd64.outputs.digest }}
+    steps:
+      - name: Assert native AMD64 runner
+        run: test "$(uname -m)" = x86_64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull immutable AMD64 artifact by digest
+        run: |
+          set -eu
+          test -n "$DIGEST"
+          docker pull --platform linux/amd64 "$IMAGE@$DIGEST"
+
+      - name: Start ephemeral MySQL + Redis, run container, probe Auth smoke
+        run: |
+          set -eu
+          net="auth-smoke-$GITHUB_RUN_ID-amd64"
+          docker network create "$net"
+          cleanup() {
+            status=$?
+            docker logs auth-smoke 2>&1 | tail -n 100 || true
+            docker rm -f auth-smoke mysql-smoke redis-smoke >/dev/null 2>&1 || true
+            docker network rm "$net" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          # Ephemeral, CI-local-only credentials -- never real secrets, never
+          # persisted, destroyed with the containers at job end.
+          docker run -d --name mysql-smoke --network "$net" \
+            -e MYSQL_ROOT_PASSWORD=smoke-only-not-a-real-secret \
+            -e MYSQL_DATABASE=omnibioai \
+            --platform linux/amd64 \
+            mysql:8.0
+
+          docker run -d --name redis-smoke --network "$net" \
+            --platform linux/amd64 \
+            redis:7
+
+          for _ in $(seq 1 60); do
+            if docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent
+
+          docker run -d --name auth-smoke --network "$net" -p 18001:8001 \
+            --platform linux/amd64 \
+            -e DB_HOST=mysql-smoke -e DB_PORT=3306 -e DB_NAME=omnibioai \
+            -e DB_USER=root -e DB_PASSWORD=smoke-only-not-a-real-secret \
+            -e SECRET_KEY=smoke-only-not-a-real-secret-key \
+            -e AUTH_AUDIT_INTEGRITY_KEY=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 \
+            -e REDIS_URL=redis://redis-smoke:6379 \
+            -e ADMIN_BOOTSTRAP_PASSWORD=smoke-only-not-a-real-admin-pw \
+            "$IMAGE@$DIGEST"
+
+          response=""
+          for _ in $(seq 1 60); do
+            if response=$(curl -sf --max-time 3 http://127.0.0.1:18001/health); then
+              break
+            fi
+            response=""
+            sleep 2
+          done
+          test -n "$response"
+          printf '%s' "$response" | python3 -c "import json, sys; body = json.load(sys.stdin); assert body.get('status') == 'ok', body"
+          echo "AMD64_HEALTH=PASS"
+
+          jwks=$(curl -sf --max-time 3 http://127.0.0.1:18001/.well-known/jwks.json)
+          printf '%s' "$jwks" | python3 -c "import json, sys; body = json.load(sys.stdin); assert isinstance(body.get('keys'), list) and len(body['keys']) >= 1, body"
+          echo "AMD64_AUTH_SMOKE=PASS"
+          echo "AMD64_RUNTIME_SMOKE=PASS"
+
+  smoke_arm64:
+    name: Runtime smoke (native linux/arm64)
+    needs: [build_amd64, build_arm64, assemble_and_verify]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DIGEST: ${{ needs.build_arm64.outputs.digest }}
+    steps:
+      - name: Assert native ARM64 runner
+        run: test "$(uname -m)" = aarch64
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull immutable ARM64 artifact by digest
+        run: |
+          set -eu
+          test -n "$DIGEST"
+          docker pull --platform linux/arm64 "$IMAGE@$DIGEST"
+
+      - name: Start ephemeral MySQL + Redis, run container, probe Auth smoke
+        run: |
+          set -eu
+          net="auth-smoke-$GITHUB_RUN_ID-arm64"
+          docker network create "$net"
+          cleanup() {
+            status=$?
+            docker logs auth-smoke 2>&1 | tail -n 100 || true
+            docker rm -f auth-smoke mysql-smoke redis-smoke >/dev/null 2>&1 || true
+            docker network rm "$net" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker run -d --name mysql-smoke --network "$net" \
+            -e MYSQL_ROOT_PASSWORD=smoke-only-not-a-real-secret \
+            -e MYSQL_DATABASE=omnibioai \
+            --platform linux/arm64 \
+            mysql:8.0
+
+          docker run -d --name redis-smoke --network "$net" \
+            --platform linux/arm64 \
+            redis:7
+
+          for _ in $(seq 1 60); do
+            if docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent
+
+          docker run -d --name auth-smoke --network "$net" -p 18001:8001 \
+            --platform linux/arm64 \
+            -e DB_HOST=mysql-smoke -e DB_PORT=3306 -e DB_NAME=omnibioai \
+            -e DB_USER=root -e DB_PASSWORD=smoke-only-not-a-real-secret \
+            -e SECRET_KEY=smoke-only-not-a-real-secret-key \
+            -e AUTH_AUDIT_INTEGRITY_KEY=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 \
+            -e REDIS_URL=redis://redis-smoke:6379 \
+            -e ADMIN_BOOTSTRAP_PASSWORD=smoke-only-not-a-real-admin-pw \
+            "$IMAGE@$DIGEST"
+
+          response=""
+          for _ in $(seq 1 60); do
+            if response=$(curl -sf --max-time 3 http://127.0.0.1:18001/health); then
+              break
+            fi
+            response=""
+            sleep 2
+          done
+          test -n "$response"
+          printf '%s' "$response" | python3 -c "import json, sys; body = json.load(sys.stdin); assert body.get('status') == 'ok', body"
+          echo "ARM64_HEALTH=PASS"
+
+          jwks=$(curl -sf --max-time 3 http://127.0.0.1:18001/.well-known/jwks.json)
+          printf '%s' "$jwks" | python3 -c "import json, sys; body = json.load(sys.stdin); assert isinstance(body.get('keys'), list) and len(body['keys']) >= 1, body"
+          echo "ARM64_AUTH_SMOKE=PASS"
+          echo "ARM64_RUNTIME_SMOKE=PASS"

@@ -364,10 +364,16 @@ def test_successful_verification_resets_account_failure_counter(client, mfa_user
         assert resp.status_code == 400
 
 
-def test_throttled_account_cannot_continue_unlimited_attempts(client, mfa_user, tight_limits):
+def test_throttled_account_cannot_continue_unlimited_attempts(client, mfa_user, tight_limits, monkeypatch):
     """Once the account is locked, every further attempt in the run stays 429 and never reverts to
     400.
     """
+    # Keep this assertion independent of CPU speed. Nine password-backed
+    # requests can exceed the fixture's deliberately tiny two-second
+    # lockout on native ARM64 even though the lock behaves correctly.
+    monkeypatch.setattr(settings, "MFA_RATE_LIMIT_ACCOUNT_LOCKOUT_SECONDS", 60)
+    monkeypatch.setattr(settings, "MFA_RATE_LIMIT_PAIR_LOCKOUT_SECONDS", 60)
+    monkeypatch.setattr(settings, "MFA_RATE_LIMIT_IP_LOCKOUT_SECONDS", 60)
     wrong = _wrong_code(mfa_service._totp_code_at(mfa_user["secret"], int(time.time())))
     ip = "10.10.5.1"
     statuses = []

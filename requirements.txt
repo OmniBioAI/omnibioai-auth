@@ -1,10 +1,11 @@
-fastapi
+fastapi==0.136.3
 uvicorn
 sqlalchemy
 alembic>=1.13,<2  # pinned conservatively -- migration tooling, a major bump changing CLI/behavior is riskier here than for most deps
 pymysql
 python-jose[cryptography]
-cryptography  # explicit dep for Fernet (app/core/crypto.py) -- was only an implicit python-jose extra before
+cryptography==46.0.3  # 48+ SIGILLs in hashes on native Docker Desktop ARM64; also used directly by app/core/crypto.py
+PyJWT==2.10.1  # app/services/service_tokens.py imports jwt directly
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-dotenv

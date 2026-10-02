@@ -1,0 +1,39 @@
+name: CI
+
+# Lint/test hygiene on every push/PR. Multiarch production releases are a
+# separate, manually-dispatched, controlled workflow -- see
+# .github/workflows/publish-auth.yml -- not triggered by a tag push here.
+# (The previous version of this file built/pushed a multiarch image via
+# QEMU emulation on tag push; QEMU is not native-architecture evidence and
+# that mechanism never actually produced a verified release -- see
+# ~/OMNIBIOAI-AUTH-MULTIARCH-RELEASE-CLOSURE-2026-10-02.md.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run tests
+        env:
+          PYTHONPATH: .
+        run: pytest --tb=short -q
