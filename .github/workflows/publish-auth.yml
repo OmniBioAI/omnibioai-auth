@@ -327,13 +327,20 @@ jobs:
             --platform linux/amd64 \
             redis:7
 
+          # --protocol=tcp (not the default local Unix socket) matters here:
+          # the official mysql image's first-run bootstrap starts a
+          # temporary --skip-networking server to run init scripts, then
+          # shuts it down and starts the real networked server. A socket
+          # ping answers from either one and reports ready during that
+          # temp-server window too, racing auth-smoke's own TCP connection
+          # (same dependency this checks) into "Connection refused".
           for _ in $(seq 1 60); do
-            if docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent >/dev/null 2>&1; then
+            if docker exec mysql-smoke mysqladmin ping --protocol=tcp -h127.0.0.1 -uroot -psmoke-only-not-a-real-secret --silent >/dev/null 2>&1; then
               break
             fi
             sleep 2
           done
-          docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent
+          docker exec mysql-smoke mysqladmin ping --protocol=tcp -h127.0.0.1 -uroot -psmoke-only-not-a-real-secret --silent
 
           docker run -d --name auth-smoke --network "$net" -p 18001:8001 \
             --platform linux/amd64 \
@@ -413,13 +420,20 @@ jobs:
             --platform linux/arm64 \
             redis:7
 
+          # --protocol=tcp (not the default local Unix socket) matters here:
+          # the official mysql image's first-run bootstrap starts a
+          # temporary --skip-networking server to run init scripts, then
+          # shuts it down and starts the real networked server. A socket
+          # ping answers from either one and reports ready during that
+          # temp-server window too, racing auth-smoke's own TCP connection
+          # (same dependency this checks) into "Connection refused".
           for _ in $(seq 1 60); do
-            if docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent >/dev/null 2>&1; then
+            if docker exec mysql-smoke mysqladmin ping --protocol=tcp -h127.0.0.1 -uroot -psmoke-only-not-a-real-secret --silent >/dev/null 2>&1; then
               break
             fi
             sleep 2
           done
-          docker exec mysql-smoke mysqladmin ping -uroot -psmoke-only-not-a-real-secret --silent
+          docker exec mysql-smoke mysqladmin ping --protocol=tcp -h127.0.0.1 -uroot -psmoke-only-not-a-real-secret --silent
 
           docker run -d --name auth-smoke --network "$net" -p 18001:8001 \
             --platform linux/arm64 \

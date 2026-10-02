@@ -171,6 +171,19 @@ def test_runtime_smoke_supplies_mandatory_auth_runtime_configuration() -> None:
     assert "-v " not in smoke_text
 
 
+def test_mysql_readiness_probe_forces_tcp_not_local_socket() -> None:
+    """mysqladmin ping with no --protocol flag defaults to the local Unix
+    socket inside mysql-smoke. The official mysql image answers that socket
+    from its temporary --skip-networking init-phase server too, so an
+    unqualified ping can report ready before the real networked server
+    (what auth-smoke, in a different container, actually depends on) has
+    started -- a proven false-positive race, not a hypothetical one (it
+    took down a real ARM64 publish run). Forcing --protocol=tcp validates
+    the same networked path auth-smoke itself requires."""
+    text = _workflow()
+    assert text.count("mysqladmin ping --protocol=tcp -h127.0.0.1") == 4
+
+
 def test_runtime_smoke_checks_auth_specific_endpoint_not_just_health() -> None:
     """Beyond bare process-up (/health), exercise one real, safe,
     non-mutating Auth code path: the public JWKS endpoint. Never creates
