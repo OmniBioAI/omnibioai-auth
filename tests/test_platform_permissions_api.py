@@ -61,6 +61,7 @@ LEGACY_NAMES = {
     "manage_org",
     "manage_teams",
     "manage_api_keys",
+    "manage_billing",
     "manage_oauth_clients",
     "manage_sso",
 }
@@ -114,7 +115,7 @@ def test_response_contains_all_registered_permissions(client):
     names = {p["name"] for p in resp.json()}
     assert names == set(REGISTRY.keys())
     assert len(resp.json()) == len(REGISTRY)
-    # 13 legacy (5 platform + 3 PR3D + 5 org) + 7 future enterprise entries
+    # 14 legacy (5 platform + 3 PR3D + 6 org) + 7 future enterprise entries
     # + 3 omnibioai-workflow-bundles entries (workflow.read/publish/manage)
     # + 2 omnibioai-tes entries (workflow.execute, now consumed by that
     # repo instead of sitting unenforced, + runs.read)
@@ -124,10 +125,12 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 #443 entry (service_token.mint)
     # + 1 HIPAA-V2-019 entry (toolserver.delegate)
     # + 1 HIPAA-V2-001 RAG R1 entry (dataset.write)
-    # + 1 HIPAA-V2-019 entry (toolserver.register).
+    # + 1 HIPAA-V2-019 entry (toolserver.register)
+    # + 1 Stripe-hosted payment-method management entry (manage_billing,
+    # the 6th org entry counted above).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 31
+    assert len(REGISTRY) == 32
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -234,12 +237,12 @@ def test_filter_by_category(client):
 
 
 def test_filter_by_scope(client):
-    """Filtering by scope "org" returns only org-scoped permissions, five in total."""
+    """Filtering by scope "org" returns only org-scoped permissions, six in total."""
     admin = _platform_admin(client)
     resp = client.get("/platform/permissions", params={"scope": "org"}, headers=admin["headers"])
     assert resp.status_code == 200
     assert all(p["scope"] == "org" for p in resp.json())
-    assert len(resp.json()) == 5
+    assert len(resp.json()) == 6
 
 
 def test_filter_by_legacy(client):

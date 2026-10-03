@@ -301,6 +301,25 @@ _register(
         legacy=True,
     )
 )
+# Stripe-hosted payment-method management on the Studio Billing page
+# (omnibioai-billing's POST .../payment-method/setup-session and
+# .../portal-session). Same org-administration shape as manage_api_keys
+# immediately above -- an org_admin-only, ORG-scoped, legacy-style grant --
+# not the dot-notation, BOTH-scoped "billing.manage" reserved placeholder
+# further below (that one's for a future platform-wide billing-support
+# capability per its own FUTURE_NAMES comment; this one is real,
+# immediately enforced, per-organization, and never granted globally).
+_register(
+    PermissionDef(
+        name="manage_billing",
+        resource="billing",
+        action="manage",
+        scope=PermissionScope.ORG,
+        category=PermissionCategory.ORGANIZATION,
+        description="Manage an organization's billing payment method (omnibioai-billing).",
+        legacy=True,
+    )
+)
 _register(
     PermissionDef(
         name="manage_oauth_clients",

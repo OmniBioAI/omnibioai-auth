@@ -14,7 +14,7 @@ from app.services.audit_service import AuditEventType
 # creates an org never gets these rows either.
 ORG_ADMIN_ROLE = "org_admin"
 ORG_ADMIN_PERMISSIONS = [
-    "manage_org", "manage_teams", "manage_api_keys", "manage_oauth_clients", "manage_sso",
+    "manage_org", "manage_teams", "manage_api_keys", "manage_billing", "manage_oauth_clients", "manage_sso",
     # Org admins previously had no visibility into their own org's
     # workflow-bundles catalog at all -- workflow.read/manage lived only
     # on scientist/viewer (added for the omnibioai-workflow-bundles IAM
