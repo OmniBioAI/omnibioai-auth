@@ -52,6 +52,13 @@ class Settings:
     # it is requested immediately before the one POST /register_tools call.
     TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES = int(os.getenv("TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES", "5"))
 
+    # API-key exchange (POST /auth/api-keys/exchange): the gateway trades an
+    # omni_sk_ key for a short-lived access token it forwards downstream.
+    # The endpoint is only callable with this shared secret (gateway <->
+    # auth); empty disables the endpoint entirely (fails closed with 503).
+    API_KEY_EXCHANGE_SECRET = os.getenv("API_KEY_EXCHANGE_SECRET", "")
+    API_KEY_TOKEN_EXPIRE_MINUTES = int(os.getenv("API_KEY_TOKEN_EXPIRE_MINUTES", "5"))
+
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 

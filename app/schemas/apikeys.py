@@ -25,3 +25,16 @@ class ApiKeyOut(BaseModel):
     created_at: datetime | None
     expires_at: datetime | None
     last_used_at: datetime | None
+
+
+class ApiKeyExchangeIn(BaseModel):
+    api_key: str
+
+
+class ApiKeyExchangeOut(BaseModel):
+    access_token: str
+    expires_in: int
+    api_key_id: int
+    organization_id: int
+    user_id: int
+    permissions: list[str]
