@@ -34,6 +34,7 @@ LEGACY_NAMES = {
     "manage_org",
     "manage_teams",
     "manage_api_keys",
+    "manage_billing",
     "manage_oauth_clients",
     "manage_sso",
 }
@@ -145,6 +146,7 @@ ORG_LEGACY_NAMES = {
     "manage_org",
     "manage_teams",
     "manage_api_keys",
+    "manage_billing",
     "manage_oauth_clients",
     "manage_sso",
 }
@@ -510,7 +512,7 @@ def test_filter_registry_by_scope():
     """Filtering by scope returns exactly the entries of that scope."""
     results = filter_registry(scope=PermissionScope.ORG)
     assert {p.name for p in results} == {
-        "manage_org", "manage_teams", "manage_api_keys", "manage_oauth_clients", "manage_sso",
+        "manage_org", "manage_teams", "manage_api_keys", "manage_billing", "manage_oauth_clients", "manage_sso",
     }
 
 
@@ -587,7 +589,7 @@ def test_registry_stats_by_scope_sums_to_total():
     """
     stats = registry_stats()
     assert sum(stats["by_scope"].values()) == stats["total_permissions"]
-    assert stats["by_scope"]["org"] == 5
+    assert stats["by_scope"]["org"] == 6
     # 7 pre-#443 GLOBAL entries (all legacy) + 1 (service_token.mint,
     # #443's own new non-legacy GLOBAL entry -- see SERVICE_MINT_NAMES
     # above, the first non-legacy permission in this registry that isn't
