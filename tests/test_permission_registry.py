@@ -47,6 +47,7 @@ FUTURE_NAMES = {
     "billing.manage": PermissionCategory.BILLING,
     "subscription.manage": PermissionCategory.BILLING,
     "marketplace.install": PermissionCategory.MARKETPLACE,
+    "provider_keys.manage": PermissionCategory.ORGANIZATION,
 }
 
 # omnibioai-workflow-bundles IAM integration: unlike FUTURE_NAMES above,
@@ -603,8 +604,9 @@ def test_registry_stats_by_scope_sums_to_total():
     # MODEL_REGISTRY_READ_NAMES above) + 1 (toolserver.delegate -- see
     # DELEGATED_EXECUTION_NAMES above) + 1 (dataset.write -- see
     # RAG_NAMES above) + 1 (toolserver.register -- see
-    # DELEGATED_EXECUTION_NAMES above).
-    assert stats["by_scope"]["both"] == 17
+    # DELEGATED_EXECUTION_NAMES above) + 1 (provider_keys.manage -- M15,
+    # BYOK provider-key storage).
+    assert stats["by_scope"]["both"] == 18
 
 
 def test_registry_stats_by_category_sums_to_total():
