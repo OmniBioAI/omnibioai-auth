@@ -347,6 +347,15 @@ class Settings:
     # why, and the concurrent-login race-safety discussion there.
     SESSION_MAX_CONCURRENT = int(os.getenv("SESSION_MAX_CONCURRENT", 5))
 
+    # M17 (design audit gap #9's remaining bullet: self-service API-key
+    # creation gated on an active billing plan). omnibioai-billing's own
+    # GET /organizations/{id}/subscription already accepts any validly-
+    # signed platform JWT whose org_id claim matches -- same shared
+    # signing key both services already trust -- so this needs no new
+    # shared secret, just the URL to call. See
+    # app/services/billing_client.py.
+    BILLING_SERVICE_URL = os.getenv("BILLING_SERVICE_URL", "http://billing-service:8005")
+
     @property
     def DATABASE_URL(self):
         return (
