@@ -1,7 +1,7 @@
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,19 @@ def _hash_key(full_key: str) -> str:
     return hashlib.sha256(full_key.encode()).hexdigest()
 
 
+def _normalize_expiry(expires_at: datetime | None) -> datetime | None:
+    """Every other timestamp on this model (created_at, last_used_at,
+    revoked_at) is a naive UTC datetime.utcnow(), and verify_api_key's own
+    expiry check compares against one -- so a caller-supplied, possibly
+    tz-aware expires_at is converted to the same naive-UTC shape here,
+    once, rather than every comparison site needing to handle both."""
+    if expires_at is None:
+        return None
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+    return expires_at
+
+
 def create_api_key(
     db: Session,
     organization_id: int,
@@ -31,6 +44,7 @@ def create_api_key(
     name: str,
     scopes: list[str],
     caller_permissions: set[str],
+    expires_at: datetime | None = None,
 ) -> tuple[ApiKey, str]:
     """Returns (ApiKey row, full plaintext key). The plaintext is never
     persisted -- only its sha256 hash is stored -- so this is the only
@@ -45,6 +59,10 @@ def create_api_key(
     if invalid_scopes:
         raise ValueError(f"Cannot grant scopes you don't hold: {sorted(invalid_scopes)}")
 
+    expires_at = _normalize_expiry(expires_at)
+    if expires_at is not None and expires_at <= datetime.utcnow():
+        raise ValueError("expires_at must be in the future")
+
     full_key = _generate_key()
     api_key = ApiKey(
         organization_id=organization_id,
@@ -55,6 +73,7 @@ def create_api_key(
         scopes=scopes,
         status="active",
         created_at=datetime.utcnow(),
+        expires_at=expires_at,
     )
     db.add(api_key)
     db.flush()
@@ -101,6 +120,29 @@ def revoke_api_key(
         organization_id=api_key.organization_id, resource_type="api_key", resource_id=api_key.id,
         before_state={"status": "active"}, after_state={"status": "revoked"},
         metadata={"api_key_name": api_key.name, "scopes": api_key.scopes, "reason": reason},
+        commit=False,
+    )
+    db.commit()
+    return api_key
+
+
+def rename_api_key(
+    db: Session, api_key: ApiKey, new_name: str, actor_user_id: int | None = None,
+) -> ApiKey:
+    """Change a key's display name only -- scopes, status, and the key
+    material itself are untouched, so this never needs the
+    caller_permissions re-check create_api_key does."""
+    if not new_name or not new_name.strip():
+        raise ValueError("name must not be empty")
+    old_name = api_key.name
+    api_key.name = new_name
+    db.flush()
+    db.refresh(api_key)
+    audit_service.log_event(
+        db, AuditEventType.API_KEY_RENAMED, actor_user_id=actor_user_id,
+        organization_id=api_key.organization_id, resource_type="api_key", resource_id=api_key.id,
+        before_state={"name": old_name}, after_state={"name": api_key.name},
+        metadata={"old_name": old_name, "new_name": api_key.name},
         commit=False,
     )
     db.commit()

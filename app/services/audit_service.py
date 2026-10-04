@@ -39,6 +39,10 @@ class AuditEventType:
     USER_DISABLED = "user_disabled"
     API_KEY_CREATED = "api_key_created"
     API_KEY_REVOKED = "api_key_revoked"
+    # M9 (API-key lifecycle): renaming a key's display name only -- scopes,
+    # status, and the key material itself are unaffected and keep their own
+    # existing event types.
+    API_KEY_RENAMED = "api_key_renamed"
     OAUTH_CLIENT_CREATED = "oauth_client_created"
     OAUTH_CLIENT_REVOKED = "oauth_client_revoked"
     SSO_CONFIGURATION_CREATED = "sso_configuration_created"

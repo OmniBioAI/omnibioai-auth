@@ -1,11 +1,15 @@
 """Self-service API keys at /me/api-keys (Studio Developer page): a member
 creates keys in their session's organization with scopes limited to what
-they hold (dataset.read by default), lists and revokes only their own keys,
-is capped at MAX_ACTIVE_KEYS_PER_USER active keys, and cannot use an API
-key's own token to manage keys. Sessions without an org or an active
-membership are refused.
+they hold, issued/displayed in the public literature:read/usage:read scope
+vocabulary (literature:read by default -- translated to/from the internal
+dataset.read/usage.read permission names at this HTTP boundary only, see
+routes_apikeys.py's PUBLIC_SCOPE_TO_PERMISSION), lists and revokes only
+their own keys, is capped at MAX_ACTIVE_KEYS_PER_USER active keys, and
+cannot use an API key's own token to manage keys. Sessions without an org
+or an active membership are refused.
 """
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -53,21 +57,70 @@ def scientist(client):
     return {"org_id": org["id"], "headers": _hdr(_login(client, email)), "email": email}
 
 
-def test_create_defaults_to_dataset_read_and_lists_own_keys(client, scientist):
+def test_create_defaults_to_literature_read_and_lists_own_keys(client, scientist):
     resp = client.post("/me/api-keys", json={"name": "notebook"}, headers=scientist["headers"])
     assert resp.status_code == 201
     created = resp.json()
-    assert created["key"].startswith("omni_sk_") and created["scopes"] == ["dataset.read"]
+    assert created["key"].startswith("omni_sk_") and created["scopes"] == ["literature:read"]
 
     listed = client.get("/me/api-keys", headers=scientist["headers"]).json()
     assert [k["id"] for k in listed] == [created["id"]]
+    assert listed[0]["scopes"] == ["literature:read"]
     assert "key" not in listed[0]
 
 
-def test_scopes_cannot_exceed_held_permissions(client, scientist):
+def test_unknown_scope_name_is_rejected(client, scientist):
+    """A scope that isn't one of the public literature:read/usage:read names is rejected before it
+    ever reaches the caller_permissions check -- it's not a real public scope, known or not.
+    """
     resp = client.post("/me/api-keys", json={"name": "x", "scopes": ["manage_billing_nope"]},
                        headers=scientist["headers"])
     assert resp.status_code == 400
+
+
+def test_scopes_cannot_exceed_held_permissions(client, scientist):
+    """usage:read is a real public scope (-> usage.read), but the scientist role doesn't hold
+    usage.read, so requesting it is still rejected -- a known scope name is not an automatic grant.
+    """
+    resp = client.post("/me/api-keys", json={"name": "x", "scopes": ["usage:read"]},
+                       headers=scientist["headers"])
+    assert resp.status_code == 400
+
+
+def test_create_with_future_expires_at(client, scientist):
+    future = (datetime.utcnow() + timedelta(days=7)).isoformat()
+    resp = client.post("/me/api-keys", json={"name": "temp", "expires_at": future}, headers=scientist["headers"])
+    assert resp.status_code == 201
+    assert resp.json()["expires_at"] is not None
+
+
+def test_create_rejects_past_expires_at(client, scientist):
+    past = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    resp = client.post("/me/api-keys", json={"name": "temp", "expires_at": past}, headers=scientist["headers"])
+    assert resp.status_code == 400
+
+
+def test_rename_own_key(client, scientist):
+    created = client.post("/me/api-keys", json={"name": "old"}, headers=scientist["headers"]).json()
+
+    resp = client.patch(f"/me/api-keys/{created['id']}", json={"name": "new"}, headers=scientist["headers"])
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "new"
+
+    listed = client.get("/me/api-keys", headers=scientist["headers"]).json()
+    assert next(k for k in listed if k["id"] == created["id"])["name"] == "new"
+
+
+def test_cannot_rename_another_members_key(client, scientist):
+    other = _register_login(client)
+    other_token = _login(client, other)
+    other_org = client.post("/orgs", json={"name": "Other2", "slug": f"other2-{uuid.uuid4().hex[:8]}"},
+                            headers=_hdr(other_token)).json()
+    assert other_org["id"] != scientist["org_id"]
+    key = client.post("/me/api-keys", json={"name": "mine"}, headers=scientist["headers"]).json()
+    other_headers = _hdr(_login(client, other))
+    resp = client.patch(f"/me/api-keys/{key['id']}", json={"name": "stolen"}, headers=other_headers)
+    assert resp.status_code == 404
 
 
 def test_revoke_own_key_publishes_and_is_idempotent(client, scientist):

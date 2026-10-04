@@ -6,6 +6,11 @@ from pydantic import BaseModel
 class ApiKeyCreate(BaseModel):
     name: str
     scopes: list[str] = []
+    expires_at: datetime | None = None  # M9: optional, self-service-settable; None = no expiry
+
+
+class ApiKeyRename(BaseModel):
+    name: str
 
 
 class ApiKeyCreated(BaseModel):
@@ -13,6 +18,7 @@ class ApiKeyCreated(BaseModel):
     name: str | None
     key_prefix: str
     scopes: list[str]
+    expires_at: datetime | None = None
     key: str  # full plaintext key -- returned exactly once, at creation
 
 

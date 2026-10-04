@@ -165,8 +165,14 @@ def test_org_scoped_route_inventory_matches_expected_count():
     a third entry in the global-permission-exception set
     test_sso_mfa_policy_and_saml_override_routes_are_the_only_global_
     permission_exception locks in below.
+
+    43 -> 44 as of M9 (API-key lifecycle): PATCH /orgs/{org_id}/api-keys/
+    {key_id} was added (key rename), using
+    require_org_permission_or_platform_admin(MANAGE_API_KEYS) -- the same
+    dependency the existing POST/GET/DELETE routes at that same path
+    already use.
     """
-    assert len(list(_org_scoped_routes())) == 43
+    assert len(list(_org_scoped_routes())) == 44
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
