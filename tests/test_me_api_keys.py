@@ -10,6 +10,7 @@ or an active membership are refused.
 """
 import uuid
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -55,6 +56,22 @@ def scientist(client):
     finally:
         db.close()
     return {"org_id": org["id"], "headers": _hdr(_login(client, email)), "email": email}
+
+
+# ── M17: self-service creation gated on an active billing plan (gap #9) ────
+
+
+def test_create_is_blocked_when_the_organization_has_no_active_plan(client, scientist):
+    with patch.object(routes_apikeys.billing_client, "organization_has_active_plan", return_value=False):
+        resp = client.post("/me/api-keys", json={"name": "notebook"}, headers=scientist["headers"])
+    assert resp.status_code == 402
+
+
+def test_create_succeeds_when_the_organization_has_an_active_plan(client, scientist):
+    with patch.object(routes_apikeys.billing_client, "organization_has_active_plan", return_value=True) as check:
+        resp = client.post("/me/api-keys", json={"name": "notebook"}, headers=scientist["headers"])
+    assert resp.status_code == 201
+    check.assert_called_once_with(scientist["org_id"])
 
 
 def test_create_defaults_to_literature_read_and_lists_own_keys(client, scientist):

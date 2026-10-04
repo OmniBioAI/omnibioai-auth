@@ -10,7 +10,7 @@ from app.db.models import ApiKey, OrganizationMembership
 from app.db.session import get_db
 from app.rbac import get_current_user, require_org_permission_or_platform_admin
 from app.schemas.apikeys import ApiKeyCreate, ApiKeyCreated, ApiKeyExchangeIn, ApiKeyExchangeOut, ApiKeyOut, ApiKeyRename
-from app.services import apikey_service, org_service
+from app.services import apikey_service, billing_client, org_service
 
 router = APIRouter(prefix="/orgs/{org_id}/api-keys", tags=["api-keys"])
 exchange_router = APIRouter(prefix="/auth/api-keys", tags=["api-keys"])
@@ -234,6 +234,17 @@ def create_my_api_key(
     active = _own_keys(db, membership).filter(ApiKey.status == "active").count()
     if active >= MAX_ACTIVE_KEYS_PER_USER:
         raise HTTPException(409, f"At most {MAX_ACTIVE_KEYS_PER_USER} active keys; revoke one first")
+    # M17 (design audit gap #9): auto-enrollment (billing-service's own
+    # get_subscription_summary) means a brand-new organization's first
+    # call here still succeeds -- this only actually blocks an
+    # organization whose subscription has gone to "suspended" (mid
+    # payment-failure grace period) or "cancelled". Fails open on a
+    # billing-service outage (see billing_client's own docstring).
+    if not billing_client.organization_has_active_plan(membership.organization_id):
+        raise HTTPException(
+            402, "Your organization has no active billing plan. "
+                 "Resolve any payment issue, or reactivate a plan, before creating new API keys.",
+        )
     public_scopes = body.scopes or DEFAULT_SELF_SERVICE_SCOPES
     unknown_scopes = set(public_scopes) - set(PUBLIC_SCOPE_TO_PERMISSION)
     if unknown_scopes:
