@@ -43,6 +43,8 @@ STATUS_ABSOLUTE_EXPIRED = "absolute_expired"
 REASON_USER_LOGOUT = "user_logout"
 REASON_USER_REVOKED = "user_revoked"
 REASON_REUSE_DETECTED = "reuse_detected"
+# Credential replacement revokes the affected user's persisted session.
+REASON_PASSWORD_CHANGED = "password_changed"
 # HIPAA Phase 1 PR3 additions.
 REASON_IDLE_TIMEOUT = "idle_timeout"
 REASON_ABSOLUTE_TIMEOUT = "absolute_timeout"

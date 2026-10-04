@@ -116,6 +116,7 @@ class AuditEventType:
     MFA_RECOVERY_CODES_REGENERATED = "mfa_recovery_codes_regenerated"
     MFA_RECOVERY_CODE_USED = "mfa_recovery_code_used"
     MFA_RESET_BY_ADMIN = "mfa_reset_by_admin"
+    ADMIN_PASSWORD_CREDENTIAL_CHANGED = "admin_password_credential_changed"
     # PR11.5.5 (Enterprise Organization MFA Policy). See
     # docs/pr11-mfa-org-policy-discovery.md SS7.
     MFA_POLICY_ENABLED = "mfa_policy_enabled"
