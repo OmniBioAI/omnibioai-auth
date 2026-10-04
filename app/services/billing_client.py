@@ -4,7 +4,7 @@ plan. The gate itself lives in routes_apikeys.py; this module is the
 one cross-service call it needs -- omnibioai-billing owns subscription
 state, omnibioai-auth doesn't duplicate it.
 
-Calls omnibioai-billing's existing GET /organizations/{id}/subscription
+Calls omnibioai-billing's existing GET /billing/organizations/{id}/subscription
 (no new billing-service endpoint, no new shared secret): that route
 already accepts any validly-signed platform JWT whose org_id claim
 matches the organization being queried (see omnibioai-billing's
@@ -52,7 +52,7 @@ def organization_has_active_plan(organization_id: int) -> bool:
     })
     try:
         resp = httpx.get(
-            f"{settings.BILLING_SERVICE_URL}/organizations/{organization_id}/subscription",
+            f"{settings.BILLING_SERVICE_URL}/billing/organizations/{organization_id}/subscription",
             headers={"Authorization": f"Bearer {token}"},
             timeout=3,
         )
