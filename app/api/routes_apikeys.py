@@ -29,6 +29,7 @@ def _key_out(key: ApiKey) -> ApiKeyOut:
         created_at=key.created_at,
         expires_at=key.expires_at,
         last_used_at=key.last_used_at,
+        test=apikey_service.is_test_key(key),
     )
 
 
@@ -43,7 +44,7 @@ def create_api_key(
     try:
         api_key, full_key = apikey_service.create_api_key(
             db, org_id, membership.user_id, body.name, body.scopes, caller_permissions,
-            expires_at=body.expires_at,
+            expires_at=body.expires_at, test=body.test,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -53,6 +54,7 @@ def create_api_key(
         key_prefix=api_key.key_prefix,
         scopes=api_key.scopes or [],
         expires_at=api_key.expires_at,
+        test=body.test,
         key=full_key,
     )
 
@@ -114,7 +116,8 @@ def exchange_api_key(
     db: Session = Depends(get_db),
     x_api_key_exchange_secret: str = Header(default=""),
 ):
-    """Gateway-only: trade an omni_sk_ key for a short-lived access token.
+    """Gateway-only: trade an omni_sk_live_/omni_sk_test_ (or a pre-M13
+    bare omni_sk_) key for a short-lived access token.
 
     Callable only with the shared API_KEY_EXCHANGE_SECRET, so the minted
     token can't be obtained by a key holder directly and used to reach
@@ -210,6 +213,7 @@ def _me_key_out(key: ApiKey) -> ApiKeyOut:
         created_at=key.created_at,
         expires_at=key.expires_at,
         last_used_at=key.last_used_at,
+        test=apikey_service.is_test_key(key),
     )
 
 
@@ -239,7 +243,7 @@ def create_my_api_key(
         api_key, full_key = apikey_service.create_api_key(
             db, membership.organization_id, membership.user_id, body.name, internal_scopes,
             org_service.permissions_for_membership(membership),
-            expires_at=body.expires_at,
+            expires_at=body.expires_at, test=body.test,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -249,6 +253,7 @@ def create_my_api_key(
         key_prefix=api_key.key_prefix,
         scopes=_to_public_scopes(api_key.scopes or []),
         expires_at=api_key.expires_at,
+        test=body.test,
         key=full_key,
     )
 

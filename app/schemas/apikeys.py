@@ -7,6 +7,7 @@ class ApiKeyCreate(BaseModel):
     name: str
     scopes: list[str] = []
     expires_at: datetime | None = None  # M9: optional, self-service-settable; None = no expiry
+    test: bool = False  # M13: omni_sk_test_ instead of omni_sk_live_; see apikey_service.is_test_key
 
 
 class ApiKeyRename(BaseModel):
@@ -19,6 +20,7 @@ class ApiKeyCreated(BaseModel):
     key_prefix: str
     scopes: list[str]
     expires_at: datetime | None = None
+    test: bool = False
     key: str  # full plaintext key -- returned exactly once, at creation
 
 
@@ -31,6 +33,7 @@ class ApiKeyOut(BaseModel):
     created_at: datetime | None
     expires_at: datetime | None
     last_used_at: datetime | None
+    test: bool = False
 
 
 class ApiKeyExchangeIn(BaseModel):
@@ -44,3 +47,4 @@ class ApiKeyExchangeOut(BaseModel):
     organization_id: int
     user_id: int
     permissions: list[str]
+    test_mode: bool = False
