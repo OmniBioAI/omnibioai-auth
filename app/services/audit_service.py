@@ -43,6 +43,11 @@ class AuditEventType:
     # status, and the key material itself are unaffected and keep their own
     # existing event types.
     API_KEY_RENAMED = "api_key_renamed"
+    # M14 (BYOK provider-key storage, design audit gap #4): an
+    # organization's own Claude/OpenAI key. Never the key itself in
+    # metadata -- same rule API_KEY_CREATED's own entry follows.
+    PROVIDER_KEY_SET = "provider_key_set"
+    PROVIDER_KEY_CLEARED = "provider_key_cleared"
     OAUTH_CLIENT_CREATED = "oauth_client_created"
     OAUTH_CLIENT_REVOKED = "oauth_client_revoked"
     SSO_CONFIGURATION_CREATED = "sso_configuration_created"

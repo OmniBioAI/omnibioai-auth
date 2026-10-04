@@ -171,8 +171,15 @@ def test_org_scoped_route_inventory_matches_expected_count():
     require_org_permission_or_platform_admin(MANAGE_API_KEYS) -- the same
     dependency the existing POST/GET/DELETE routes at that same path
     already use.
+
+    44 -> 47 as of M14 (BYOK provider-key storage, design audit gap #4):
+    GET/PUT/DELETE /orgs/{org_id}/provider-keys(/{provider}) were added,
+    using require_org_permission_or_platform_admin(MANAGE_ORG) -- an
+    org-wide infrastructure setting, the same administrative character
+    manage_org already gates elsewhere (e.g. GET/PUT /orgs/{org_id}
+    itself), not a new permission.
     """
-    assert len(list(_org_scoped_routes())) == 44
+    assert len(list(_org_scoped_routes())) == 47
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
