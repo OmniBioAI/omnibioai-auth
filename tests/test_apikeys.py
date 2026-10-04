@@ -7,6 +7,7 @@ keys.
 Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -114,6 +115,69 @@ def test_revoke_api_key(client, org):
     listed = client.get(f"/orgs/{org['id']}/api-keys", headers=org["owner_headers"])
     revoked = next(k for k in listed.json() if k["id"] == key_id)
     assert revoked["status"] == "revoked"
+
+
+def test_create_api_key_with_future_expires_at(client, org):
+    """A caller-supplied expires_at in the future is stored and returned as-is."""
+    future = (datetime.utcnow() + timedelta(days=30)).isoformat()
+    resp = client.post(
+        f"/orgs/{org['id']}/api-keys",
+        json={"name": "Expiring", "scopes": [], "expires_at": future},
+        headers=org["owner_headers"],
+    )
+    assert resp.status_code == 201
+    assert resp.json()["expires_at"] is not None
+
+
+def test_create_api_key_rejects_past_expires_at(client, org):
+    """expires_at in the past is rejected -- a key that's already expired the moment it's created
+    is never a legitimate request.
+    """
+    past = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    resp = client.post(
+        f"/orgs/{org['id']}/api-keys",
+        json={"name": "Already expired", "scopes": [], "expires_at": past},
+        headers=org["owner_headers"],
+    )
+    assert resp.status_code == 400
+
+
+def test_rename_api_key(client, org):
+    """PATCH renames a key and the new name is reflected in a subsequent listing."""
+    create = client.post(
+        f"/orgs/{org['id']}/api-keys", json={"name": "Old name", "scopes": []}, headers=org["owner_headers"]
+    )
+    key_id = create.json()["id"]
+
+    resp = client.patch(
+        f"/orgs/{org['id']}/api-keys/{key_id}", json={"name": "New name"}, headers=org["owner_headers"]
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "New name"
+
+    listed = client.get(f"/orgs/{org['id']}/api-keys", headers=org["owner_headers"])
+    assert next(k for k in listed.json() if k["id"] == key_id)["name"] == "New name"
+
+
+def test_rename_api_key_rejects_empty_name(client, org):
+    """An empty/whitespace-only name is rejected rather than silently blanking the key's name."""
+    create = client.post(
+        f"/orgs/{org['id']}/api-keys", json={"name": "Keep me", "scopes": []}, headers=org["owner_headers"]
+    )
+    key_id = create.json()["id"]
+
+    resp = client.patch(
+        f"/orgs/{org['id']}/api-keys/{key_id}", json={"name": "   "}, headers=org["owner_headers"]
+    )
+    assert resp.status_code == 400
+
+
+def test_rename_nonexistent_key_404(client, org):
+    """Renaming a key id that doesn't exist in this org returns 404."""
+    resp = client.patch(
+        f"/orgs/{org['id']}/api-keys/999999", json={"name": "Nope"}, headers=org["owner_headers"]
+    )
+    assert resp.status_code == 404
 
 
 def test_missing_token_rejected(client, org):

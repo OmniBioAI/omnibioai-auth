@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.db.models import ApiKey, OrganizationMembership
 from app.db.session import get_db
 from app.rbac import get_current_user, require_org_permission_or_platform_admin
-from app.schemas.apikeys import ApiKeyCreate, ApiKeyCreated, ApiKeyExchangeIn, ApiKeyExchangeOut, ApiKeyOut
+from app.schemas.apikeys import ApiKeyCreate, ApiKeyCreated, ApiKeyExchangeIn, ApiKeyExchangeOut, ApiKeyOut, ApiKeyRename
 from app.services import apikey_service, org_service
 
 router = APIRouter(prefix="/orgs/{org_id}/api-keys", tags=["api-keys"])
@@ -42,7 +42,8 @@ def create_api_key(
     caller_permissions = org_service.permissions_for_membership(membership)
     try:
         api_key, full_key = apikey_service.create_api_key(
-            db, org_id, membership.user_id, body.name, body.scopes, caller_permissions
+            db, org_id, membership.user_id, body.name, body.scopes, caller_permissions,
+            expires_at=body.expires_at,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -51,6 +52,7 @@ def create_api_key(
         name=api_key.name,
         key_prefix=api_key.key_prefix,
         scopes=api_key.scopes or [],
+        expires_at=api_key.expires_at,
         key=full_key,
     )
 
@@ -62,6 +64,24 @@ def list_api_keys(
     membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_API_KEYS)),
 ):
     return [_key_out(k) for k in apikey_service.list_api_keys(db, org_id)]
+
+
+@router.patch("/{key_id}", response_model=ApiKeyOut)
+def rename_api_key(
+    org_id: int,
+    key_id: int,
+    body: ApiKeyRename,
+    db: Session = Depends(get_db),
+    membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_API_KEYS)),
+):
+    key = apikey_service.get_api_key(db, org_id, key_id)
+    if not key:
+        raise HTTPException(404, "API key not found")
+    try:
+        apikey_service.rename_api_key(db, key, body.name, actor_user_id=membership.user_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _key_out(key)
 
 
 @router.delete("/{key_id}", status_code=204)
@@ -120,8 +140,30 @@ def exchange_api_key(
 # Org admins keep the org-wide /orgs/{org_id}/api-keys routes above.
 # ---------------------------------------------------------------------------
 
-DEFAULT_SELF_SERVICE_SCOPES = ["dataset.read"]
 MAX_ACTIVE_KEYS_PER_USER = 10
+
+# M9 (API-key lifecycle, design doc's "Scopes" section): the public,
+# developer-facing scope vocabulary self-service keys are issued and
+# displayed in -- distinct from the internal dot-format IAM permission
+# names (app/core/permission_names.py's registry) that org roles are
+# actually granted and that create_api_key/exchange_api_key check
+# against. Translating at this HTTP boundary only, rather than renaming
+# dataset.read/usage.read themselves, keeps both of those exactly as they
+# are everywhere else they're used -- role grants, the org-admin
+# /orgs/{org_id}/api-keys router below, and every downstream consumer of
+# an exchanged token's `permissions` claim (the gateway and policy engine
+# still see "dataset.read"/"usage.read", unchanged).
+PUBLIC_SCOPE_TO_PERMISSION = {
+    "literature:read": "dataset.read",
+    "usage:read": "usage.read",
+}
+PERMISSION_TO_PUBLIC_SCOPE = {v: k for k, v in PUBLIC_SCOPE_TO_PERMISSION.items()}
+
+DEFAULT_SELF_SERVICE_SCOPES = ["literature:read"]
+
+
+def _to_public_scopes(internal_scopes: list[str]) -> list[str]:
+    return [PERMISSION_TO_PUBLIC_SCOPE.get(s, s) for s in internal_scopes]
 
 
 def _self_service_membership(
@@ -158,12 +200,25 @@ def _own_keys(db: Session, membership: OrganizationMembership):
     )
 
 
+def _me_key_out(key: ApiKey) -> ApiKeyOut:
+    return ApiKeyOut(
+        id=key.id,
+        name=key.name,
+        key_prefix=key.key_prefix,
+        scopes=_to_public_scopes(key.scopes or []),
+        status=key.status,
+        created_at=key.created_at,
+        expires_at=key.expires_at,
+        last_used_at=key.last_used_at,
+    )
+
+
 @me_router.get("", response_model=list[ApiKeyOut])
 def list_my_api_keys(
     db: Session = Depends(get_db),
     membership: OrganizationMembership = Depends(_self_service_membership),
 ):
-    return [_key_out(k) for k in _own_keys(db, membership).all()]
+    return [_me_key_out(k) for k in _own_keys(db, membership).all()]
 
 
 @me_router.post("", response_model=ApiKeyCreated, status_code=201)
@@ -175,11 +230,16 @@ def create_my_api_key(
     active = _own_keys(db, membership).filter(ApiKey.status == "active").count()
     if active >= MAX_ACTIVE_KEYS_PER_USER:
         raise HTTPException(409, f"At most {MAX_ACTIVE_KEYS_PER_USER} active keys; revoke one first")
-    scopes = body.scopes or DEFAULT_SELF_SERVICE_SCOPES
+    public_scopes = body.scopes or DEFAULT_SELF_SERVICE_SCOPES
+    unknown_scopes = set(public_scopes) - set(PUBLIC_SCOPE_TO_PERMISSION)
+    if unknown_scopes:
+        raise HTTPException(400, f"Unknown scope(s): {sorted(unknown_scopes)}")
+    internal_scopes = [PUBLIC_SCOPE_TO_PERMISSION[s] for s in public_scopes]
     try:
         api_key, full_key = apikey_service.create_api_key(
-            db, membership.organization_id, membership.user_id, body.name, scopes,
+            db, membership.organization_id, membership.user_id, body.name, internal_scopes,
             org_service.permissions_for_membership(membership),
+            expires_at=body.expires_at,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -187,9 +247,27 @@ def create_my_api_key(
         id=api_key.id,
         name=api_key.name,
         key_prefix=api_key.key_prefix,
-        scopes=api_key.scopes or [],
+        scopes=_to_public_scopes(api_key.scopes or []),
+        expires_at=api_key.expires_at,
         key=full_key,
     )
+
+
+@me_router.patch("/{key_id}", response_model=ApiKeyOut)
+def rename_my_api_key(
+    key_id: int,
+    body: ApiKeyRename,
+    db: Session = Depends(get_db),
+    membership: OrganizationMembership = Depends(_self_service_membership),
+):
+    key = _own_keys(db, membership).filter(ApiKey.id == key_id).first()
+    if not key:
+        raise HTTPException(404, "API key not found")
+    try:
+        apikey_service.rename_api_key(db, key, body.name, actor_user_id=membership.user_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _me_key_out(key)
 
 
 @me_router.delete("/{key_id}", status_code=204)
