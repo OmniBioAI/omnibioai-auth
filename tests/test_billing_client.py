@@ -1,12 +1,19 @@
 """app/services/billing_client.py: the one cross-service call behind
 design audit gap #9's "self-service key creation gated on an active
 billing plan." Mocks httpx.get directly -- no real omnibioai-billing
-call is ever made in this suite.
+call is ever made in this suite. See
+test_sends_a_token_scoped_to_the_requested_organization's own comment
+for why that one assertion is an exact match, not endswith -- a
+real-stack smoke test (not this mocked suite) is what actually caught
+the URL this module originally called being wrong (missing billing-
+service's own /billing router prefix), so every call it ever made 404'd
+in production despite this whole suite passing throughout.
 
 Developer: Manish Kumar <manish@omnibioai.org>
 """
 from unittest.mock import MagicMock, patch
 
+from app.core.config import settings
 from app.services import billing_client
 
 
@@ -78,7 +85,15 @@ def test_sends_a_token_scoped_to_the_requested_organization():
     with patch.object(billing_client.httpx, "get", side_effect=fake_get):
         billing_client.organization_has_active_plan(99)
 
-    assert captured["url"].endswith("/organizations/99/subscription")
+    # Exact match, not endswith: billing-service's router is mounted at
+    # /billing (app/routers/billing.py's own APIRouter(prefix="/billing")
+    # in omnibioai-billing) -- a bare /organizations/99/subscription
+    # also satisfies endswith(".../organizations/99/subscription") while
+    # actually 404ing against the real service, which is exactly the bug
+    # this exact-match assertion exists to catch (found via a live
+    # integration check against the real billing-service, not by any
+    # mocked unit test -- see this module's own git history).
+    assert captured["url"] == f"{settings.BILLING_SERVICE_URL}/billing/organizations/99/subscription"
     claims = decode_token(captured["token"])
     assert claims["org_id"] == 99
     assert claims["type"] == "access"

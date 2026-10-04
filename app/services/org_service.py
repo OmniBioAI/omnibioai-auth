@@ -71,7 +71,24 @@ ORG_MEMBER_ROLE = "org_member"
 # model.use's superset behavior, the same way SCIENTIST_PERMISSIONS
 # already lists dataset.read explicitly rather than leaving it implicit.
 SCIENTIST_ROLE = "scientist"
-SCIENTIST_PERMISSIONS = ["workflow.execute", "dataset.read", "model.use", "model.read"]
+SCIENTIST_PERMISSIONS = [
+    "workflow.execute", "dataset.read", "model.use", "model.read", "workspace.launch",
+    # A scientist could submit/cancel a run (workflow.execute) but never
+    # see its status or history (runs.read was org_admin-only) -- could
+    # act, but never check on the result of acting. Same operator-vs-
+    # admin-visibility gap workspace.launch just closed for launcher.
+    "runs.read",
+    # manage_billing was org_admin-only, which assumes every org has a
+    # separate billing owner distinct from the person actually using the
+    # API. For an individual developer whose own usage is what's being
+    # billed (the common case for a solo account/personal org), that
+    # split doesn't hold -- they're the one who needs to add their own
+    # card to keep using their own API key. See
+    # omnibioai-billing/app/core/iam.py's _has_manage_billing, which
+    # already recognizes this permission regardless of which role grants
+    # it -- no change needed there.
+    "manage_billing",
+]
 VIEWER_ROLE = "viewer"
 VIEWER_PERMISSIONS = ["dataset.read", "workflow.read"]
 

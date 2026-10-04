@@ -132,6 +132,14 @@ RAG_NAMES = {
     "dataset.write": PermissionCategory.DATASET,
 }
 
+# omnibioai-launcher: enforced immediately by server.js's requireIdentity
+# checks (start/stop/create a personal IDE workspace) -- same "not an
+# unenforced placeholder" posture as WORKFLOW_BUNDLES_NAMES above, not
+# FUTURE_NAMES.
+WORKSPACE_LAUNCH_NAMES = {
+    "workspace.launch": PermissionCategory.WORKSPACE,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -424,7 +432,37 @@ def test_registry_contains_exactly_the_expected_names():
         | set(TES_NAMES.keys()) | set(MODEL_REGISTRY_OWNERSHIP_NAMES.keys())
         | set(MODEL_REGISTRY_READ_NAMES.keys()) | set(SERVICE_MINT_NAMES.keys())
         | set(DELEGATED_EXECUTION_NAMES.keys()) | set(RAG_NAMES.keys())
+        | set(WORKSPACE_LAUNCH_NAMES.keys())
     )
+
+
+# ── omnibioai-launcher permissions ──────────────────────────────────────────
+
+def test_all_workspace_launch_names_are_known_not_legacy_scope_both():
+    """Every workspace-launch permission is known, non-legacy, not deprecated, scoped BOTH and in
+    its expected category.
+    """
+    for name, category in WORKSPACE_LAUNCH_NAMES.items():
+        assert is_known_permission(name), f"{name} missing from registry"
+        entry = REGISTRY[name]
+        assert entry.legacy is False
+        assert entry.scope == PermissionScope.BOTH
+        assert entry.category == category
+        assert entry.deprecated is False
+
+
+def test_all_workspace_launch_names_pass_format_validation():
+    """Every workspace-launch permission name passes the resource.action format check."""
+    for name in WORKSPACE_LAUNCH_NAMES:
+        assert is_valid_permission_format(name), name
+
+
+def test_workspace_launch_names_are_not_marked_reserved():
+    """workspace.launch is enforced immediately by omnibioai-launcher's server.js, so its
+    description does not say "not yet enforced".
+    """
+    for name in WORKSPACE_LAUNCH_NAMES:
+        assert "not yet enforced" not in REGISTRY[name].description.lower()
 
 
 # ── Format validation examples ───────────────────────────────────────────────
@@ -577,6 +615,7 @@ def test_registry_stats_totals_match_registry_size():
         len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
         + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
         + len(SERVICE_MINT_NAMES) + len(DELEGATED_EXECUTION_NAMES) + len(RAG_NAMES)
+        + len(WORKSPACE_LAUNCH_NAMES)
     )
 
 
@@ -606,7 +645,7 @@ def test_registry_stats_by_scope_sums_to_total():
     # RAG_NAMES above) + 1 (toolserver.register -- see
     # DELEGATED_EXECUTION_NAMES above) + 1 (provider_keys.manage -- M15,
     # BYOK provider-key storage).
-    assert stats["by_scope"]["both"] == 18
+    assert stats["by_scope"]["both"] == 19
 
 
 def test_registry_stats_by_category_sums_to_total():

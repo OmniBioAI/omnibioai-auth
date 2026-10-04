@@ -43,6 +43,11 @@ FUTURE_NAMES = {
     # enforced" posture usage.read already has (see
     # app/core/permission_names.py's own entry).
     "provider_keys.manage",
+    # omnibioai-launcher: start/stop/create a personal IDE workspace,
+    # consumed immediately by that service's server.js, not an
+    # unenforced placeholder -- counted here the same way
+    # workflow.execute/toolserver.delegate etc. above already are.
+    "workspace.launch",
 }
 
 # #443: kept separate from FUTURE_NAMES above -- that set's own
@@ -133,9 +138,10 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 Stripe-hosted payment-method management entry (manage_billing,
     # the 6th org entry counted above).
     # + 1 M15 entry (provider_keys.manage -- BYOK provider-key storage).
+    # + 1 omnibioai-launcher entry (workspace.launch).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 33
+    assert len(REGISTRY) == 34
 
 
 def test_response_fields_match_permission_def_as_dict(client):

@@ -227,8 +227,8 @@ def test_model_resolve_ownership_does_not_imply_model_use(client):
 # ── 6. Existing model.use authorization behavior unchanged ──────────────────
 
 def test_existing_scientist_permission_set_unchanged():
-    """SCIENTIST_PERMISSIONS is exactly workflow.execute, dataset.read, model.use and model.read,
-    without model.resolve_ownership.
+    """SCIENTIST_PERMISSIONS is exactly workflow.execute, dataset.read, model.use, model.read,
+    workspace.launch, runs.read and manage_billing, without model.resolve_ownership.
     """
     # SCIENTIST_PERMISSIONS (the role that carries model.use) must not have
     # gained model.resolve_ownership as a side effect of this change.
@@ -236,8 +236,17 @@ def test_existing_scientist_permission_set_unchanged():
     # authorization split audit (a real, intentional addition to this
     # list, unrelated to model.resolve_ownership) -- included here so this
     # assertion tracks the actual current list rather than pinning a
-    # stale snapshot.
-    assert org_service.SCIENTIST_PERMISSIONS == ["workflow.execute", "dataset.read", "model.use", "model.read"]
+    # stale snapshot. workspace.launch, runs.read and manage_billing were
+    # added later still: a scientist could already execute a run or
+    # launch a workspace but couldn't see its status/history, use their
+    # own workspace, or pay for their own usage without permissions an
+    # org-administration role held instead -- closing an
+    # act-but-cannot-verify-or-pay-for-it gap, not adding a new
+    # capability.
+    assert org_service.SCIENTIST_PERMISSIONS == [
+        "workflow.execute", "dataset.read", "model.use", "model.read", "workspace.launch", "runs.read",
+        "manage_billing",
+    ]
     assert "model.resolve_ownership" not in org_service.SCIENTIST_PERMISSIONS
 
 
