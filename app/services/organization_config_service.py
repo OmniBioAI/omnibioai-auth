@@ -5,21 +5,14 @@ organization's questions. The underlying organization_config table has
 existed since the multi-tenant schema migration with nobody reading or
 writing it -- this module is its first real consumer.
 
-Scoped deliberately narrowly, matching how far "storage" goes on its
-own: this only stores and retrieves the encrypted key. Actually routing
-a /v1/literature/answers call through the stored provider (Claude/
-OpenAI client calls, token accounting, llm.tokens.* usage events) is
-the rest of gap #4 and is not built here -- storing a key an org can
-never yet be routed through is a real, honestly-scoped gap, not a
-hidden one (the same "mechanism before the business/product decision
-that uses it" shape this project's M3/M6/M7 all already established,
-here applied to an engineering dependency rather than a pricing one).
-
-Also not yet exposed through the public gateway's own /v1/provider-keys/
-{provider} path the design doc names -- only through this org-admin
-endpoint (PUT/GET/DELETE /orgs/{org_id}/provider-keys), the same one
-Studio's own LLM settings page would call. Routing this through the
-gateway for direct external-developer use is follow-up work.
+M15 exposed the storage endpoint through the public gateway's own
+/v1/provider-keys/{provider} path. M16 adds the one remaining piece
+this module needs for actual routing: reveal_provider_key(), which
+decrypts a stored key for a single internal, service-to-service call --
+see app/api/routes_organization_config.py's reveal endpoint and its own
+docstring for the access-control story. The Claude/OpenAI client calls,
+token accounting, and llm.tokens.* usage events themselves live in
+omnibioai-api-gateway/omnibioai-rag, not here.
 """
 from datetime import datetime
 
@@ -79,6 +72,32 @@ def set_provider_key(
     db.commit()
     db.refresh(config)
     return config
+
+
+def reveal_provider_key(db: Session, organization_id: int, provider: str) -> str | None:
+    """Decrypts and returns the organization's stored key for `provider`,
+    or None if nothing is configured for that provider (including the
+    case where some *other* provider is configured instead -- same "only
+    one slot" semantics clear_provider_key already established). Raises
+    ValueError for an unsupported provider name, and (via crypto.decrypt)
+    RuntimeError if CONFIG_ENCRYPTION_KEY isn't configured.
+
+    Callers must never persist, log, or echo the return value anywhere
+    beyond the single outbound provider API call it exists for -- see
+    this module's own docstring and routes_organization_config.py's
+    reveal endpoint for the access-control story around who may call
+    this at all. Deliberately not audit-logged: a reveal happens on
+    every routed /v1/literature/answers call using BYOK, the same
+    per-use (not per-lifecycle-change) frequency apikey_service.
+    exchange_api_key already leaves unaudited for the identical reason.
+    """
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ValueError(f"Unsupported provider {provider!r}; supported: {sorted(SUPPORTED_PROVIDERS)}")
+
+    config = get_organization_config(db, organization_id)
+    if config is None or config.llm_provider != provider or not config.llm_api_key_encrypted:
+        return None
+    return crypto.decrypt(config.llm_api_key_encrypted)
 
 
 def clear_provider_key(

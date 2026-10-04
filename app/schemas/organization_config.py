@@ -13,3 +13,12 @@ class ProviderKeyOut(BaseModel):
     has_key: bool
     updated_at: str | None
     updated_by_email: str | None
+
+
+class ProviderKeyRevealOut(BaseModel):
+    """M16: the one response shape in this module that DOES carry the
+    real key -- POST /internal/.../reveal is service-to-service only
+    (shared-secret gated, see routes_organization_config.py), never
+    reachable by a user or API-key token."""
+    provider: str
+    api_key: str

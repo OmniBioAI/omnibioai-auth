@@ -14,6 +14,7 @@ from app.api.routes_apikeys import router as apikeys_router
 from app.api.routes_apikeys import exchange_router as apikeys_exchange_router
 from app.api.routes_apikeys import me_router as apikeys_me_router
 from app.api.routes_organization_config import router as provider_keys_router
+from app.api.routes_organization_config import reveal_router as provider_key_reveal_router
 from app.api.routes_oauth_clients import router as oauth_clients_router
 from app.api.routes_oauth_token import router as oauth_token_router
 from app.api.routes_org_sso import router as org_sso_router
@@ -106,6 +107,7 @@ app.include_router(apikeys_router)
 app.include_router(apikeys_exchange_router)
 app.include_router(apikeys_me_router)
 app.include_router(provider_keys_router)
+app.include_router(provider_key_reveal_router)
 app.include_router(oauth_clients_router)
 app.include_router(oauth_token_router)
 app.include_router(org_sso_router)

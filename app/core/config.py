@@ -59,6 +59,16 @@ class Settings:
     API_KEY_EXCHANGE_SECRET = os.getenv("API_KEY_EXCHANGE_SECRET", "")
     API_KEY_TOKEN_EXPIRE_MINUTES = int(os.getenv("API_KEY_TOKEN_EXPIRE_MINUTES", "5"))
 
+    # M16 (BYOK provider-key reveal): the one path where a stored
+    # organization provider key is ever decrypted and leaves this
+    # service -- POST /internal/organizations/{id}/provider-keys/
+    # {provider}/reveal, called only by omnibioai-api-gateway immediately
+    # before it forwards a /v1/literature/answers call that requested
+    # that provider, and never persisted or logged by the caller. Same
+    # fail-closed shape as API_KEY_EXCHANGE_SECRET above: empty disables
+    # the endpoint entirely (503), not a silent no-auth fallback.
+    PROVIDER_KEY_REVEAL_SECRET = os.getenv("PROVIDER_KEY_REVEAL_SECRET", "")
+
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 

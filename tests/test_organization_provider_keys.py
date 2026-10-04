@@ -226,3 +226,99 @@ def test_non_member_cannot_read_or_set_another_orgs_key(client, org, configured_
     # Confirm the attempted write had no effect.
     listed = client.get(f"/orgs/{org['id']}/provider-keys", headers=org["owner_headers"])
     assert listed.json()["has_key"] is False
+
+
+# ── POST /internal/organizations/{org_id}/provider-keys/{provider}/reveal ──
+# M16: service-to-service only, shared-secret gated -- never reachable by a
+# user or API-key token. Same shape as POST /auth/api-keys/exchange's own
+# tests (tests/test_apikey_exchange.py).
+
+
+REVEAL_SECRET = "test-reveal-secret"
+
+
+@pytest.fixture
+def reveal_secret(monkeypatch):
+    import app.core.config as config
+
+    monkeypatch.setattr(config.settings, "PROVIDER_KEY_REVEAL_SECRET", REVEAL_SECRET)
+    return REVEAL_SECRET
+
+
+def _reveal(client, org_id, provider, secret=REVEAL_SECRET):
+    return client.post(
+        f"/internal/organizations/{org_id}/provider-keys/{provider}/reveal",
+        headers={"X-Provider-Key-Reveal-Secret": secret},
+    )
+
+
+def test_reveal_disabled_without_configured_secret(client, org, configured_crypto):
+    client.put(f"/orgs/{org['id']}/provider-keys/claude", json={"api_key": "sk-claude"}, headers=org["owner_headers"])
+    assert _reveal(client, org["id"], "claude", secret="").status_code == 503
+
+
+def test_reveal_rejects_wrong_or_missing_secret(client, org, configured_crypto, reveal_secret):
+    client.put(f"/orgs/{org['id']}/provider-keys/claude", json={"api_key": "sk-claude"}, headers=org["owner_headers"])
+
+    assert _reveal(client, org["id"], "claude", secret="nope").status_code == 403
+    resp = client.post(f"/internal/organizations/{org['id']}/provider-keys/claude/reveal")
+    assert resp.status_code == 403
+
+
+def test_reveal_returns_the_real_decrypted_key(client, org, configured_crypto, reveal_secret):
+    client.put(
+        f"/orgs/{org['id']}/provider-keys/claude", json={"api_key": "sk-real-secret-12345"},
+        headers=org["owner_headers"],
+    )
+    resp = _reveal(client, org["id"], "claude")
+    assert resp.status_code == 200
+    assert resp.json() == {"provider": "claude", "api_key": "sk-real-secret-12345"}
+
+
+def test_reveal_does_not_require_any_org_membership(client, org, configured_crypto, reveal_secret):
+    """No user session is involved at all -- a bare shared-secret call
+    succeeds regardless of who (if anyone) is logged in."""
+    client.put(f"/orgs/{org['id']}/provider-keys/claude", json={"api_key": "sk-claude"}, headers=org["owner_headers"])
+    resp = client.post(
+        f"/internal/organizations/{org['id']}/provider-keys/claude/reveal",
+        headers={"X-Provider-Key-Reveal-Secret": REVEAL_SECRET},
+    )
+    assert resp.status_code == 200
+
+
+def test_reveal_404s_when_nothing_is_configured(client, org, reveal_secret):
+    resp = _reveal(client, org["id"], "claude")
+    assert resp.status_code == 404
+
+
+def test_reveal_404s_for_a_provider_that_is_not_the_configured_one(client, org, configured_crypto, reveal_secret):
+    client.put(f"/orgs/{org['id']}/provider-keys/claude", json={"api_key": "sk-claude"}, headers=org["owner_headers"])
+    resp = _reveal(client, org["id"], "openai")
+    assert resp.status_code == 404
+
+
+def test_reveal_rejects_an_unsupported_provider_name(client, org, reveal_secret):
+    resp = _reveal(client, org["id"], "not-a-real-provider")
+    assert resp.status_code == 400
+
+
+def test_reveal_fails_loudly_without_an_encryption_key(client, org, reveal_secret):
+    """A key was stored while encryption was configured (configured_crypto
+    fixture, scoped to that one call), but reveal is called afterward
+    with no encryption key available -- decrypt() must raise 500, not
+    return garbage or the ciphertext itself."""
+    import app.core.crypto as crypto
+    from cryptography.fernet import Fernet
+
+    key = Fernet.generate_key()
+    original_fernet = crypto._fernet
+    crypto._fernet = Fernet(key)
+    try:
+        client.put(
+            f"/orgs/{org['id']}/provider-keys/claude", json={"api_key": "sk-claude"}, headers=org["owner_headers"],
+        )
+    finally:
+        crypto._fernet = original_fernet
+
+    resp = _reveal(client, org["id"], "claude")
+    assert resp.status_code == 500

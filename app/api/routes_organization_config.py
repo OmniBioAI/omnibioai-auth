@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+import hmac
+
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.models import OrganizationMembership, User
 from app.db.session import get_db
 from app.rbac import require_org_permission_or_platform_admin
-from app.schemas.organization_config import ProviderKeyIn, ProviderKeyOut
+from app.schemas.organization_config import ProviderKeyIn, ProviderKeyOut, ProviderKeyRevealOut
 from app.services import organization_config_service
 
 # BYOK provider-key storage (design audit gap #4). Gated on manage_org --
@@ -14,6 +17,19 @@ from app.services import organization_config_service
 # the public literature:read/usage:read scopes a self-service key can
 # be issued with (see routes_apikeys.py's PUBLIC_SCOPE_TO_PERMISSION).
 router = APIRouter(prefix="/orgs/{org_id}/provider-keys", tags=["provider-keys"])
+
+# M16: service-to-service only, shared-secret gated -- never reachable
+# by a user or API-key token, the same shape routes_apikeys.py's own
+# exchange_router already established for POST /auth/api-keys/exchange.
+# Deliberately no org-membership/manage_org dependency: the question
+# this endpoint answers is "does this organization have a key
+# configured for this provider", not "may this particular caller manage
+# it" -- any authenticated member of the org can trigger a
+# /v1/literature/answers call that uses the org's own already-configured
+# key, the same way any member can spend the org's own quota today.
+# manage_org still gates *setting*/*clearing* the key above; using it is
+# a different, already-answered question by the time a call gets here.
+reveal_router = APIRouter(prefix="/internal/organizations/{org_id}/provider-keys", tags=["provider-keys"])
 
 MANAGE_ORG = "manage_org"
 
@@ -80,3 +96,32 @@ def delete_provider_key(
     if config is None:
         raise HTTPException(404, f"No {provider} key is configured for this organization.")
     return _to_out(db, config)
+
+
+@reveal_router.post("/{provider}/reveal", response_model=ProviderKeyRevealOut)
+def reveal_provider_key(
+    org_id: int,
+    provider: str,
+    db: Session = Depends(get_db),
+    x_provider_key_reveal_secret: str = Header(default=""),
+):
+    """Gateway-only: decrypt this organization's stored key for `provider`
+    for one outbound provider API call. Every failure is framed the
+    same way exchange_api_key's own docstring explains: never leak
+    *which* precondition failed (wrong secret vs. no key configured)
+    beyond what the status code itself already implies.
+    """
+    expected = settings.PROVIDER_KEY_REVEAL_SECRET
+    if not expected:
+        raise HTTPException(503, "Provider key reveal is not configured")
+    if not hmac.compare_digest(x_provider_key_reveal_secret.encode(), expected.encode()):
+        raise HTTPException(403, "Forbidden")
+    try:
+        api_key = organization_config_service.reveal_provider_key(db, org_id, provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    if api_key is None:
+        raise HTTPException(404, f"No {provider} key is configured for this organization.")
+    return ProviderKeyRevealOut(provider=provider, api_key=api_key)
