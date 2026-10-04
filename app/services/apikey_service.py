@@ -13,11 +13,32 @@ from app.services.audit_service import AuditEventType
 
 _ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _SECRET_LENGTH = 40
+# M13 (design audit gap #9): omni_sk_live_/omni_sk_test_ replace the single
+# omni_sk_ prefix every key issued before this milestone still uses. Both
+# new prefixes start with the old bare one, so is_test_key()/exchange_api_key
+# below stay the only two places that need to know the difference --
+# every pre-M13 key is unambiguously "live" (it predates test mode
+# existing at all), and nothing else anywhere needs to distinguish the
+# three shapes. _PREFIX stays the "is this an API key at all" check (also
+# used, unchanged, by omnibioai-api-gateway's own is_api_key()).
 _PREFIX = "omni_sk_"
+_LIVE_PREFIX = "omni_sk_live_"
+_TEST_PREFIX = "omni_sk_test_"
 
 
-def _generate_key() -> str:
-    return _PREFIX + "".join(secrets.choice(_ALPHABET) for _ in range(_SECRET_LENGTH))
+def _generate_key(test: bool = False) -> str:
+    prefix = _TEST_PREFIX if test else _LIVE_PREFIX
+    return prefix + "".join(secrets.choice(_ALPHABET) for _ in range(_SECRET_LENGTH))
+
+
+def is_test_key(api_key: ApiKey) -> bool:
+    """Whether `api_key` is a test-mode key (omni_sk_test_) -- derived from
+    the already-stored, non-secret key_prefix rather than a separate DB
+    column, since that prefix already encodes the answer. A pre-M13 key
+    (bare omni_sk_ prefix) is always False: it predates test mode, so it
+    is unambiguously live, the same posture a pre-M9 key's scopes get
+    read with (see routes_apikeys.py's _to_public_scopes fallback)."""
+    return bool(api_key.key_prefix) and api_key.key_prefix.startswith(_TEST_PREFIX)
 
 
 def _hash_key(full_key: str) -> str:
@@ -45,6 +66,7 @@ def create_api_key(
     scopes: list[str],
     caller_permissions: set[str],
     expires_at: datetime | None = None,
+    test: bool = False,
 ) -> tuple[ApiKey, str]:
     """Returns (ApiKey row, full plaintext key). The plaintext is never
     persisted -- only its sha256 hash is stored -- so this is the only
@@ -63,12 +85,13 @@ def create_api_key(
     if expires_at is not None and expires_at <= datetime.utcnow():
         raise ValueError("expires_at must be in the future")
 
-    full_key = _generate_key()
+    full_key = _generate_key(test=test)
+    prefix_len = len(_TEST_PREFIX if test else _LIVE_PREFIX)
     api_key = ApiKey(
         organization_id=organization_id,
         created_by_user_id=creator_user_id,
         name=name,
-        key_prefix=full_key[: len(_PREFIX) + 4],
+        key_prefix=full_key[: prefix_len + 4],
         key_hash=_hash_key(full_key),
         scopes=scopes,
         status="active",
@@ -242,4 +265,8 @@ def exchange_api_key(db: Session, full_key: str) -> dict | None:
         "organization_id": api_key.organization_id,
         "user_id": user.id,
         "permissions": permissions,
+        # M13: the gateway reads this to serve a canned, unbilled response
+        # instead of forwarding to RAG/consuming real quota -- see
+        # omnibioai-api-gateway's app/routes/v1.py.
+        "test_mode": is_test_key(api_key),
     }

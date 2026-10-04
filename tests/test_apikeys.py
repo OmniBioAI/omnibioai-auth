@@ -142,6 +142,30 @@ def test_create_api_key_rejects_past_expires_at(client, org):
     assert resp.status_code == 400
 
 
+def test_create_api_key_defaults_to_live_mode(client, org):
+    resp = client.post(
+        f"/orgs/{org['id']}/api-keys", json={"name": "Default mode", "scopes": []}, headers=org["owner_headers"],
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["key"].startswith("omni_sk_live_")
+    assert data["test"] is False
+
+
+def test_create_api_key_with_test_true_issues_a_test_key(client, org):
+    resp = client.post(
+        f"/orgs/{org['id']}/api-keys", json={"name": "Sandbox", "scopes": [], "test": True},
+        headers=org["owner_headers"],
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["key"].startswith("omni_sk_test_")
+    assert data["test"] is True
+
+    listed = client.get(f"/orgs/{org['id']}/api-keys", headers=org["owner_headers"]).json()
+    assert next(k for k in listed if k["id"] == data["id"])["test"] is True
+
+
 def test_rename_api_key(client, org):
     """PATCH renames a key and the new name is reflected in a subsequent listing."""
     create = client.post(

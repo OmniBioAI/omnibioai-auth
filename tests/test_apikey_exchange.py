@@ -165,6 +165,71 @@ def test_exchange_rejects_key_of_suspended_issuer(client, org_key, exchange_secr
     assert _exchange(client, org_key["key"]).status_code == 401
 
 
+def test_exchange_reports_test_mode_false_for_a_live_key(client, org_key, exchange_secret):
+    """org_key's fixture creates a key without test=True -- the default,
+    omni_sk_live_, must report test_mode False."""
+    data = _exchange(client, org_key["key"]).json()
+    assert data["test_mode"] is False
+
+
+def test_exchange_reports_test_mode_true_for_a_test_key(client, exchange_secret):
+    owner = _register_and_login(client)
+    headers = _auth_header(owner["access_token"])
+    org = client.post(
+        "/orgs", json={"name": "Test Mode Org", "slug": f"test-mode-{uuid.uuid4().hex[:8]}"}, headers=headers,
+    ).json()
+    created = client.post(
+        f"/orgs/{org['id']}/api-keys",
+        json={"name": "sandbox", "scopes": [], "test": True},
+        headers=headers,
+    ).json()
+    assert created["key"].startswith("omni_sk_test_")
+    assert created["test"] is True
+
+    data = _exchange(client, created["key"]).json()
+    assert data["test_mode"] is True
+
+
+def test_exchange_reports_test_mode_false_for_a_pre_m13_legacy_key(client, exchange_secret):
+    """A key issued before M13 has the bare omni_sk_ prefix (not
+    omni_sk_live_/omni_sk_test_) -- it predates test mode entirely, so it
+    must still exchange successfully and report test_mode False, not
+    error out on an unrecognized prefix shape."""
+    import hashlib
+    from datetime import datetime
+
+    owner = _register_and_login(client)
+    headers = _auth_header(owner["access_token"])
+    org = client.post(
+        "/orgs", json={"name": "Legacy Org", "slug": f"legacy-{uuid.uuid4().hex[:8]}"}, headers=headers,
+    ).json()
+
+    legacy_key = "omni_sk_" + "z" * 40
+    db = _DirectSession()
+    try:
+        membership = (
+            db.query(OrganizationMembership)
+            .filter(OrganizationMembership.organization_id == org["id"])
+            .one()
+        )
+        db.add(ApiKey(
+            organization_id=org["id"],
+            created_by_user_id=membership.user_id,
+            name="legacy",
+            key_prefix=legacy_key[:12],
+            key_hash=hashlib.sha256(legacy_key.encode()).hexdigest(),
+            scopes=[],
+            status="active",
+            created_at=datetime.utcnow(),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    data = _exchange(client, legacy_key).json()
+    assert data["test_mode"] is False
+
+
 def test_exchange_throttles_last_used_writes(client, org_key, exchange_secret):
     def last_used():
         db = _DirectSession()

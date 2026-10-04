@@ -100,6 +100,24 @@ def test_create_rejects_past_expires_at(client, scientist):
     assert resp.status_code == 400
 
 
+def test_create_defaults_to_live_mode(client, scientist):
+    resp = client.post("/me/api-keys", json={"name": "notebook"}, headers=scientist["headers"])
+    created = resp.json()
+    assert created["key"].startswith("omni_sk_live_")
+    assert created["test"] is False
+
+
+def test_create_with_test_true_issues_a_test_key(client, scientist):
+    resp = client.post("/me/api-keys", json={"name": "sandbox", "test": True}, headers=scientist["headers"])
+    assert resp.status_code == 201
+    created = resp.json()
+    assert created["key"].startswith("omni_sk_test_")
+    assert created["test"] is True
+
+    listed = client.get("/me/api-keys", headers=scientist["headers"]).json()
+    assert next(k for k in listed if k["id"] == created["id"])["test"] is True
+
+
 def test_rename_own_key(client, scientist):
     created = client.post("/me/api-keys", json={"name": "old"}, headers=scientist["headers"]).json()
 
