@@ -45,6 +45,7 @@ class PermissionCategory(str, Enum):
     PLATFORM = "platform"
     ORGANIZATION = "organization"
     WORKFLOW = "workflow"
+    WORKSPACE = "workspace"
     MODEL = "model"
     DATASET = "dataset"
     BILLING = "billing"
@@ -638,6 +639,28 @@ _register(
         scope=PermissionScope.BOTH,
         category=PermissionCategory.MARKETPLACE,
         description="Reserved -- not yet enforced by any route.",
+        legacy=False,
+    )
+)
+_register(
+    PermissionDef(
+        name="workspace.launch",
+        resource="workspace",
+        action="launch",
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.WORKSPACE,
+        description=(
+            "Start/stop a personal IDE workspace (Jupyter/RStudio/VSCode) "
+            "and create/launch a profile-based workspace (omnibioai-launcher's "
+            "server.js). Deliberately separate from platform.manage_infra -- "
+            "launching your own dev workspace is a routine operator action, "
+            "not platform-infrastructure administration, the same "
+            "operator-vs-admin distinction workflow.execute already draws "
+            "relative to org_admin's permissions (see SCIENTIST_PERMISSIONS "
+            "in omnibioai-auth's own org_service.py). platform.manage_infra "
+            "continues to satisfy the same launcher checks for an admin "
+            "account, unchanged."
+        ),
         legacy=False,
     )
 )
