@@ -403,7 +403,14 @@ class ApiKey(Base):
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     name = Column(String(255), nullable=True)
-    key_prefix = Column(String(12), nullable=True)
+    # M13 (live/test key prefixes) widened the stored prefix to
+    # len("omni_sk_live_"/"omni_sk_test_") + 4 display chars = 17, but
+    # this column stayed at its pre-M13 width (12, sized for the plain
+    # "omni_sk_XXXX" scheme) -- every real key creation against a real
+    # MySQL database has 500'd since M13 shipped (SQLite enforces no
+    # VARCHAR length at all, so no test caught it). See
+    # alembic/versions/0029_widen_api_key_prefix.py.
+    key_prefix = Column(String(20), nullable=True)
     key_hash = Column(String(64), unique=True, nullable=True)
     scopes = Column(JSON, nullable=True)
     status = Column(String(20), default="active")  # active | revoked
