@@ -39,6 +39,10 @@ FUTURE_NAMES = {
     "toolserver.register",
     # HIPAA-V2-001 RAG R1: gates omnibioai-rag's /v1/ingest and /v1/embed.
     "dataset.write",
+    # M15: BYOK provider-key storage -- same "reserved -- not yet
+    # enforced" posture usage.read already has (see
+    # app/core/permission_names.py's own entry).
+    "provider_keys.manage",
 }
 
 # #443: kept separate from FUTURE_NAMES above -- that set's own
@@ -128,9 +132,10 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 HIPAA-V2-019 entry (toolserver.register)
     # + 1 Stripe-hosted payment-method management entry (manage_billing,
     # the 6th org entry counted above).
+    # + 1 M15 entry (provider_keys.manage -- BYOK provider-key storage).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 32
+    assert len(REGISTRY) == 33
 
 
 def test_response_fields_match_permission_def_as_dict(client):

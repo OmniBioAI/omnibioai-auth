@@ -576,6 +576,29 @@ _register(
 )
 _register(
     PermissionDef(
+        name="provider_keys.manage",
+        resource="provider_keys",
+        action="manage",
+        # M15: same posture usage.read already has -- the gateway sends
+        # this as context on every /v1/provider-keys/* call (see
+        # omnibioai-api-gateway's SERVICE_PERMISSION_MAP), but the actual
+        # authorization decision is manage_org, enforced live and
+        # independently by app/api/routes_organization_config.py's own
+        # require_org_permission_or_platform_admin dependency -- not this
+        # registry entry, and not the JWT permissions claim at all (org-
+        # scoped permissions are never embedded in a token; they're
+        # resolved fresh per request against the caller's live
+        # membership). This vocabulary entry exists so the gateway has a
+        # real, registered name to send, exactly like usage.read's own
+        # "first real consumer" story at M1.
+        scope=PermissionScope.BOTH,
+        category=PermissionCategory.ORGANIZATION,
+        description="Reserved -- not yet enforced by any route.",
+        legacy=False,
+    )
+)
+_register(
+    PermissionDef(
         name="billing.read",
         resource="billing",
         action="read",
