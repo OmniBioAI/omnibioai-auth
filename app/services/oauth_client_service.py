@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.oauth_client_service.
+
+Purpose:
+    Defines create_oauth_client, list_oauth_clients, get_oauth_client and revoke_oauth_client for app.services.oauth_client_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import difflib
 import hashlib
 import secrets

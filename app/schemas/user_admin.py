@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.user_admin.
+
+Purpose:
+    Defines PlatformUserSummary, PlatformUserListOut, OrgMembershipSummary and PlatformMFADeviceSummary for app.schemas.user_admin.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

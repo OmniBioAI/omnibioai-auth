@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.db.session.
+
+Purpose:
+    Defines get_db for app.db.session.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings

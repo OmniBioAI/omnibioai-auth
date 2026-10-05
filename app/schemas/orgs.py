@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.orgs.
+
+Purpose:
+    Defines OrganizationCreate, OrganizationOut, OrganizationUpdate and InviteRequest for app.schemas.orgs.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

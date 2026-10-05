@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.role_service.
+
+Purpose:
+    Defines list_roles, list_roles_for_scope, get_role and get_role_by_name for app.services.role_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import difflib
 
 from sqlalchemy.orm import Session

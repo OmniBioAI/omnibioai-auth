@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_organization_config.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_organization_config, including get_provider_key, put_provider_key, delete_provider_key and reveal_provider_key.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException

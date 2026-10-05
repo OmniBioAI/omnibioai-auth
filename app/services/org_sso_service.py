@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.org_sso_service.
+
+Purpose:
+    Defines SSODiscoveryError, verify_oidc_discovery, get_sso_config and configure_sso for app.services.org_sso_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import ipaddress
 import socket
 from datetime import datetime

@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.teams.
+
+Purpose:
+    Defines TeamCreate, TeamOut, TeamUpdate and TeamMembersUpdate for app.schemas.teams.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

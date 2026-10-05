@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.platform_admin.
+
+Purpose:
+    Defines PlatformOrgSummary, PlatformOrgListOut, ResourceCountSummary and SSOConfigSummary for app.schemas.platform_admin.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

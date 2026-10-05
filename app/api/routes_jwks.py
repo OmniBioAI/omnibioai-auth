@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_jwks.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_jwks, including jwks.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter
 
 from app.core.rsa_keys import public_jwk

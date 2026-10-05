@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.license_service.
+
+Purpose:
+    Defines generate_key, create_license, get_or_create_user_for_email and validate_and_consume for app.services.license_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import secrets
 import string
 from datetime import datetime, timedelta

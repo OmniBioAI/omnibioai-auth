@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_config.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_config, including get_config and update_config.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 

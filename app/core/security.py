@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.core.security.
+
+Purpose:
+    Defines hash_password, verify_password and needs_rehash for app.core.security.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from passlib.context import CryptContext
 from passlib.exc import PasswordSizeError
 

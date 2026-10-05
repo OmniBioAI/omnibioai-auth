@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_oauth_clients.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_oauth_clients, including create_oauth_client, list_oauth_clients and revoke_oauth_client.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 

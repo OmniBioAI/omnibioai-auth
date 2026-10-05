@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.roles.
+
+Purpose:
+    Defines RoleCreate, RoleUpdate, RoleOut and RoleDetailOut for app.schemas.roles.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from pydantic import BaseModel
 
 

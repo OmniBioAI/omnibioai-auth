@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.core.crypto.
+
+Purpose:
+    Defines is_configured, encrypt and decrypt for app.core.crypto.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import os
 
 from cryptography.fernet import Fernet

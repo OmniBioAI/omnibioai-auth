@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.db.models.
+
+Purpose:
+    Defines RefreshToken, User, Role and Permission for app.db.models.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from sqlalchemy import Column, Integer, String, ForeignKey, Table, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from app.db.base import Base

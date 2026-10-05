@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_platform_admin.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_platform_admin, including list_platform_organizations and get_platform_organization.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query

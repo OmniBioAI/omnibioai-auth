@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.team_service.
+
+Purpose:
+    Defines create_team, update_team, list_teams and get_team for app.services.team_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from sqlalchemy.orm import Session

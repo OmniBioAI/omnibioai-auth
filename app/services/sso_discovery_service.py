@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.sso_discovery_service.
+
+Purpose:
+    Defines find_org_for_email, find_enforced_org_for_email, find_saml_org_for_email and find_enforced_saml_org_for_email for app.services.sso_discovery_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from sqlalchemy.orm import Session
 
 from app.db.models import OrganizationSAMLConfig, OrganizationSSOConfig

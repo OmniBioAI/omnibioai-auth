@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.config_service.
+
+Purpose:
+    Defines get_config, get_or_create_config and update_config for app.services.config_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import json
 from datetime import datetime
 

@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.organization_config.
+
+Purpose:
+    Defines ProviderKeyIn, ProviderKeyOut and ProviderKeyRevealOut for app.schemas.organization_config.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from pydantic import BaseModel
 
 

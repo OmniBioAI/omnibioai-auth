@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.auth_service.
+
+Purpose:
+    Defines authenticate_user, build_user_claims, generate_tokens and MFAEnrollmentRequiredError for app.services.auth_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import hashlib
 import uuid
 from datetime import datetime, timedelta

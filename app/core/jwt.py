@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.core.jwt.
+
+Purpose:
+    Defines create_access_token, create_refresh_token, decode_token and decode_token_for_audience for app.core.jwt.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime, timedelta
 from jose import jwt
 from jose.exceptions import JWTClaimsError

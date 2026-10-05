@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.core.token_revocation.
+
+Purpose:
+    Defines blacklist_access_token and assert_token_usable for app.core.token_revocation.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import os
 from datetime import datetime
 

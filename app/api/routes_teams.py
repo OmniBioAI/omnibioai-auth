@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_teams.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_teams, including create_team, list_teams, get_team_detail and rename_team.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 

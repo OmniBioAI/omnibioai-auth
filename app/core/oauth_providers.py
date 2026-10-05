@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.core.oauth_providers.
+
+Purpose:
+    Defines redirect_uri_for, is_configured and parse_userinfo for app.core.oauth_providers.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from app.core.config import settings
 
 PROVIDERS = {

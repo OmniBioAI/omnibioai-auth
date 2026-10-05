@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.org_saml.
+
+Purpose:
+    Defines OrgSAMLConfigCreate, OrgSAMLConfigUpdate and OrgSAMLConfigOut for app.schemas.org_saml.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

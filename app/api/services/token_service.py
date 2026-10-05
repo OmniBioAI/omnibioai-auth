@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.services.token_service.
+
+Purpose:
+    Defines is_token_revoked and revoke_token for app.api.services.token_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from app.db.models import RevokedToken
 from app.core.jwt import decode_token
 

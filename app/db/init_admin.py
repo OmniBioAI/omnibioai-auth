@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.db.init_admin.
+
+Purpose:
+    Defines create_admin, ensure_platform_admin_role, ensure_platform_owner and ensure_default_organization for app.db.init_admin.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import logging
 import os
 import secrets

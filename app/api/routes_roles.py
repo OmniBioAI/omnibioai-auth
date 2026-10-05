@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_roles.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_roles, including list_roles, create_role, get_role and update_role.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 

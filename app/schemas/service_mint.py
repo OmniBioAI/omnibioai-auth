@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.service_mint.
+
+Purpose:
+    Defines MintUserTokenRequest and MintUserTokenOut for app.schemas.service_mint.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from pydantic import BaseModel
 
 

@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.mfa.
+
+Purpose:
+    Defines TOTPEnrollOut, TOTPVerifyIn, MFADeviceOut and MFAChallengeVerifyIn for app.schemas.mfa.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

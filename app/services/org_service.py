@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.org_service.
+
+Purpose:
+    Defines create_organization, get_organization, get_organization_by_slug and list_organizations_for_user for app.services.org_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from sqlalchemy.orm import Session

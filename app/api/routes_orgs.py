@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_orgs.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_orgs, including create_org, list_my_orgs, get_org and update_org.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 

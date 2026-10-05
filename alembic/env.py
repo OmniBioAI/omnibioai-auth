@@ -1,3 +1,13 @@
+"""
+OmniBioAI alembic.env.
+
+Purpose:
+    Defines run_migrations_offline and run_migrations_online for alembic.env.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from logging.config import fileConfig
 
 from alembic import context

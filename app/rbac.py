@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.rbac.
+
+Purpose:
+    Defines get_current_user, require_role, require_permission and get_org_membership for app.rbac.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session

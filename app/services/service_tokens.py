@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.service_tokens.
+
+Purpose:
+    Defines ServiceTokenIssuer with issue_token methods for app.services.service_tokens.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import time
 import jwt
 from typing import List

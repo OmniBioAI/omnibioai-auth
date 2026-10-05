@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.oauth_service.
+
+Purpose:
+    Defines OAuthError, build_authorize_url, exchange_code_for_userinfo and find_linked_user for app.services.oauth_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import base64
 import hashlib
 import secrets

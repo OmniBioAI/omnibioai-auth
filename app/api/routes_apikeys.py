@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_apikeys.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_apikeys, including create_api_key, list_api_keys, rename_api_key and revoke_api_key.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import hmac
 import json
 

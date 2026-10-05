@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.deps.
+
+Purpose:
+    Defines get_current_user and require_permission for app.api.deps.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer
 from app.core.jwt import decode_token

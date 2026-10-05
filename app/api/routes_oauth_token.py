@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_oauth_token.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_oauth_token, including authorize_first_party_client, issue_client_credentials_token and redeem_first_party_authorization_code.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import hmac
 import json
 import os

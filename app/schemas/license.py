@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.license.
+
+Purpose:
+    Defines LicenseValidateRequest, LicenseValidateResponse, LicenseGenerateRequest and LicenseGenerateResponse for app.schemas.license.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.core.config.
+
+Purpose:
+    Defines Settings with DATABASE_URL methods for app.core.config.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import os
 from dotenv import load_dotenv
 

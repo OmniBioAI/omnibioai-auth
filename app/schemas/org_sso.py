@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.org_sso.
+
+Purpose:
+    Defines OrgSSOConfigCreate, OrgSSOConfigUpdate, OrgSSOConfigOut and SSOOverrideRequest for app.schemas.org_sso.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

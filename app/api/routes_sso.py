@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_sso.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_sso, including sso_discover, sso_login, sso_callback_redirect and sso_callback_json.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import secrets
 from urllib.parse import urlencode
 

@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.config.
+
+Purpose:
+    Defines GlobalConfigIn and GlobalConfigOut for app.schemas.config.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from pydantic import BaseModel
 
 

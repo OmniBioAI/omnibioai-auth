@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_oauth.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_oauth, including oauth_login, oauth_callback_redirect, oauth_callback_json and confirm_oauth_link.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException

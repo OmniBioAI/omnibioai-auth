@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.org_oidc_service.
+
+Purpose:
+    Defines SSOLoginError, redirect_uri_for, build_authorize_url and exchange_code_for_id_token_claims for app.services.org_oidc_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import time
 from urllib.parse import urlencode
 

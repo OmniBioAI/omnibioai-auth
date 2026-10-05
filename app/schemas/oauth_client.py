@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.oauth_client.
+
+Purpose:
+    Defines OAuthClientCreate, OAuthClientCreated, OAuthClientOut and ClientCredentialsTokenResponse for app.schemas.oauth_client.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.org_mfa.
+
+Purpose:
+    Defines OrgMFAPolicyCreate, OrgMFAPolicyUpdate, OrgMFAPolicyOut and OrgMFAOverrideRequest for app.schemas.org_mfa.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

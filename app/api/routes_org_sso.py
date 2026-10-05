@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_org_sso.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_org_sso, including create_sso_config, get_sso_config, update_sso_config and delete_sso_config.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 

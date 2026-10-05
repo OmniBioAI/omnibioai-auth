@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.services.apikey_service.
+
+Purpose:
+    Defines is_test_key, create_api_key, list_api_keys and get_api_key for app.services.apikey_service.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import hashlib
 import secrets
 import uuid

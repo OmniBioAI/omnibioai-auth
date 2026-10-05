@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_license.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_license, including validate_license, pull_token, generate_license and license_status.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException

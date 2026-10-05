@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.delegated_execution.
+
+Purpose:
+    Defines DelegatedExecutionTokenRequest, DelegatedExecutionTokenOut, DelegatedExecutionIntrospectionRequest and DelegatedExecutionIntrospectionOut for app.schemas.delegated_execution.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from pydantic import BaseModel, Field
 
 

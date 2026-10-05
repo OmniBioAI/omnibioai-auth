@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_delegated_execution.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_delegated_execution, including issue_toolserver_delegation, introspect_toolserver_delegation, issue_toolserver_registration and introspect_toolserver_registration.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session

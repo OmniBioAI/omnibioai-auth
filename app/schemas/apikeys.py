@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.apikeys.
+
+Purpose:
+    Defines ApiKeyCreate, ApiKeyRename, ApiKeyCreated and ApiKeyOut for app.schemas.apikeys.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from datetime import datetime
 
 from pydantic import BaseModel

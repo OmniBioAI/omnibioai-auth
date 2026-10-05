@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_platform_users.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_platform_users, including list_platform_users, get_platform_user, update_platform_user_status and reset_platform_user_mfa.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query

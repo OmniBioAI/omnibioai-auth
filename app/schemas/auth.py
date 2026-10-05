@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.schemas.auth.
+
+Purpose:
+    Defines LoginRequest, TokenResponse, RefreshRequest and LogoutRequest for app.schemas.auth.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 from pydantic import BaseModel
 
 class LoginRequest(BaseModel):

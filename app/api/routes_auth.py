@@ -1,3 +1,13 @@
+"""
+OmniBioAI app.api.routes_auth.
+
+Purpose:
+    Defines HTTP route handlers for app.api.routes_auth, including register, login, refresh and switch_team.
+
+Author:
+    Manish Kumar <manish@omnibioai.org>
+"""
+
 import json
 import os
 
