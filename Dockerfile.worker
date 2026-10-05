@@ -1,3 +1,8 @@
+# OmniBioAI — Authentication Worker
+# Purpose: Run the Redis Streams interaction consumer.
+# Author: Manish Kumar <manish@omnibioai.org>
+
+# Base image
 FROM python:3.11-slim
 
 # Prevent .pyc files + unbuffered logs
