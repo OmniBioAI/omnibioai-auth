@@ -38,6 +38,7 @@ from app.api.routes_platform_permissions import router as platform_permissions_r
 from app.api.routes_platform_audit import router as platform_audit_router
 from app.api.routes_organization_roles import router as organization_roles_router
 from app.api.routes_identity import router as identity_router
+from app.api.routes_preferences import router as preferences_router
 from app.api.routes_service_identity import router as service_identity_router
 from app.api.routes_service_mint import router as service_mint_router
 from app.api.routes_delegated_execution import router as delegated_execution_router
@@ -131,6 +132,7 @@ app.include_router(platform_permissions_router)
 app.include_router(platform_audit_router)
 app.include_router(organization_roles_router)
 app.include_router(identity_router)
+app.include_router(preferences_router)
 app.include_router(service_identity_router)
 app.include_router(service_mint_router)
 app.include_router(delegated_execution_router)

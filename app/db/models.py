@@ -70,6 +70,9 @@ class User(Base):
     hashed_password = Column(String(255))
     status = Column(String(50), default="active")
 
+    # Personal display preference; NULL follows the current device time zone.
+    preferred_timezone = Column(String(100), nullable=True)
+
     # Phase 3 PR3A: user-directory fields. created_at is nullable because
     # existing rows predate this column (added via migration, not
     # backfillable) -- new rows still get a real timestamp via the
