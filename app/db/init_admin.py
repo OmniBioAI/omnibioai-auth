@@ -20,9 +20,9 @@ from app.core.permission_names import (
 )
 from app.core.security import hash_password
 from app.db.models import Organization, Permission, Role, User
-from app.services import audit_service
+from app.services import audit_service, org_service
 from app.services.audit_service import AuditEventType
-from app.services.role_service import get_or_create_role
+from app.services.role_service import assign_default_role, get_or_create_role
 
 logger = logging.getLogger(__name__)
 
@@ -369,3 +369,63 @@ def ensure_bio_agent_service_role(db):
             commit=False,
         )
         db.commit()
+
+
+def ensure_dev_test_personas(db):
+    """OMNIBIOAI_MAC_99_SESSION_A: opt-in, idempotent provisioning for the
+    one acceptance-test persona that has no normal signup path and no
+    pre-existing account -- `user@omnibioai.org`, the "regular Studio end
+    user" persona. Unset (the default): a complete no-op, identical in
+    spirit to `ensure_platform_owner`/`ensure_bio_agent_service_role`
+    above -- this function creates nothing in production unless an
+    operator explicitly opts in via `SEED_DEV_TEST_PERSONAS`.
+
+    Deliberately out of scope for this function, by design, not oversight:
+    - `manish@omnibioai.org` and `developer@omnibioai.org` already exist
+      with correct roles/org membership (verified live); creating or
+      touching either here would risk exactly the "overwrite existing
+      credentials / downgrade existing roles" outcome this function must
+      never cause, for accounts that do not need it.
+    - `admin@omnibioai.org` is NOT created here. The canonical admin
+      identity today is the legacy `admin@omnibioai` (no `.org`) bootstrap
+      account from `create_admin` above, which already holds every
+      reference (roles, memberships, sessions, audit history) a second,
+      separately-created `admin@omnibioai.org` account would NOT have.
+      Creating a new, disconnected `admin@omnibioai.org` here would be
+      exactly the forbidden "duplicate admin with abandoned references"
+      outcome -- normalizing the legacy email is a separate, already
+      explicitly-gated campaign (see omnibioai-owner-docs) that this
+      function does not perform.
+
+    No password is set (`hashed_password` stays NULL), the same
+    passwordless shape `manish@omnibioai.org`/`developer@omnibioai.org`
+    already have today via the license-auth flow (routes_license.py) --
+    this service has no supported endpoint to add a password to an
+    already-existing account (`/auth/register` is the only local-
+    password-creation path, and only for brand-new accounts), so
+    inventing one here would mean fabricating a credential this function
+    would then have to either hardcode or discard. Password enrollment
+    for this persona, if ever wanted, is left as an explicit follow-up
+    operator step, not invented here.
+
+    Idempotent: an existing `user@omnibioai.org` (by exact email) is left
+    completely untouched -- never duplicated, never re-assigned roles,
+    mirroring every other bootstrap function in this module.
+    """
+    if os.environ.get("SEED_DEV_TEST_PERSONAS", "").strip().lower() not in ("1", "true", "yes"):
+        return
+
+    email = "user@omnibioai.org"
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        return
+
+    user = User(email=email, hashed_password=None, status="active")
+    db.add(user)
+    db.flush()
+    assign_default_role(db, user)
+    db.commit()
+
+    org = db.query(Organization).filter(Organization.slug == "default").first()
+    if org:
+        org_service.jit_provision_membership(db, org.id, user.id)

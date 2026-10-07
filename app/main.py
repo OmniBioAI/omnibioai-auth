@@ -55,6 +55,7 @@ from app.db.init_admin import (
     create_admin,
     ensure_bio_agent_service_role,
     ensure_default_organization,
+    ensure_dev_test_personas,
     ensure_platform_admin_role,
     ensure_platform_owner,
 )
@@ -101,6 +102,10 @@ ensure_bio_agent_service_role(db)
 ensure_default_organization(db)
 ensure_org_admin_permissions(db)
 ensure_default_org_roles(db)
+# Opt-in only -- a no-op unless the operator has set SEED_DEV_TEST_PERSONAS.
+# Must run after ensure_default_organization: it looks up the "default"
+# org by slug and is a no-op if that org doesn't exist yet.
+ensure_dev_test_personas(db)
 # PR6: registry/database drift is a deployment error -- fail startup
 # loudly rather than serve traffic against a Permission row the registry
 # doesn't know about. Runs once, here, never per-request.
