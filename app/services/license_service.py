@@ -95,7 +95,14 @@ def validate_and_consume(
     if license_key.expires_at is not None and license_key.expires_at < datetime.utcnow():
         return None, "expired"
 
-    if license_key.usage_count >= license_key.max_uses:
+    # Only a license that has never been successfully activated is subject
+    # to the activation-count gate. Once bound, every later call here is a
+    # sign-in by that same already-authorized owner, not a new activation --
+    # gating it on usage_count would eventually lock out the one legitimate
+    # user a single-user-per-license row is ever bound to (see LicenseKey.
+    # user_id's own comment: bound once, on first successful validate, and
+    # never rebound).
+    if license_key.user_id is None and license_key.usage_count >= license_key.max_uses:
         return None, "usage_exhausted"
 
     if license_key.platform != "both" and license_key.platform != platform:
@@ -120,10 +127,15 @@ def bind_machine_id(db, license_key: LicenseKey, machine_id: str) -> None:
 
 
 def mark_used(db, license_key: LicenseKey, user: User) -> None:
-    license_key.usage_count += 1
-    license_key.last_used_at = datetime.utcnow()
+    """Consumes an activation only on first bind; every later call from the
+    same now-bound owner is a sign-in, not a new use (see the matching
+    guard in validate_and_consume) -- last_used_at still advances every time
+    so /license/status keeps reflecting the most recent sign-in.
+    """
     if license_key.user_id is None:
+        license_key.usage_count += 1
         license_key.user_id = user.id
+    license_key.last_used_at = datetime.utcnow()
     db.add(license_key)
     db.commit()
 

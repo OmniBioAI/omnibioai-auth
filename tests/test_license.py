@@ -164,8 +164,14 @@ def test_validate_wrong_email(client, admin_headers):
     assert resp.json()["reason"] == "email_mismatch"
 
 
-def test_validate_exhausted_after_max_uses(client, admin_headers):
-    """Once a key's allowed uses are consumed, validation returns valid=false with reason
+def test_validate_repeat_login_by_bound_owner_does_not_exhaust_uses(client, admin_headers):
+    """A license's usage-count gate protects first-time activation, not every
+    subsequent sign-in: once a key is bound to a user (its first successful
+    validate), that same owner must be able to sign back in indefinitely --
+    repeated authenticated sign-in is a normal login flow, not a fresh
+    license activation that consumes another one of a finite set of uses.
+    Regression test for the platform-owner lockout this fixed: a license
+    with max_uses=1 used to reject the bound owner's very next sign-in with
     "usage_exhausted".
     """
     email = _unique_email()
@@ -181,11 +187,80 @@ def test_validate_exhausted_after_max_uses(client, admin_headers):
     )
     assert first.json()["valid"] is True
 
-    second = client.post(
+    # Many more sign-ins by the same already-bound owner, all past the
+    # original max_uses=1 budget, must all still succeed.
+    for _ in range(5):
+        repeat = client.post(
+            "/license/validate", json={"key": key, "email": email, "platform": "web"}
+        )
+        assert repeat.json()["valid"] is True
+
+    # usage_count itself reflects "activated" (0 or 1 under this schema's
+    # one-user-per-license binding), not a running login tally.
+    status = client.get(
+        "/license/status", headers=_auth_header(first.json()["access_token"])
+    )
+    assert status.json()["usage_count"] == 1
+
+
+def test_validate_exhausted_before_any_activation(client):
+    """A license that has never been successfully bound to a user (user_id
+    still None) is still correctly rejected once its usage_count has
+    reached max_uses -- the activation-count gate itself is not removed,
+    only no longer applied to an already-bound owner's later sign-ins. This
+    can only arise before first bind (e.g. an administratively zero-use
+    key, or a usage_count seeded by an external import); constructed here
+    directly against the service layer since the normal /validate ->
+    mark_used path always binds user_id on its first successful call.
+    """
+    from app.db.models import LicenseKey
+    from app.db.session import SessionLocal
+    from app.services import license_service
+
+    email = _unique_email()
+    db = SessionLocal()
+    try:
+        license_key = LicenseKey(
+            key=license_service.generate_key(),
+            email=email,
+            max_uses=1,
+            usage_count=1,
+            user_id=None,
+        )
+        db.add(license_key)
+        db.commit()
+
+        result, reason = license_service.validate_and_consume(db, license_key.key, email, "web")
+        assert result is None
+        assert reason == "usage_exhausted"
+    finally:
+        db.close()
+
+
+def test_validate_already_bound_license_still_rejects_different_email(client, admin_headers):
+    """Fixing the same-owner repeat-login case must not loosen the
+    different-identity case: once a license is bound, a second email
+    presenting the same key is still rejected with "email_mismatch", not
+    silently signed in as the bound owner."""
+    email = _unique_email()
+    gen = client.post(
+        "/license/generate",
+        json={"email": email, "max_uses": 1},
+        headers=admin_headers,
+    )
+    key = gen.json()["key"]
+
+    first = client.post(
         "/license/validate", json={"key": key, "email": email, "platform": "web"}
     )
-    assert second.json()["valid"] is False
-    assert second.json()["reason"] == "usage_exhausted"
+    assert first.json()["valid"] is True
+
+    other = client.post(
+        "/license/validate",
+        json={"key": key, "email": "someone-else@test.com", "platform": "web"},
+    )
+    assert other.json()["valid"] is False
+    assert other.json()["reason"] == "email_mismatch"
 
 
 def test_validate_platform_mismatch(client, admin_headers):
