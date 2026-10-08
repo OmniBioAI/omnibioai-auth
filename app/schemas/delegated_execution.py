@@ -38,6 +38,29 @@ class DelegatedExecutionIntrospectionOut(BaseModel):
     delegation_id: str | None = None
 
 
+class ArtifactDelegationTokenRequest(BaseModel):
+    initiating_token: str = Field(min_length=1)
+    organization_id: int = Field(gt=0)
+    project_id: str = Field(min_length=1, max_length=255)
+    run_id: str = Field(min_length=1, max_length=255)
+    output_ids: list[str] = Field(min_length=1, max_length=100)
+    permissions: list[str] = Field(min_length=1)
+    audience: str
+
+
+class ArtifactDelegationIntrospectionOut(BaseModel):
+    valid: bool
+    issuer: str | None = None
+    client_id: str | None = None
+    user_id: str | None = None
+    organization_id: str | None = None
+    project_id: str | None = None
+    run_id: str | None = None
+    output_ids: list[str] = []
+    permissions: list[str] = []
+    delegation_id: str | None = None
+
+
 class ToolServerRegistrationTokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"

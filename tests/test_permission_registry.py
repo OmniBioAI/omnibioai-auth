@@ -120,6 +120,11 @@ DELEGATED_EXECUTION_NAMES = {
     "toolserver.register": PermissionCategory.WORKFLOW,
 }
 
+ARTIFACT_DELEGATION_NAMES = {
+    "artifact.delegate": PermissionCategory.WORKFLOW,
+    "artifact.promote": PermissionCategory.WORKFLOW,
+}
+
 # HIPAA-V2-001 RAG R1 (authoritative write identity for /v1/ingest,
 # /v1/embed): same "real, immediately-enforced" shape as the sets above --
 # gates omnibioai-rag's write path via that repo's existing
@@ -432,7 +437,7 @@ def test_registry_contains_exactly_the_expected_names():
         | set(TES_NAMES.keys()) | set(MODEL_REGISTRY_OWNERSHIP_NAMES.keys())
         | set(MODEL_REGISTRY_READ_NAMES.keys()) | set(SERVICE_MINT_NAMES.keys())
         | set(DELEGATED_EXECUTION_NAMES.keys()) | set(RAG_NAMES.keys())
-        | set(WORKSPACE_LAUNCH_NAMES.keys())
+        | set(WORKSPACE_LAUNCH_NAMES.keys()) | set(ARTIFACT_DELEGATION_NAMES.keys())
     )
 
 
@@ -615,7 +620,7 @@ def test_registry_stats_totals_match_registry_size():
         len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
         + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
         + len(SERVICE_MINT_NAMES) + len(DELEGATED_EXECUTION_NAMES) + len(RAG_NAMES)
-        + len(WORKSPACE_LAUNCH_NAMES)
+        + len(WORKSPACE_LAUNCH_NAMES) + len(ARTIFACT_DELEGATION_NAMES)
     )
 
 
@@ -645,7 +650,7 @@ def test_registry_stats_by_scope_sums_to_total():
     # RAG_NAMES above) + 1 (toolserver.register -- see
     # DELEGATED_EXECUTION_NAMES above) + 1 (provider_keys.manage -- M15,
     # BYOK provider-key storage).
-    assert stats["by_scope"]["both"] == 19
+    assert stats["by_scope"]["both"] == 21
 
 
 def test_registry_stats_by_category_sums_to_total():

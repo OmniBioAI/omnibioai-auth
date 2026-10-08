@@ -120,6 +120,21 @@ def create_delegated_execution_token(*, client_id: str, user_id: int, organizati
     })
 
 
+def create_artifact_delegation_token(*, client_id: str, user_id: int, organization_id: int,
+                                     project_id: str, run_id: str, output_ids: list[str],
+                                     delegation_id: str) -> str:
+    """Issue one non-refreshable Artifact-audience promotion credential."""
+    now = datetime.utcnow()
+    return _sign({
+        "sub": str(user_id), "client_id": client_id, "org_id": organization_id,
+        "project_id": project_id, "run_id": run_id,
+        "output_ids": sorted(set(output_ids)), "permissions": ["artifact.promote"],
+        "delegation_id": delegation_id, "type": "artifact_delegation", "iat": now,
+        "exp": now + timedelta(minutes=settings.DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES),
+        "jti": delegation_id, "aud": "omnibioai-artifact-manager",
+    })
+
+
 def create_toolserver_registration_token(*, client_id: str, organization_id: int, registration_id: str) -> str:
     """Issue a ToolServer-only, service-only registration credential.
 

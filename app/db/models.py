@@ -562,6 +562,9 @@ class DelegatedExecutionGrant(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     revoked_at = Column(DateTime, nullable=True)
     revoked_reason = Column(String(255), nullable=True)
+    project_id = Column(String(255), nullable=True)
+    run_id = Column(String(255), nullable=True)
+    output_ids = Column(JSON, nullable=True)
 
 
 class OrganizationSSOConfig(Base):

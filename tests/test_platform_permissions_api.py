@@ -139,9 +139,10 @@ def test_response_contains_all_registered_permissions(client):
     # the 6th org entry counted above).
     # + 1 M15 entry (provider_keys.manage -- BYOK provider-key storage).
     # + 1 omnibioai-launcher entry (workspace.launch).
+    # + 2 Storage P0 entries (artifact.delegate and artifact.promote).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 34
+    assert len(REGISTRY) == 36
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -291,7 +292,7 @@ def test_filter_combines_category_and_scope(client):
     assert resp.status_code == 200
     assert {p["name"] for p in resp.json()} == {
         "workflow.execute", "workflow.read", "workflow.publish", "workflow.manage", "runs.read",
-        "toolserver.delegate", "toolserver.register",
+        "toolserver.delegate", "toolserver.register", "artifact.delegate", "artifact.promote",
     }
 
 
@@ -322,7 +323,7 @@ def test_platform_admin_can_get_registry_stats(client):
     body = resp.json()
     assert body["total_permissions"] == len(REGISTRY)
     assert body["legacy_permissions"] == len(LEGACY_NAMES)
-    assert body["future_permissions"] == len(FUTURE_NAMES) + len(SERVICE_MINT_NAMES)
+    assert body["future_permissions"] == len(REGISTRY) - len(LEGACY_NAMES)
     assert body["deprecated_permissions"] == 0
     assert sum(body["by_scope"].values()) == len(REGISTRY)
     assert sum(body["by_category"].values()) == len(REGISTRY)

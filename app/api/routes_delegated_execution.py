@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.delegated_execution import (
+    ArtifactDelegationIntrospectionOut,
+    ArtifactDelegationTokenRequest,
     DelegatedExecutionIntrospectionOut,
     DelegatedExecutionIntrospectionRequest,
     DelegatedExecutionTokenOut,
@@ -23,6 +25,7 @@ from app.schemas.delegated_execution import (
     ToolServerRegistrationTokenOut,
 )
 from app.services import (
+    artifact_delegation_service,
     audit_service,
     delegated_execution_service,
     toolserver_registration_service,
@@ -30,6 +33,54 @@ from app.services import (
 
 router = APIRouter(prefix="/service/delegations", tags=["delegated-execution"])
 _bearer = HTTPBearer()
+
+
+@router.post("/artifact", response_model=DelegatedExecutionTokenOut)
+def issue_artifact_delegation(
+    body: ArtifactDelegationTokenRequest,
+    request: Request,
+    caller: HTTPAuthorizationCredentials = Depends(_bearer),  # noqa: B008
+    db: Session = Depends(get_db),  # noqa: B008
+):
+    trace_id = request.headers.get("x-request-id") or request.headers.get("x-trace-id")
+    try:
+        token, grant = artifact_delegation_service.issue(
+            db, service_token=caller.credentials, initiating_token=body.initiating_token,
+            organization_id=body.organization_id, project_id=body.project_id,
+            run_id=body.run_id, output_ids=body.output_ids,
+            permissions=body.permissions, audience=body.audience,
+        )
+    except HTTPException as exc:
+        audit_service.log_event(
+            db, audit_service.AuditEventType.DELEGATED_EXECUTION_TOKEN_DENIED,
+            organization_id=body.organization_id,
+            metadata={"audience": body.audience, "project_id": body.project_id,
+                      "run_id": body.run_id, "reason": str(exc.detail), "trace_id": trace_id},
+        )
+        raise
+    audit_service.log_event(
+        db, audit_service.AuditEventType.DELEGATED_EXECUTION_TOKEN_ISSUED,
+        actor_user_id=grant.user_id, target_user_id=grant.user_id,
+        organization_id=grant.organization_id, resource_type="artifact_delegation",
+        resource_id=grant.delegation_id,
+        metadata={"client_id": grant.client_id, "audience": grant.audience,
+                  "project_id": grant.project_id, "run_id": grant.run_id,
+                  "output_ids": grant.output_ids, "delegation_id": grant.delegation_id,
+                  "trace_id": trace_id},
+    )
+    return DelegatedExecutionTokenOut(
+        access_token=token,
+        expires_in=settings.DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+
+@router.post("/artifact/introspect", response_model=ArtifactDelegationIntrospectionOut)
+def introspect_artifact_delegation(
+    body: DelegatedExecutionIntrospectionRequest,
+    db: Session = Depends(get_db),  # noqa: B008
+):
+    identity = artifact_delegation_service.introspect(db, body.token)
+    return ArtifactDelegationIntrospectionOut(valid=identity is not None, **(identity or {}))
 
 
 @router.post("/toolserver", response_model=DelegatedExecutionTokenOut)

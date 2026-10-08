@@ -140,6 +140,24 @@ _register(
     )
 )
 
+_register(
+    PermissionDef(
+        name="artifact.delegate", resource="artifact", action="delegate",
+        scope=PermissionScope.BOTH, category=PermissionCategory.WORKFLOW,
+        description="Authorize TES to request narrowly scoped Artifact promotion delegations.",
+        legacy=False,
+    )
+)
+
+_register(
+    PermissionDef(
+        name="artifact.promote", resource="artifact", action="promote",
+        scope=PermissionScope.BOTH, category=PermissionCategory.WORKFLOW,
+        description="Promote one trusted workflow output through the canonical Artifact lifecycle.",
+        legacy=False,
+    )
+)
+
 
 # --- Platform (global) permissions -- legacy -------------------------------
 

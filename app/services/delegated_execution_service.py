@@ -17,7 +17,8 @@ DELEGATION_SCOPE = "toolserver.delegate"
 ACCEPTED_PERMISSIONS = {"workflow.execute", "runs.read"}
 
 
-def _active_service(db: Session, service_token: str) -> tuple[dict, OAuthClient]:
+def _active_service(db: Session, service_token: str,
+                    delegation_scope: str = DELEGATION_SCOPE) -> tuple[dict, OAuthClient]:
     try:
         payload = decode_token(service_token)
     except Exception as exc:
@@ -30,7 +31,7 @@ def _active_service(db: Session, service_token: str) -> tuple[dict, OAuthClient]
     if str(payload.get("org_id")) != str(client.organization_id):
         raise HTTPException(403, "Service identity mismatch")
     token_scopes, current_scopes = set(payload.get("scopes") or []), set(client.scopes or [])
-    if DELEGATION_SCOPE not in token_scopes or DELEGATION_SCOPE not in current_scopes:
+    if delegation_scope not in token_scopes or delegation_scope not in current_scopes:
         raise HTTPException(403, "Service delegation not authorized")
     return payload, client
 
