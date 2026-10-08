@@ -66,7 +66,9 @@ def introspect(db: Session, token: str) -> dict | None:
         payload = decode_token_for_audience(token, ARTIFACT_AUDIENCE)
         if payload.get("type") != "artifact_delegation":
             return None
-        if payload.get("iss") != settings.JWT_ISSUER:
+        if (payload.get("iss") != settings.JWT_ISSUER or
+                payload.get("aud") != ARTIFACT_AUDIENCE or
+                type(payload.get("exp")) is not int):
             return None
         delegation_id = str(payload["delegation_id"])
         if payload.get("jti") != delegation_id:
@@ -96,6 +98,8 @@ def introspect(db: Session, token: str) -> dict | None:
             OrganizationMembership.status == "active",
         ).first()
         if client is None or client.status != "active" or user is None or membership is None:
+            return None
+        if str(client.organization_id) != str(grant.organization_id):
             return None
         if client.expires_at and client.expires_at < datetime.utcnow():
             return None

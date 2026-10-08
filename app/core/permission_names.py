@@ -163,6 +163,15 @@ _register(
 
 _register(
     PermissionDef(
+        name="billing.artifact_entitlements", resource="billing", action="artifact_entitlements",
+        scope=PermissionScope.BOTH, category=PermissionCategory.WORKFLOW,
+        description="Read USER storage entitlements for a live same-organization Artifact grant; service-only.",
+        legacy=False,
+    )
+)
+
+_register(
+    PermissionDef(
         name="manage_roles",
         resource="roles",
         action="manage",

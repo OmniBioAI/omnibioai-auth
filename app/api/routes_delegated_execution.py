@@ -11,12 +11,14 @@ Author:
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.db.session import get_db
 from app.schemas.delegated_execution import (
     ArtifactDelegationIntrospectionOut,
     ArtifactDelegationTokenRequest,
+    ArtifactEntitlementContextRequest,
     DelegatedExecutionIntrospectionOut,
     DelegatedExecutionIntrospectionRequest,
     DelegatedExecutionTokenOut,
@@ -26,6 +28,7 @@ from app.schemas.delegated_execution import (
 )
 from app.services import (
     artifact_delegation_service,
+    artifact_entitlement_service,
     audit_service,
     delegated_execution_service,
     toolserver_registration_service,
@@ -33,6 +36,41 @@ from app.services import (
 
 router = APIRouter(prefix="/service/delegations", tags=["delegated-execution"])
 _bearer = HTTPBearer()
+
+
+@router.post("/artifact/entitlement-context")
+def artifact_entitlement_context(
+    body: ArtifactEntitlementContextRequest,
+    caller: HTTPAuthorizationCredentials = Depends(_bearer),
+    db: Session = Depends(get_db),
+):
+    # No owner/plan/organization override is accepted by this boundary.
+    try:
+        identity = artifact_entitlement_service.context(
+            db, service_token=caller.credentials, artifact_token=body.token,
+        )
+    except HTTPException as exc:
+        audit_service.log_event(
+            db, audit_service.AuditEventType.ARTIFACT_ENTITLEMENT_CONTEXT_DENIED,
+            resource_type="artifact_entitlement", metadata={"status": exc.status_code},
+            commit=False,
+        )
+        db.commit()
+        raise
+    audit_service.log_event(
+        db, audit_service.AuditEventType.ARTIFACT_ENTITLEMENT_CONTEXT_ALLOWED,
+        target_user_id=int(identity["user_id"]), organization_id=int(identity["organization_id"]),
+        resource_type="artifact_entitlement", resource_id=identity["delegation_id"],
+        metadata={"service_client_id": identity["service_client_id"],
+                  "project_id": identity["project_id"], "run_id": identity["run_id"]},
+        commit=False,
+    )
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(503, "Artifact entitlement audit unavailable") from None
+    return identity
 
 
 @router.post("/artifact", response_model=DelegatedExecutionTokenOut)

@@ -123,6 +123,7 @@ DELEGATED_EXECUTION_NAMES = {
 ARTIFACT_DELEGATION_NAMES = {
     "artifact.delegate": PermissionCategory.WORKFLOW,
     "artifact.promote": PermissionCategory.WORKFLOW,
+    "billing.artifact_entitlements": PermissionCategory.WORKFLOW,
 }
 
 # HIPAA-V2-001 RAG R1 (authoritative write identity for /v1/ingest,
@@ -650,7 +651,8 @@ def test_registry_stats_by_scope_sums_to_total():
     # RAG_NAMES above) + 1 (toolserver.register -- see
     # DELEGATED_EXECUTION_NAMES above) + 1 (provider_keys.manage -- M15,
     # BYOK provider-key storage).
-    assert stats["by_scope"]["both"] == 21
+    # Plus the service-only billing.artifact_entitlements contract.
+    assert stats["by_scope"]["both"] == 22
 
 
 def test_registry_stats_by_category_sums_to_total():

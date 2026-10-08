@@ -8,7 +8,7 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DelegatedExecutionTokenRequest(BaseModel):
@@ -27,6 +27,12 @@ class DelegatedExecutionTokenOut(BaseModel):
 
 class DelegatedExecutionIntrospectionRequest(BaseModel):
     token: str = Field(min_length=1)
+
+
+class ArtifactEntitlementContextRequest(BaseModel):
+    """A proof only: caller-supplied ownership, plan and scope are forbidden."""
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=1, max_length=32768, repr=False)
 
 
 class DelegatedExecutionIntrospectionOut(BaseModel):
