@@ -8,11 +8,24 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
-from sqlalchemy import Column, Integer, String, ForeignKey, Table, UniqueConstraint, Index
-from sqlalchemy.orm import relationship
-from app.db.base import Base
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean, JSON, Text
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import relationship
+
 from app.db.base import Base
 
 class RefreshToken(Base):
@@ -447,6 +460,66 @@ class OrganizationConfig(Base):
     data_directory = Column(String(500), nullable=True)
     updated_at = Column(DateTime, nullable=True)
     updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class IntegrationCredential(Base):
+    """Encrypted provider credential owned by one canonical user or org."""
+
+    __tablename__ = "integration_credentials"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "scope", "owner_key", name="uq_integration_credential_owner"),
+        Index("ix_integration_credentials_user_provider", "user_id", "provider_id"),
+        Index("ix_integration_credentials_org_provider", "organization_id", "provider_id"),
+        CheckConstraint(
+            "(scope = 'user' AND user_id IS NOT NULL AND organization_id IS NULL) OR "
+            "(scope = 'organization' AND user_id IS NULL AND organization_id IS NOT NULL) OR "
+            "(scope = 'platform' AND user_id IS NULL AND organization_id IS NULL)",
+            name="ck_integration_credential_scope_owner",
+        ),
+        CheckConstraint("status IN ('active', 'revoked')", name="ck_integration_credential_status"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    provider_id = Column(String(64), nullable=False, index=True)
+    scope = Column(String(20), nullable=False)  # user | organization | platform
+    # Generated server-side ("user:<id>" / "organization:<id>"). This
+    # avoids nullable-column uniqueness semantics; it is never API input.
+    owner_key = Column(String(128), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    encrypted_payload = Column(Text, nullable=True)
+    masked_hint = Column(String(32), nullable=True)
+    display_metadata = Column(JSON, nullable=True)
+    status = Column(String(20), nullable=False, default="active")
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    revoked_at = Column(DateTime, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+
+class IntegrationCredentialReference(Base):
+    """Short-lived opaque capability bound to caller, provider and purpose."""
+
+    __tablename__ = "integration_credential_references"
+    __table_args__ = (
+        CheckConstraint("scope IN ('user', 'organization', 'platform')", name="ck_integration_reference_scope"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    credential_id = Column(Integer, ForeignKey("integration_credentials.id"), nullable=False, index=True)
+    credential_version = Column(Integer, nullable=False)
+    provider_id = Column(String(64), nullable=False, index=True)
+    scope = Column(String(20), nullable=False)
+    subject_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    consumer = Column(String(64), nullable=False)
+    purpose = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, nullable=True)
 
 
 class OAuthClient(Base):

@@ -40,10 +40,11 @@ SESSION_TABLES = {"sessions"}  # Phase 4 PR-A (0018)
 INTERACTION_TABLES = {"interactions"}  # PR-B2 (0019)
 ORG_SAML_TABLES = {"organization_saml_configs"}  # SAML SSO PR2 (0021)
 MFA_TOTP_REPLAY_TABLES = {"mfa_used_totp_steps"}  # HIPAA Phase 3b (0024)
+INTEGRATION_CREDENTIAL_TABLES = {"integration_credentials", "integration_credential_references"}
 ALL_TABLES = (
     BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
     | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES | INTERACTION_TABLES | ORG_SAML_TABLES
-    | MFA_TOTP_REPLAY_TABLES
+    | MFA_TOTP_REPLAY_TABLES | INTEGRATION_CREDENTIAL_TABLES
 )
 
 
@@ -476,7 +477,41 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0030_user_timezone"
+    assert recorded == "0031_integration_credentials"
+
+
+def test_0031_accepts_exact_tables_precreated_by_runtime_create_all(sqlite_db_url):
+    """Starting new app code before Alembic must remain recoverable.
+
+    app.main still calls create_all(), so an environment recorded at 0030
+    can receive the two new ORM tables before the 0031 upgrade is run. The
+    migration verifies that exact shape and advances normally; it never asks
+    an operator to stamp around the mismatch.
+    """
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0030_user_timezone")
+    engine = create_engine(sqlite_db_url)
+    from app.db.base import Base
+    import app.db.models  # noqa: F401 -- registers every ORM table on Base
+
+    Base.metadata.create_all(bind=engine)
+    command.upgrade(cfg, "head")
+
+    with engine.connect() as conn:
+        recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert recorded == "0031_integration_credentials"
+
+
+def test_0031_rejects_partial_precreated_credential_schema(sqlite_db_url):
+    """A lookalike or partially-created credential table must fail closed."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "0030_user_timezone")
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE integration_credentials (id INTEGER PRIMARY KEY)"))
+
+    with pytest.raises(RuntimeError, match="does not match the expected create_all schema"):
+        command.upgrade(cfg, "head")
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -1120,7 +1155,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0030_user_timezone"
+    assert recorded == "0031_integration_credentials"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

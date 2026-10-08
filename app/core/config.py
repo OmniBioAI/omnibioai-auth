@@ -79,6 +79,19 @@ class Settings:
     # the endpoint entirely (503), not a silent no-auth fallback.
     PROVIDER_KEY_REVEAL_SECRET = os.getenv("PROVIDER_KEY_REVEAL_SECRET", "")
 
+    # Generic integration credentials. Workbench owns provider policy;
+    # Auth fetches the non-secret policy projection and fails closed when
+    # it is unavailable. The resolver secret authenticates only the
+    # Workbench service and never authorizes a reference by itself.
+    WORKBENCH_PROVIDER_POLICY_BASE_URL = os.getenv(
+        "WORKBENCH_PROVIDER_POLICY_BASE_URL",
+        "http://workbench:8000/plugins/integration_connections/internal/providers",
+    ).rstrip("/")
+    INTEGRATION_CREDENTIAL_SERVICE_SECRET = os.getenv("INTEGRATION_CREDENTIAL_SERVICE_SECRET", "")
+    INTEGRATION_CREDENTIAL_REFERENCE_TTL_SECONDS = min(
+        max(int(os.getenv("INTEGRATION_CREDENTIAL_REFERENCE_TTL_SECONDS", "300")), 30), 900
+    )
+
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 

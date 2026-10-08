@@ -48,6 +48,12 @@ class AuditEventType:
     # metadata -- same rule API_KEY_CREATED's own entry follows.
     PROVIDER_KEY_SET = "provider_key_set"
     PROVIDER_KEY_CLEARED = "provider_key_cleared"
+    INTEGRATION_CREDENTIAL_CREATED = "integration_credential_created"
+    INTEGRATION_CREDENTIAL_REPLACED = "integration_credential_replaced"
+    INTEGRATION_CREDENTIAL_REVOKED = "integration_credential_revoked"
+    INTEGRATION_CREDENTIAL_REFERENCE_ISSUED = "integration_credential_reference_issued"
+    INTEGRATION_CREDENTIAL_RESOLVED = "integration_credential_resolved"
+    INTEGRATION_CONNECTION_TESTED = "integration_connection_tested"
     OAUTH_CLIENT_CREATED = "oauth_client_created"
     OAUTH_CLIENT_REVOKED = "oauth_client_revoked"
     SSO_CONFIGURATION_CREATED = "sso_configuration_created"
