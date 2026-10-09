@@ -159,6 +159,15 @@ _register(
 )
 
 
+_register(
+    PermissionDef(
+        name="artifact.download", resource="artifact", action="download",
+        scope=PermissionScope.BOTH, category=PermissionCategory.WORKFLOW,
+        description="Read exact managed Artifact inputs through a scoped TES delegation.",
+        legacy=False,
+    )
+)
+
 # --- Platform (global) permissions -- legacy -------------------------------
 
 _register(

@@ -565,6 +565,7 @@ class DelegatedExecutionGrant(Base):
     project_id = Column(String(255), nullable=True)
     run_id = Column(String(255), nullable=True)
     output_ids = Column(JSON, nullable=True)
+    artifact_ids = Column(JSON, nullable=True)
 
 
 class OrganizationSSOConfig(Base):

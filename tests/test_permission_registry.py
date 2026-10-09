@@ -121,6 +121,7 @@ DELEGATED_EXECUTION_NAMES = {
 }
 
 ARTIFACT_DELEGATION_NAMES = {
+    "artifact.download": PermissionCategory.WORKFLOW,
     "artifact.delegate": PermissionCategory.WORKFLOW,
     "artifact.promote": PermissionCategory.WORKFLOW,
     "billing.artifact_entitlements": PermissionCategory.WORKFLOW,
@@ -652,7 +653,7 @@ def test_registry_stats_by_scope_sums_to_total():
     # DELEGATED_EXECUTION_NAMES above) + 1 (provider_keys.manage -- M15,
     # BYOK provider-key storage).
     # Plus the service-only billing.artifact_entitlements contract.
-    assert stats["by_scope"]["both"] == 22
+    assert stats["by_scope"]["both"] == 23
 
 
 def test_registry_stats_by_category_sums_to_total():

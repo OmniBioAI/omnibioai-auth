@@ -45,12 +45,26 @@ class DelegatedExecutionIntrospectionOut(BaseModel):
 
 
 class ArtifactDelegationTokenRequest(BaseModel):
-    initiating_token: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    initiating_token: str = Field(min_length=1, repr=False)
     organization_id: int = Field(gt=0)
     project_id: str = Field(min_length=1, max_length=255)
     run_id: str = Field(min_length=1, max_length=255)
-    output_ids: list[str] = Field(min_length=1, max_length=100)
+    output_ids: list[str] = Field(default_factory=list, max_length=100)
+    artifact_ids: list[str] = Field(default_factory=list, max_length=100)
+    source_delegation_token: str | None = Field(default=None, max_length=32768, repr=False)
     permissions: list[str] = Field(min_length=1)
+    audience: str
+
+
+class ArtifactDelegationTokenOut(DelegatedExecutionTokenOut):
+    delegation_id: str
+    organization_id: str
+    project_id: str
+    run_id: str
+    user_id: str
+    artifact_ids: list[str]
+    permissions: list[str]
     audience: str
 
 
@@ -63,6 +77,7 @@ class ArtifactDelegationIntrospectionOut(BaseModel):
     project_id: str | None = None
     run_id: str | None = None
     output_ids: list[str] = []
+    artifact_ids: list[str] = []
     permissions: list[str] = []
     delegation_id: str | None = None
 

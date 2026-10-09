@@ -18,6 +18,7 @@ from app.db.session import get_db
 from app.schemas.delegated_execution import (
     ArtifactDelegationIntrospectionOut,
     ArtifactDelegationTokenRequest,
+    ArtifactDelegationTokenOut,
     ArtifactEntitlementContextRequest,
     DelegatedExecutionIntrospectionOut,
     DelegatedExecutionIntrospectionRequest,
@@ -73,7 +74,7 @@ def artifact_entitlement_context(
     return identity
 
 
-@router.post("/artifact", response_model=DelegatedExecutionTokenOut)
+@router.post("/artifact", response_model=ArtifactDelegationTokenOut)
 def issue_artifact_delegation(
     body: ArtifactDelegationTokenRequest,
     request: Request,
@@ -85,7 +86,8 @@ def issue_artifact_delegation(
         token, grant = artifact_delegation_service.issue(
             db, service_token=caller.credentials, initiating_token=body.initiating_token,
             organization_id=body.organization_id, project_id=body.project_id,
-            run_id=body.run_id, output_ids=body.output_ids,
+            run_id=body.run_id, output_ids=body.output_ids, artifact_ids=body.artifact_ids,
+            source_delegation_token=body.source_delegation_token,
             permissions=body.permissions, audience=body.audience,
         )
     except HTTPException as exc:
@@ -106,8 +108,11 @@ def issue_artifact_delegation(
                   "output_ids": grant.output_ids, "delegation_id": grant.delegation_id,
                   "trace_id": trace_id},
     )
-    return DelegatedExecutionTokenOut(
-        access_token=token,
+    return ArtifactDelegationTokenOut(
+        delegation_id=grant.delegation_id, organization_id=str(grant.organization_id),
+        project_id=grant.project_id, run_id=grant.run_id, user_id=str(grant.user_id),
+        artifact_ids=list(grant.artifact_ids or []), permissions=grant.permissions,
+        audience=grant.audience, access_token=token,
         expires_in=settings.DELEGATED_EXECUTION_TOKEN_EXPIRE_MINUTES * 60,
     )
 

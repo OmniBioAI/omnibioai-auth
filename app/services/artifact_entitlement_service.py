@@ -25,7 +25,8 @@ def context(db, *, service_token: str, artifact_token: str) -> dict:
         raise HTTPException(401, "Invalid service credential")
     assert_token_usable(payload, db)
     identity = artifact_delegation_service.introspect(db, artifact_token)
-    if identity is None or str(caller.organization_id) != identity["organization_id"]:
+    if (identity is None or identity.get("permissions") != ["artifact.promote"] or
+            str(caller.organization_id) != identity["organization_id"]):
         raise HTTPException(403, "Artifact entitlement context unavailable")
     if not db.query(Organization).filter_by(id=caller.organization_id, status="active").first():
         raise HTTPException(403, "Artifact entitlement context unavailable")
