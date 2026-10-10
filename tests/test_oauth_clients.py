@@ -6,10 +6,11 @@ top-up of an existing org_admin role.
 Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 
-from app.services import org_service, role_service
+from app.services import oauth_client_service, org_service, role_service
 
 
 def _auth_header(token):
@@ -66,6 +67,21 @@ def test_create_oauth_client_rejects_scope_caller_does_not_hold(client, org):
         headers=org["owner_headers"],
     )
     assert resp.status_code == 400
+
+
+def test_create_oauth_client_rejects_registered_scope_caller_does_not_hold(client, org):
+    """A scope that IS a registered Permission Registry name, but not one org_admin's own
+    permission set grants (manage_all_orgs is platform-level, never an org role's permission),
+    is rejected by the separate "you don't hold this" check -- distinct from the unknown-permission
+    branch exercised above.
+    """
+    resp = client.post(
+        f"/orgs/{org['id']}/oauth-clients",
+        json={"name": "Platform overreach", "scopes": ["manage_all_orgs"]},
+        headers=org["owner_headers"],
+    )
+    assert resp.status_code == 400
+    assert "don't hold" in resp.json()["detail"]
 
 
 def test_list_oauth_clients_never_exposes_secret_or_hash(client, org):
@@ -182,5 +198,70 @@ def test_ensure_org_admin_permissions_tops_up_existing_role_additively(client):
         names = {p.name for p in role.permissions}
         assert "manage_oauth_clients" in names
         assert "workflow.execute" in names  # untouched, not removed
+    finally:
+        db.close()
+
+
+# ── Service-layer edges HTTP-level tests above can't cheaply force ─────────
+
+
+def test_create_oauth_client_retries_on_client_id_collision(client, org, monkeypatch):
+    """A freshly generated client_id colliding with an existing row (astronomically unlikely in
+    production, forced here) must retry rather than violate the unique constraint.
+    """
+    real_generator = oauth_client_service._generate_client_id
+    first_id = real_generator()
+
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    try:
+        db.add(oauth_client_service.OAuthClient(
+            organization_id=org["id"], created_by_user_id=1, client_id=first_id,
+            client_secret_hash="0" * 64, name="pre-existing-collision", scopes=[],
+            status="active", created_at=datetime.utcnow(),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    calls = {"n": 0}
+
+    def fake_generator():
+        calls["n"] += 1
+        return first_id if calls["n"] == 1 else real_generator()
+
+    monkeypatch.setattr(oauth_client_service, "_generate_client_id", fake_generator)
+
+    resp = client.post(
+        f"/orgs/{org['id']}/oauth-clients",
+        json={"name": "Collision retry", "scopes": []},
+        headers=org["owner_headers"],
+    )
+    assert resp.status_code == 201
+    assert resp.json()["client_id"] != first_id
+    assert calls["n"] >= 2
+
+
+def test_verify_client_credentials_rejects_expired_client():
+    """An active-status OAuth client past its own expires_at is rejected -- status alone isn't
+    enough, distinct from the revoked-status rejection the route-level tests already cover.
+    """
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    try:
+        secret = "an-expired-client-secret-value-40chars!"
+        oauth_client = oauth_client_service.OAuthClient(
+            organization_id=1, created_by_user_id=1,
+            client_id=f"omni_client_expired_{uuid.uuid4().hex[:8]}",
+            client_secret_hash=oauth_client_service._hash_secret(secret),
+            name="expired client", scopes=[], status="active",
+            created_at=datetime.utcnow() - timedelta(days=30),
+            expires_at=datetime.utcnow() - timedelta(days=1),
+        )
+        db.add(oauth_client)
+        db.commit()
+
+        result = oauth_client_service.verify_client_credentials(db, oauth_client.client_id, secret)
+        assert result is None
     finally:
         db.close()

@@ -5,6 +5,7 @@ Developer: Manish Kumar <manish@omnibioai.org>
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import unquote
@@ -30,7 +31,13 @@ from app.core.jwt import (
     decode_token,
 )
 from app.core.token_revocation import assert_token_usable, blacklist_access_token
-from app.services.oauth_service import _code_challenge_s256, build_authorize_url
+from app.services import oauth_service
+from app.services.oauth_service import (
+    OAuthError,
+    _code_challenge_s256,
+    build_authorize_url,
+    exchange_code_for_userinfo,
+)
 from app.services.org_oidc_service import SSOLoginError, _find_signing_key
 from app.services.org_oidc_service import build_authorize_url as build_sso_authorize_url
 from app.services.service_tokens import ServiceTokenIssuer
@@ -288,3 +295,103 @@ def test_assert_token_usable_fails_closed_on_redis_auth_or_acl_errors(redis_erro
             assert_token_usable({"jti": "security-state"}, db)
     assert exc.value.status_code == 503
     assert exc.value.detail == "Authentication state unavailable"
+
+
+# ── exchange_code_for_userinfo edges (hermetic, no PKCE/route plumbing) ─────
+
+
+class _FakeResponse:
+    def __init__(self, status_code, json_body=None, text=""):
+        self.status_code = status_code
+        self._json_body = {} if json_body is None else json_body
+        self.text = text or str(self._json_body)
+
+    def json(self):
+        return self._json_body
+
+
+class _ScriptedAsyncClient:
+    """Returns queued canned responses in call order for post()/get() alike --
+    enough control for these isolated exchange_code_for_userinfo tests,
+    which only ever care about the sequence of calls, not which URL each
+    one targeted."""
+
+    responses: list = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, data=None, headers=None):
+        return _ScriptedAsyncClient.responses.pop(0)
+
+    async def get(self, url, headers=None):
+        return _ScriptedAsyncClient.responses.pop(0)
+
+
+def test_exchange_raises_on_non_200_token_response(monkeypatch):
+    """A non-200 response from the provider's token endpoint raises OAuthError, never silently
+    continuing with no access token.
+    """
+    _ScriptedAsyncClient.responses = [_FakeResponse(400, text="bad request")]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    with pytest.raises(OAuthError, match="token exchange failed"):
+        asyncio.run(exchange_code_for_userinfo("google", "code"))
+
+
+def test_exchange_raises_when_token_response_missing_access_token(monkeypatch):
+    """A 200 token response with no access_token field raises OAuthError."""
+    _ScriptedAsyncClient.responses = [_FakeResponse(200, {"token_type": "bearer"})]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    with pytest.raises(OAuthError, match="missing access_token"):
+        asyncio.run(exchange_code_for_userinfo("google", "code"))
+
+
+def test_exchange_raises_on_non_200_userinfo_response(monkeypatch):
+    """A non-200 response from the provider's userinfo endpoint raises OAuthError."""
+    _ScriptedAsyncClient.responses = [
+        _FakeResponse(200, {"access_token": "provider-token"}),
+        _FakeResponse(503, text="unavailable"),
+    ]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    with pytest.raises(OAuthError, match="userinfo fetch failed"):
+        asyncio.run(exchange_code_for_userinfo("google", "code"))
+
+
+def test_exchange_raises_when_no_email_in_normalized_userinfo(monkeypatch):
+    """A provider whose normalized userinfo carries no email at all (Google here: no `email` key)
+    raises OAuthError rather than returning a user identity with no email.
+    """
+    _ScriptedAsyncClient.responses = [
+        _FakeResponse(200, {"access_token": "provider-token"}),
+        _FakeResponse(200, {"sub": "g-1"}),  # no email key
+    ]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    with pytest.raises(OAuthError, match="did not return an email"):
+        asyncio.run(exchange_code_for_userinfo("google", "code"))
+
+
+def test_exchange_github_fetches_separate_emails_when_userinfo_omits_it(monkeypatch):
+    """GitHub's /user endpoint can omit `email` entirely (private-email setting) -- the exchange
+    falls back to GitHub's separate /user/emails endpoint and picks the verified primary address.
+    """
+    _ScriptedAsyncClient.responses = [
+        _FakeResponse(200, {"access_token": "provider-token"}),
+        _FakeResponse(200, {"id": 9, "email": None}),
+        _FakeResponse(
+            200,
+            [
+                {"email": "unverified@example.test", "verified": False, "primary": True},
+                {"email": "verified@example.test", "verified": True, "primary": True},
+            ],
+        ),
+    ]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    provider_user_id, email = asyncio.run(exchange_code_for_userinfo("github", "code"))
+    assert provider_user_id == "9"
+    assert email == "verified@example.test"

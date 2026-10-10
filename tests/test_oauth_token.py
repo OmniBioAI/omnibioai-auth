@@ -570,3 +570,132 @@ def test_redemption_rejects_wrong_client_secret(client, monkeypatch):
     # must not itself consume someone else's valid code.
     ok_form = {"grant_type": "authorization_code", "code": code, "redirect_uri": "https://lims.test/sso/callback"}
     assert client.post("/oauth/token/authorization-code", data=ok_form, auth=("lims-test-client-7", "lims-test-secret-7")).status_code == 200
+
+
+def test_authorize_rejects_wrong_response_type(client, monkeypatch):
+    """/oauth/authorize with a response_type other than "code" returns 400 "invalid_request",
+    distinct from the wrong-client_id/redirect_uri cases this same check also covers.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-8")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-8")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+
+    response = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "lims-test-client-8",
+            "redirect_uri": "https://lims.test/sso/callback",
+            "response_type": "token",  # not "code"
+            "state": "state-value-890123",
+        },
+        headers=_auth_header(token),
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid_request"
+
+
+def test_authorize_returns_503_when_code_store_write_fails(client, monkeypatch):
+    """A failure writing the opaque code to the backing store (Redis) returns 503, not a raw 500 --
+    the caller never gets a stuck/ambiguous authorize response.
+    """
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-9")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-9")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+
+    class _FailingCodes:
+        def setex(self, *a, **kw):
+            raise ConnectionError("redis down")
+
+    monkeypatch.setattr(routes_oauth_token, "_codes", _FailingCodes())
+    owner = _register_and_login(client)
+    _grant_platform_admin_for_sso(owner["email"])
+    token = client.post("/auth/login", json=owner).json()["access_token"]
+
+    response = client.get(
+        "/oauth/authorize",
+        params={
+            "client_id": "lims-test-client-9",
+            "redirect_uri": "https://lims.test/sso/callback",
+            "response_type": "code",
+            "state": "state-value-901234",
+        },
+        headers=_auth_header(token),
+        follow_redirects=False,
+    )
+    assert response.status_code == 503
+
+
+def test_redemption_rejects_wrong_grant_type(client, monkeypatch):
+    """Redeeming with a grant_type other than "authorization_code" returns 400
+    "unsupported_grant_type", before the client or code is even checked.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-10")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-10")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+
+    form = {
+        "grant_type": "client_credentials",
+        "code": "whatever",
+        "redirect_uri": "https://lims.test/sso/callback",
+    }
+    response = client.post(
+        "/oauth/token/authorization-code", data=form, auth=("lims-test-client-10", "lims-test-secret-10")
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "unsupported_grant_type"
+
+
+def test_redemption_returns_503_when_code_store_read_fails(client, monkeypatch):
+    """A failure reading/deleting the code from the backing store at redemption time returns 503."""
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-11")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-11")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+
+    class _FailingCodes:
+        def getdel(self, *a, **kw):
+            raise ConnectionError("redis down")
+
+    monkeypatch.setattr(routes_oauth_token, "_codes", _FailingCodes())
+    form = {"grant_type": "authorization_code", "code": "whatever", "redirect_uri": "https://lims.test/sso/callback"}
+    response = client.post(
+        "/oauth/token/authorization-code", data=form, auth=("lims-test-client-11", "lims-test-secret-11")
+    )
+    assert response.status_code == 503
+
+
+def test_redemption_of_malformed_json_payload_fails_clean(client, monkeypatch):
+    """A code whose stored payload isn't valid JSON (corruption, or a future incompatible writer)
+    is rejected as invalid_grant, not a raw 500.
+    """
+    from app.api import routes_oauth_token
+    from app.core.config import settings
+    import fakeredis
+
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_ID", "lims-test-client-12")
+    monkeypatch.setattr(settings, "LIMS_SSO_CLIENT_SECRET", "lims-test-secret-12")
+    monkeypatch.setattr(settings, "LIMS_SSO_REDIRECT_URI", "https://lims.test/sso/callback")
+    codes = fakeredis.FakeStrictRedis(decode_responses=True)
+    monkeypatch.setattr(routes_oauth_token, "_codes", codes)
+    codes.setex("oauth:first-party:not-json", 60, "this is not valid json{{{")
+
+    form = {"grant_type": "authorization_code", "code": "not-json", "redirect_uri": "https://lims.test/sso/callback"}
+    response = client.post(
+        "/oauth/token/authorization-code", data=form, auth=("lims-test-client-12", "lims-test-secret-12")
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid_grant"

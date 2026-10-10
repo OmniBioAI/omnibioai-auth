@@ -191,3 +191,25 @@ def test_logout_without_access_token_still_works(client, registered_user):
     })
     assert resp.status_code == 200
     assert resp.json()["message"] == "Logged out"
+
+
+def test_logout_with_undecodable_refresh_token_still_succeeds(client):
+    """Logout's best-effort cache-invalidation publish is skipped, not fatal, when the presented
+    refresh_token can't be decoded at all.
+    """
+    resp = client.post("/auth/logout", json={"refresh_token": "not-a-real-token"})
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "Logged out"
+
+
+# ── Switch team ───────────────────────────────────────────────────────────────
+
+def test_switch_team_with_undecodable_token_returns_401(client):
+    """/auth/switch-team with a refresh_token that fails to decode returns 401, distinct from the
+    empty-token 401 above.
+    """
+    resp = client.post(
+        "/auth/switch-team",
+        json={"refresh_token": "not-a-real-token", "team_id": None},
+    )
+    assert resp.status_code == 401

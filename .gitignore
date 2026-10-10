@@ -10,3 +10,4 @@ test.db
 # Local mysqldump backups taken before running migrations against a real
 # database (see docs/MIGRATIONS.md) -- contain real data, never commit.
 db_backups/
+coverage.json

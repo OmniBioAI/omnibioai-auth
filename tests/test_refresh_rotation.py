@@ -10,13 +10,15 @@ revoke roles and flip User.status directly, which no HTTP route exposes.
 Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.jwt import decode_token
-from app.db.models import Permission, Role, User
+from app.db.models import Permission, RefreshToken, Role, User
+from app.services import auth_service
 
 _direct_engine = create_engine("sqlite:///./test.db")
 _DirectSession = sessionmaker(bind=_direct_engine)
@@ -182,3 +184,99 @@ def test_rotation_chain_of_three_all_work_in_sequence(client):
     # is itself a replay.
     replay = _refresh(client, token_2)
     assert replay.status_code == 401
+
+
+# ── Direct unit coverage for auth_service helpers HTTP tests can't reach ───
+
+
+def test_get_session_for_refresh_token_returns_none_for_unknown_token():
+    """A token that hashes to no RefreshToken row at all resolves to no session -- not an error,
+    same "nothing to build an IdP logout redirect from" contract as a token with no session row.
+    """
+    db = _DirectSession()
+    try:
+        assert auth_service.get_session_for_refresh_token(db, "token-that-was-never-issued") is None
+    finally:
+        db.close()
+
+
+def test_revoke_session_returns_false_for_unknown_session_id():
+    """revoke_session is idempotent-by-absence: an id with no matching session row returns False
+    rather than raising.
+    """
+    db = _DirectSession()
+    try:
+        assert auth_service.revoke_session(db, "no-such-session-id") is False
+    finally:
+        db.close()
+
+
+def test_revoke_family_is_a_noop_for_a_falsy_family_id():
+    """_revoke_family has no sibling rows to revoke for a pre-PR0.2 (NULL family_id) token --
+    both None and empty string must short-circuit without touching the database.
+    """
+    db = _DirectSession()
+    try:
+        auth_service._revoke_family(db, None)
+        auth_service._revoke_family(db, "")
+    finally:
+        db.close()
+
+
+def test_rotate_refresh_token_rejects_an_already_expired_token(client):
+    """A refresh token whose expires_at has already passed is rejected, distinct from the
+    already-revoked and already-rotated rejection paths above.
+    """
+    user = _register_and_login(client)
+    db = _DirectSession()
+    try:
+        db_user = db.query(User).filter(User.email == user["email"]).first()
+        expired = RefreshToken(
+            user_id=db_user.id,
+            token="expired-raw-refresh-token",
+            token_hash=auth_service._hash_refresh_token("expired-raw-refresh-token"),
+            revoked=False,
+            family_id=str(uuid.uuid4()),
+            expires_at=datetime.utcnow() - timedelta(days=1),
+        )
+        db.add(expired)
+        db.commit()
+
+        assert auth_service.rotate_refresh_token(db, "expired-raw-refresh-token") is None
+    finally:
+        db.close()
+
+
+def test_rotate_refresh_token_backfills_session_for_a_pre_session_foundation_token():
+    """A RefreshToken row created before Phase 4 PR-A's session foundation (no matching
+    UserSession row for its family) both survives an undecodable-as-JWT raw token value (old_claims
+    degrades to {}) and gets a session row backfilled on this, its first rotation.
+    """
+    db = _DirectSession()
+    try:
+        user = User(email=f"pre-session-{uuid.uuid4().hex[:8]}@omnibioai.test", hashed_password=None, status="active")
+        db.add(user)
+        db.flush()
+        raw_token = "legacy-non-jwt-refresh-token-" + uuid.uuid4().hex
+        family_id = str(uuid.uuid4())
+        db.add(RefreshToken(
+            user_id=user.id,
+            token=raw_token,
+            token_hash=auth_service._hash_refresh_token(raw_token),
+            revoked=False,
+            family_id=family_id,
+            expires_at=datetime.utcnow() + timedelta(days=7),
+        ))
+        db.commit()
+
+        result = auth_service.rotate_refresh_token(db, raw_token)
+        assert result is not None
+        new_access, new_refresh = result
+        assert new_refresh != raw_token
+
+        from app.services import session_service
+        session = session_service.get_by_family_id(db, family_id)
+        assert session is not None
+        assert session.user_id == user.id
+    finally:
+        db.close()

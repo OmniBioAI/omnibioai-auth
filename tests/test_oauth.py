@@ -248,3 +248,62 @@ def test_existing_password_login_still_works(client, registered_user):
     resp = client.post("/auth/login", json=registered_user)
     assert resp.status_code == 200
     assert "access_token" in resp.json()
+
+
+# ── Provider token-exchange failure and MFA branches ──────────────────────────
+
+def test_callback_oautherror_from_exchange_returns_400(client, configured_google, monkeypatch):
+    """A provider token-exchange failure (OAuthError) during the callback returns 400 with the
+    error's own message, not a generic 500.
+    """
+    async def failing_exchange(provider, code, code_verifier=None):
+        raise oauth_service.OAuthError("google token exchange failed: boom")
+    monkeypatch.setattr(oauth_service, "exchange_code_for_userinfo", failing_exchange)
+    state = create_oauth_state_token("google")
+
+    resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": state})
+    assert resp.status_code == 400
+    assert "boom" in resp.json()["detail"]
+
+
+def test_callback_new_user_mfa_required_returns_challenge(client, configured_google, monkeypatch):
+    """When the shared MFA decision point reports mfa_required for a brand-new OAuth identity (no
+    linked_user, no existing_user by email), the callback returns the challenge shape instead of
+    tokens.
+    """
+    from app.api import routes_oauth
+
+    email = f"oauth-mfa-new-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _mock_exchange(monkeypatch, "google-uid-mfa-new", email)
+
+    def fake_mfa_challenge(db, user, auth_method="password", idp_org_id=None, **kwargs):
+        return {"mfa_required": True, "challenge_token": "fake-challenge-token", "methods": ["totp"]}
+    monkeypatch.setattr(routes_oauth, "generate_tokens_or_mfa_challenge", fake_mfa_challenge)
+
+    state = create_oauth_state_token("google")
+    resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": state})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "mfa_required"
+    assert data["mfa_required"] is True
+    assert data["challenge_token"] == "fake-challenge-token"
+
+
+def test_callback_mfa_enrollment_required_returns_403(client, configured_google, monkeypatch):
+    """When the org-required-MFA decision point raises MFAEnrollmentRequiredError for a new OAuth
+    identity, the callback translates it to the same 403 shape login() uses.
+    """
+    from app.api import routes_oauth
+    from app.services.auth_service import MFAEnrollmentRequiredError
+
+    email = f"oauth-mfa-enroll-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _mock_exchange(monkeypatch, "google-uid-mfa-enroll", email)
+
+    def fake_mfa_challenge(db, user, auth_method="password", idp_org_id=None, **kwargs):
+        raise MFAEnrollmentRequiredError()
+    monkeypatch.setattr(routes_oauth, "generate_tokens_or_mfa_challenge", fake_mfa_challenge)
+
+    state = create_oauth_state_token("google")
+    resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": state})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "mfa_enrollment_required"
