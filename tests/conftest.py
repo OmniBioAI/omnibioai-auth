@@ -25,7 +25,10 @@ os.environ.setdefault("ADMIN_BOOTSTRAP_PASSWORD", "test-admin-password-not-for-p
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-TEST_DB_URL = "sqlite:///./test.db"
+# Qualification and CI may provide a writable, isolated SQLite URL. The
+# repository-local test.db remains the compatibility fallback only; production
+# configuration is never read by this fixture.
+TEST_DB_URL = os.environ.get("AUTH_TEST_DB_URL", "sqlite:///./test.db")
 
 test_engine = create_engine(
     TEST_DB_URL,

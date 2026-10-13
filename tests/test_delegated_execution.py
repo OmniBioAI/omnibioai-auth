@@ -3,6 +3,7 @@
 Developer: Manish Kumar <manish@omnibioai.org>
 """
 import hashlib
+import os
 import uuid
 from datetime import datetime, timedelta
 
@@ -15,7 +16,7 @@ from app.services.role_service import get_or_create_role
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-_engine = create_engine("sqlite:///./test.db")
+_engine = create_engine(os.environ.get("AUTH_TEST_DB_URL", "sqlite:///./test.db"))
 Session = sessionmaker(bind=_engine)
 
 
