@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 # Must be set before any app module is imported so config.settings has a key.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-omnibioai-32-chars-x!")
+os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("AUTH_STARTUP_SCHEMA_MODE", "test-create")
 # Explicit test-only 256-bit audit key. Production must provision an
 # independent value through its protected secret mechanism.
 os.environ.setdefault("AUTH_AUDIT_INTEGRITY_KEY", "a1" * 32)

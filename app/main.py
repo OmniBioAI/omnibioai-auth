@@ -8,6 +8,9 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -52,7 +55,7 @@ from app.api.routes_integration_credentials import internal_router as integratio
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
-from app.db.schema_guard import assert_schema_matches_models
+from app.db.startup_schema import prepare_startup_schema
 from app.db.init_admin import (
     create_admin,
     ensure_bio_agent_service_role,
@@ -67,7 +70,34 @@ from app.core.config import settings
 
 import app.db.models
 
-app = FastAPI(title="OmniBioAI Auth Service", root_path="/_svc/auth")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Validate the migrated schema before bootstrap and serve traffic."""
+    prepare_startup_schema(
+        engine,
+        Base.metadata,
+        app_env=settings.APP_ENV,
+        mode=settings.AUTH_STARTUP_SCHEMA_MODE,
+        script_location=Path(__file__).resolve().parent.parent / "alembic",
+    )
+
+    db = SessionLocal()
+    try:
+        create_admin(db)
+        ensure_platform_admin_role(db)
+        ensure_platform_owner(db)
+        ensure_bio_agent_service_role(db)
+        ensure_default_organization(db)
+        ensure_org_admin_permissions(db)
+        ensure_default_org_roles(db)
+        ensure_dev_test_personas(db)
+        assert_no_unregistered_permissions(db)
+    finally:
+        db.close()
+    yield
+
+
+app = FastAPI(title="OmniBioAI Auth Service", root_path="/_svc/auth", lifespan=lifespan)
 
 # Electron itself runs with webSecurity disabled and ignores CORS entirely;
 # this only matters for the web build, so the allowlist is scoped to known
@@ -78,41 +108,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-Base.metadata.create_all(bind=engine)
-
-# create_all() above only ever creates tables that don't exist yet -- it
-# never alters an existing table, so a database that's behind on Alembic
-# migrations (see docs/MIGRATIONS.md) sails through it unnoticed and then
-# crashes on whatever bootstrap query below happens to touch the missing
-# column first. Catch that here, once, with an actionable message instead.
-assert_schema_matches_models(engine, Base.metadata)
-
-# bootstrap admin
-db = SessionLocal()
-create_admin(db)
-ensure_platform_admin_role(db)
-# Opt-in only -- a no-op unless the operator has set PLATFORM_OWNER_EMAIL.
-# Must run after ensure_platform_admin_role (needs the Role to exist) and
-# after create_admin (in case the designated owner IS the bootstrap admin
-# account created just above). See ensure_platform_owner's own docstring.
-ensure_platform_owner(db)
-# #443: same opt-in shape as ensure_platform_owner immediately above --
-# a no-op unless the operator has set BIO_AGENT_SVC_EMAIL. No ordering
-# dependency on the calls above (it creates its own role/permission).
-ensure_bio_agent_service_role(db)
-ensure_default_organization(db)
-ensure_org_admin_permissions(db)
-ensure_default_org_roles(db)
-# Opt-in only -- a no-op unless the operator has set SEED_DEV_TEST_PERSONAS.
-# Must run after ensure_default_organization: it looks up the "default"
-# org by slug and is a no-op if that org doesn't exist yet.
-ensure_dev_test_personas(db)
-# PR6: registry/database drift is a deployment error -- fail startup
-# loudly rather than serve traffic against a Permission row the registry
-# doesn't know about. Runs once, here, never per-request.
-assert_no_unregistered_permissions(db)
-db.close()
 
 app.include_router(auth_router)
 app.include_router(roles_router)

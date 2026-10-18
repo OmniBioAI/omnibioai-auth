@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings:
+    APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
+    AUTH_STARTUP_SCHEMA_MODE = os.getenv("AUTH_STARTUP_SCHEMA_MODE", "validate").strip().lower()
     DB_USER = os.getenv("DB_USER")
     DB_PASSWORD = os.getenv("DB_PASSWORD")
     DB_HOST = os.getenv("DB_HOST", "localhost")
