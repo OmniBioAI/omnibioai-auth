@@ -11,6 +11,7 @@ Author:
 from datetime import datetime
 
 from pydantic import BaseModel
+from typing import Literal
 
 
 class TOTPEnrollOut(BaseModel):
@@ -46,6 +47,16 @@ class MFAChallengeVerifyIn(BaseModel):
     unlike its siblings above, is not gated by get_current_user."""
     challenge_token: str
     code: str
+    method: Literal["email", "totp", "recovery_code"] | None = None
+
+
+class MFAEmailResendIn(BaseModel):
+    challenge_token: str
+
+
+class MFAEmailResendOut(BaseModel):
+    sent: bool
+    cooldown_seconds: int
 
 
 class RecoveryCodesOut(BaseModel):

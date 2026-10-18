@@ -870,6 +870,27 @@ class MFAUsedTOTPStep(Base):
     consumed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class MFAEmailOTP(Base):
+    """Short-lived, single-use email MFA challenge; only an HMAC is stored."""
+    __tablename__ = "mfa_email_otps"
+    __table_args__ = (
+        Index("ix_mfa_email_otps_user_created", "user_id", "created_at"),
+        Index("ix_mfa_email_otps_challenge_jti", "challenge_jti"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    challenge_jti = Column(String(64), nullable=False)
+    code_hash = Column(String(64), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True)
+    invalidated_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
 class UserSession(Base):
     """Phase 4 PR-A (Session Foundation): the queryable, administrable
     shadow of one refresh-token *family* -- not a new authentication

@@ -41,6 +41,7 @@ from app.services.auth_service import (
 )
 from app.services.role_service import assign_default_role
 from app.services import login_throttle_service, org_service, sso_discovery_service, team_service
+from app.services.email_mfa_service import EmailMFAResendLimitedError, EmailMFAUnavailableError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -227,6 +228,12 @@ def login(req: LoginRequest, request: Request, response: Response, db: Session =
             "error": "mfa_enrollment_required",
             "message": "Your organization requires MFA enrollment",
         })
+    except EmailMFAResendLimitedError as e:
+        return JSONResponse(status_code=429,
+            content={"error": "email_otp_rate_limited", "message": "A verification code cannot be sent yet."},
+            headers={"Retry-After": str(e.retry_after_seconds)})
+    except EmailMFAUnavailableError:
+        raise HTTPException(503, detail="Email verification is temporarily unavailable")
     if result["mfa_required"]:
         JWT_AUTH_TOTAL.labels(endpoint="/auth/login", result="mfa_required").inc()
         return {

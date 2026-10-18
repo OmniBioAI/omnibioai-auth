@@ -8,7 +8,7 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.core.rsa_keys import public_jwk
 
@@ -21,4 +21,7 @@ router = APIRouter(tags=["jwks"])
 
 @router.get("/.well-known/jwks.json")
 def jwks():
-    return {"keys": [public_jwk()]}
+    try:
+        return {"keys": [public_jwk()]}
+    except RuntimeError:
+        raise HTTPException(503, "JWKS unavailable for the configured signing algorithm") from None

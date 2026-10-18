@@ -13,6 +13,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def load_email_otp_pepper() -> str:
+    inline = os.getenv("EMAIL_MFA_OTP_PEPPER", "")
+    secret_file = os.getenv("EMAIL_MFA_OTP_PEPPER_FILE", "")
+    if inline and secret_file:
+        raise ValueError("Configure only one email OTP pepper source")
+    if secret_file:
+        try:
+            with open(secret_file, "rb") as handle:
+                value = handle.read().strip().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            raise ValueError("Configured email OTP pepper file is unavailable") from None
+    else:
+        value = inline
+    if value and len(value.encode("utf-8")) < 32:
+        raise ValueError("Email OTP pepper must contain at least 32 bytes")
+    return value
+
 class Settings:
     APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
     AUTH_STARTUP_SCHEMA_MODE = os.getenv("AUTH_STARTUP_SCHEMA_MODE", "validate").strip().lower()
@@ -49,6 +67,30 @@ class Settings:
     # with whatever's actually deployed.
     JWT_PRIVATE_KEY = os.getenv("JWT_PRIVATE_KEY", "")
     JWT_PUBLIC_KEY = os.getenv("JWT_PUBLIC_KEY", "")
+
+    # Password login continues issuing HS256 tokens for compatibility with
+    # the current Admin/Studio contract. Production must provide the shared
+    # HS256 key explicitly; no test/dev fallback is accepted at startup.
+    if APP_ENV == "production" and JWT_ALGORITHM != "HS256":
+        raise RuntimeError("Production Auth release requires the approved HS256 contract")
+    if APP_ENV == "production" and (not SECRET_KEY or len(SECRET_KEY.encode("utf-8")) < 32):
+        raise RuntimeError("Production Auth requires a persistent SECRET_KEY of at least 32 bytes")
+
+    # Email MFA remains opt-in and applies consistently to active local
+    # password accounts (including Studio users) when enabled.
+    EMAIL_MFA_ENABLED = os.getenv("EMAIL_MFA_ENABLED", "false").lower() == "true"
+    EMAIL_MFA_OTP_PEPPER = load_email_otp_pepper()
+    EMAIL_SERVICE_SEND_URL = os.getenv("EMAIL_SERVICE_SEND_URL", "")
+    EMAIL_SERVICE_TOKEN = os.getenv("EMAIL_SERVICE_TOKEN", "")
+    EMAIL_FROM_ADDRESS = os.getenv("EMAIL_FROM_ADDRESS", "security@omnibioai.org")
+    EMAIL_MFA_TTL_SECONDS = 300
+    EMAIL_MFA_MAX_ATTEMPTS = 5
+    EMAIL_MFA_RESEND_COOLDOWN_SECONDS = 60
+    EMAIL_MFA_MAX_SENDS_PER_HOUR = int(os.getenv("EMAIL_MFA_MAX_SENDS_PER_HOUR", "5"))
+    if APP_ENV == "production" and EMAIL_MFA_ENABLED and (
+        not EMAIL_MFA_OTP_PEPPER or not EMAIL_SERVICE_SEND_URL or not EMAIL_SERVICE_TOKEN
+    ):
+        raise RuntimeError("Enabled production email MFA requires pepper and delivery configuration")
 
     # PR12: iss/aud claims identifying this service as the token issuer and
     # the platform as the intended audience. Verified opportunistically (see
