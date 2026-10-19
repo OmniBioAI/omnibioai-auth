@@ -228,7 +228,7 @@ def test_model_resolve_ownership_does_not_imply_model_use(client):
 
 def test_existing_scientist_permission_set_unchanged():
     """SCIENTIST_PERMISSIONS is exactly workflow.execute, dataset.read, model.use, model.read,
-    workspace.launch, runs.read and manage_billing, without model.resolve_ownership.
+    workspace.launch and runs.read, without model.resolve_ownership or manage_billing.
     """
     # SCIENTIST_PERMISSIONS (the role that carries model.use) must not have
     # gained model.resolve_ownership as a side effect of this change.
@@ -245,8 +245,9 @@ def test_existing_scientist_permission_set_unchanged():
     # capability.
     assert org_service.SCIENTIST_PERMISSIONS == [
         "workflow.execute", "dataset.read", "model.use", "model.read", "workspace.launch", "runs.read",
-        "manage_billing",
     ]
+    # manage_billing was later removed again: billing is org_admin-only.
+    assert "manage_billing" not in org_service.SCIENTIST_PERMISSIONS
     assert "model.resolve_ownership" not in org_service.SCIENTIST_PERMISSIONS
 
 

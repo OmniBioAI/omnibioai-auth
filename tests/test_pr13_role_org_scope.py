@@ -15,7 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import Organization, OrganizationMembership
-from app.services import role_service
+from app.services import org_service, role_service
 
 _direct_engine = create_engine("sqlite:///./test.db")
 _DirectSession = sessionmaker(bind=_direct_engine)
@@ -166,3 +166,18 @@ def test_resolve_roles_rejects_org_scoped_custom_role(db):
     role_service.create_role(db, name, ["dataset.read"], organization_id=org.id)
     with pytest.raises(ValueError, match="Unknown role"):
         role_service.resolve_roles(db, [name])
+
+
+def test_ensure_default_org_roles_never_grants_scientist_manage_billing(db):
+    """manage_billing is org_admin-only. ensure_default_org_roles() runs at
+    every startup and tops scientist up to SCIENTIST_PERMISSIONS, so a
+    manage_billing removed from a live scientist row must not come back."""
+    scientist = role_service.get_role_by_name(db, org_service.SCIENTIST_ROLE)
+    role_service.update_role_permissions(db, scientist, list(org_service.SCIENTIST_PERMISSIONS))
+
+    org_service.ensure_default_org_roles(db)
+    db.refresh(scientist)
+
+    perms = {p.name for p in scientist.permissions}
+    assert "manage_billing" not in perms
+    assert set(org_service.SCIENTIST_PERMISSIONS) <= perms
