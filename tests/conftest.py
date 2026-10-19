@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 # Must be set before any app module is imported so config.settings has a key.
 os.environ.setdefault("SECRET_KEY", "test-secret-key-omnibioai-32-chars-x!")
+os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("AUTH_STARTUP_SCHEMA_MODE", "test-create")
 # Explicit test-only 256-bit audit key. Production must provision an
 # independent value through its protected secret mechanism.
 os.environ.setdefault("AUTH_AUDIT_INTEGRITY_KEY", "a1" * 32)
@@ -25,7 +27,10 @@ os.environ.setdefault("ADMIN_BOOTSTRAP_PASSWORD", "test-admin-password-not-for-p
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-TEST_DB_URL = "sqlite:///./test.db"
+# Qualification and CI may provide a writable, isolated SQLite URL. The
+# repository-local test.db remains the compatibility fallback only; production
+# configuration is never read by this fixture.
+TEST_DB_URL = os.environ.get("AUTH_TEST_DB_URL", "sqlite:///./test.db")
 
 test_engine = create_engine(
     TEST_DB_URL,

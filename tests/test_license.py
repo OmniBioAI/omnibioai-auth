@@ -73,6 +73,124 @@ def test_generate_license(client, admin_headers):
     assert data["expires_at"] is not None
 
 
+def test_generate_writes_masked_audit_event(client, admin_headers):
+    """Generating a license writes one license_generated audit event that names the admin and
+    the license, and records only a masked key -- never the key itself.
+    """
+    from conftest import TestingSessionLocal
+    from app.db.models import AuditEvent, LicenseKey
+
+    email = _unique_email()
+    resp = client.post(
+        "/license/generate",
+        json={"email": email, "plan": "beta", "platform": "web", "max_uses": 2},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+    key = resp.json()["key"]
+
+    db = TestingSessionLocal()
+    try:
+        row = db.query(LicenseKey).filter(LicenseKey.key == key).one()
+        events = db.query(AuditEvent).filter(
+            AuditEvent.event_type == "license_generated", AuditEvent.resource_id == str(row.id),
+        ).all()
+        assert len(events) == 1
+        event = events[0]
+        assert event.actor_user_id is not None
+        assert event.after_state == {
+            "email": email, "plan": "beta", "platform": "web", "expires_at": None, "max_uses": 2,
+        }
+        assert event.event_metadata == {"key": key[:9] + "-••••-••••-••••"}
+        assert key not in repr((event.before_state, event.after_state, event.event_metadata))
+    finally:
+        db.close()
+
+
+def _org_with_client(client, headers, scopes):
+    """Create an org as the caller and an OAuth client in it; return (org_id, client json)."""
+    org = client.post(
+        "/orgs", json={"name": "License Issuer Org", "slug": f"lic-issuer-{uuid.uuid4().hex[:8]}"},
+        headers=headers,
+    )
+    assert org.status_code in (200, 201), org.text
+    org_id = org.json()["id"]
+    created = client.post(
+        f"/orgs/{org_id}/oauth-clients", json={"name": "checkout worker", "scopes": scopes}, headers=headers,
+    )
+    return org_id, created
+
+
+def _service_token(client, oauth_client):
+    resp = client.post("/oauth/token", data={
+        "grant_type": "client_credentials",
+        "client_id": oauth_client["client_id"],
+        "client_secret": oauth_client["client_secret"],
+    })
+    assert resp.status_code == 200, resp.text
+    return resp.json()["access_token"]
+
+
+def test_license_issue_service_client_can_generate_and_is_audited(client, admin_headers):
+    """A client_credentials token with license.issue can generate a license; the audit event
+    names the OAuth client as the actor and carries no user id.
+    """
+    from conftest import TestingSessionLocal
+    from app.db.models import AuditEvent, LicenseKey
+
+    org_id, created = _org_with_client(client, admin_headers, ["license.issue"])
+    assert created.status_code == 201, created.text
+    oauth_client = created.json()
+    token = _service_token(client, oauth_client)
+
+    email = _unique_email()
+    resp = client.post("/license/generate", json={"email": email, "plan": "beta"}, headers=_auth_header(token))
+    assert resp.status_code == 200, resp.text
+    key = resp.json()["key"]
+
+    db = TestingSessionLocal()
+    try:
+        row = db.query(LicenseKey).filter(LicenseKey.key == key).one()
+        event = db.query(AuditEvent).filter(
+            AuditEvent.event_type == "license_generated", AuditEvent.resource_id == str(row.id),
+        ).one()
+        assert event.actor_user_id is None
+        assert event.organization_id == org_id
+        assert event.event_metadata["actor_type"] == "oauth_client"
+        assert event.event_metadata["actor_client_id"] == oauth_client["client_id"]
+        assert key not in repr(event.event_metadata)
+    finally:
+        db.close()
+
+
+def test_license_issue_scope_can_only_be_granted_by_a_license_manager(client):
+    """An org owner without manage_licenses cannot create an OAuth client with license.issue."""
+    email, password = _unique_email(), "TestPassword123!"
+    client.post("/auth/register", json={"email": email, "password": password})
+    token = client.post("/auth/login", json={"email": email, "password": password}).json()["access_token"]
+    _, created = _org_with_client(client, _auth_header(token), ["license.issue"])
+    assert created.status_code == 400
+
+
+def test_service_token_without_license_issue_scope_cannot_generate(client, admin_headers):
+    """A service token whose client lacks license.issue is forbidden from /license/generate."""
+    _, created = _org_with_client(client, admin_headers, ["manage_teams"])
+    token = _service_token(client, created.json())
+    resp = client.post("/license/generate", json={"email": _unique_email()}, headers=_auth_header(token))
+    assert resp.status_code == 403
+
+
+def test_revoked_license_issue_client_token_is_rejected(client, admin_headers):
+    """Revoking the OAuth client stops its already-issued token from generating licenses."""
+    org_id, created = _org_with_client(client, admin_headers, ["license.issue"])
+    oauth_client = created.json()
+    token = _service_token(client, oauth_client)
+    revoked = client.delete(f"/orgs/{org_id}/oauth-clients/{oauth_client['id']}", headers=admin_headers)
+    assert revoked.status_code == 204
+    resp = client.post("/license/generate", json={"email": _unique_email()}, headers=_auth_header(token))
+    assert resp.status_code == 401
+
+
 # ── Validate ──────────────────────────────────────────────────────────────────
 
 def test_validate_success_issues_tokens(client, admin_headers):

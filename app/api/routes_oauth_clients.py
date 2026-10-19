@@ -13,13 +13,18 @@ from sqlalchemy.orm import Session
 
 from app.db.models import OAuthClient, OrganizationMembership
 from app.db.session import get_db
-from app.rbac import require_org_permission_or_platform_admin
+from app.rbac import get_current_user, require_org_permission_or_platform_admin
 from app.schemas.oauth_client import OAuthClientCreate, OAuthClientCreated, OAuthClientOut
 from app.services import oauth_client_service, org_service
 
 router = APIRouter(prefix="/orgs/{org_id}/oauth-clients", tags=["oauth-clients"])
 
 MANAGE_OAUTH_CLIENTS = "manage_oauth_clients"
+# Global, not org-scoped: no org role carries it, so an org's own
+# permissions can never cover it. Only someone who can issue licenses
+# themselves may hand that ability to a service client.
+LICENSE_ISSUE = "license.issue"
+MANAGE_LICENSES = "manage_licenses"
 
 
 def _client_out(client: OAuthClient) -> OAuthClientOut:
@@ -41,8 +46,11 @@ def create_oauth_client(
     body: OAuthClientCreate,
     db: Session = Depends(get_db),
     membership: OrganizationMembership = Depends(require_org_permission_or_platform_admin(MANAGE_OAUTH_CLIENTS)),
+    user: dict = Depends(get_current_user),
 ):
     caller_permissions = org_service.permissions_for_membership(membership)
+    if MANAGE_LICENSES in (user.get("permissions") or []):
+        caller_permissions = caller_permissions | {LICENSE_ISSUE}
     try:
         oauth_client, client_secret = oauth_client_service.create_oauth_client(
             db, org_id, membership.user_id, body.name, body.scopes, caller_permissions

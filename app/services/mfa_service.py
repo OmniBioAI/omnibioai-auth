@@ -25,9 +25,9 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core import crypto
-from app.core.jwt import decode_token
-from app.db.models import MFADevice, MFARecoveryCode, MFAUsedTOTPStep, OrganizationMFAPolicy, RevokedToken, User
-from app.services import audit_service, mfa_throttle_service, org_service
+from app.core.jwt import create_mfa_challenge_token, decode_token
+from app.db.models import MFADevice, MFAEmailOTP, MFARecoveryCode, MFAUsedTOTPStep, OrganizationMFAPolicy, RevokedToken, User
+from app.services import audit_service, email_mfa_service, mfa_throttle_service, org_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import generate_tokens
 
@@ -402,7 +402,10 @@ def _try_claim_totp_step(db: Session, device_id: int, time_step: int) -> bool:
         return False
 
 
-def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip: str | None = None) -> tuple[str, str]:
+def verify_mfa_challenge(
+    db: Session, challenge_token: str, code: str, client_ip: str | None = None,
+    method: str | None = None,
+) -> tuple[str, str] | dict:
     """Completes an MFA-gated login. Validates `challenge_token` (issued
     by auth_service.generate_tokens_or_mfa_challenge), verifies `code`
     against every verified TOTP device the user holds -- not just one,
@@ -472,6 +475,9 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
 
     jti = payload.get("jti")
     user_id = payload.get("user_id")
+    required_stage = payload.get("required_stage")
+    if required_stage not in (None, "email", "totp"):
+        raise MFAChallengeError("Invalid or expired challenge token")
 
     # HIPAA Phase 3: earliest point a trusted account identifier exists
     # (the token's signature is already verified above) -- checked before
@@ -493,7 +499,9 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     # MFA (removes their last verified device, see remove_device above)
     # between requesting and completing a challenge must not be able to
     # finish logging in on a now-stale challenge token.
-    if not user.mfa_enabled:
+    if not user.mfa_enabled and not email_mfa_service.is_enabled_for(user):
+        raise MFAChallengeError("Invalid or expired challenge token")
+    if required_stage == "totp" and not user.mfa_enabled:
         raise MFAChallengeError("Invalid or expired challenge token")
 
     devices = (
@@ -507,7 +515,7 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     )
 
     matched_device = None
-    for device in devices:
+    for device in devices if required_stage != "email" and method in (None, "totp") else []:
         try:
             secret = crypto.decrypt(device.encrypted_secret)
             step = _totp_matched_step(secret, code)
@@ -569,7 +577,10 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     # disambiguates, never a separate endpoint or field. See
     # docs/pr11-mfa-recovery-codes-discovery.md SS3.
     try:
-        recovery_match = verify_recovery_code(db, user.id, code)
+        recovery_match = (
+            verify_recovery_code(db, user.id, code)
+            if required_stage != "email" and method in (None, "recovery_code") else None
+        )
     except Exception:
         # Same "treat as no-match, never let the throttle be bypassed by
         # an unexpected error" reasoning as the TOTP loop above.
@@ -594,6 +605,37 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
             resource_type="user", resource_id=user.id,
             metadata={"authentication_method": auth_method},
         )
+        return generate_tokens(
+            db, user, auth_method=auth_method, idp_org_id=idp_org_id,
+            saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+            organization_saml_config_id=organization_saml_config_id,
+        )
+
+    email_matched = False
+    if required_stage != "totp" and method in (None, "email") and email_mfa_service.is_enabled_for(user):
+        try:
+            email_matched = email_mfa_service.verify_code(db, user.id, jti, code)
+        except Exception:
+            email_matched = False
+    if email_matched:
+        user.mfa_last_verified_at = datetime.utcnow()
+        _consume_challenge_jti(db, jti)
+        mfa_throttle_service.record_success(user_id, client_ip)
+        audit_service.log_event(
+            db, AuditEventType.MFA_VERIFIED,
+            actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
+            resource_type="mfa_email_otp", resource_id=None,
+            metadata={"authentication_method": auth_method, "factor": "email"},
+        )
+        if user.mfa_enabled:
+            next_challenge = create_mfa_challenge_token(
+                user.id, auth_method=auth_method, idp_org_id=idp_org_id,
+                saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+                organization_saml_config_id=organization_saml_config_id,
+                required_stage="totp",
+            )
+            return {"mfa_required": True, "challenge_token": next_challenge,
+                    "methods": ["totp", "recovery_code"]}
         return generate_tokens(
             db, user, auth_method=auth_method, idp_org_id=idp_org_id,
             saml_name_id=saml_name_id, saml_session_index=saml_session_index,

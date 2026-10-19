@@ -480,6 +480,14 @@ def test_existing_oauth_only_user_cannot_be_linked_without_password(client, org_
     async def fake_exchange(provider, code, code_verifier=None):
         return "google-uid-for-linking-test", email
     monkeypatch.setattr(oauth_service, "exchange_code_for_userinfo", fake_exchange)
+    # v62: SSO creates a new account only for an email with a live license.
+    from conftest import TestingSessionLocal
+    from app.services import license_service
+    approval_db = TestingSessionLocal()
+    try:
+        license_service.create_license(approval_db, email=email)
+    finally:
+        approval_db.close()
 
     google_state = create_oauth_state_token("google")
     created = client.post("/auth/google/callback", json={"code": "fake", "state": google_state})

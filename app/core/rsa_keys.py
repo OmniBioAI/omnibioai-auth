@@ -32,6 +32,11 @@ def _load_or_generate_keys():
         private_key = serialization.load_pem_private_key(
             _normalize_pem(settings.JWT_PRIVATE_KEY), password=None
         )
+    elif settings.APP_ENV == "production":
+        # Production issues HS256 tokens in this release. Do not manufacture
+        # process-local RSA material; RS256 requires a coordinated future
+        # cutover with explicitly provisioned keys.
+        return None, None
     else:
         # No configured key: generate an ephemeral, process-local keypair so
         # RS256/JWKS work out of the box in dev/test. NOT safe for
@@ -59,23 +64,25 @@ PRIVATE_KEY_PEM = _private_key.private_bytes(
     encoding=serialization.Encoding.PEM,
     format=serialization.PrivateFormat.PKCS8,
     encryption_algorithm=serialization.NoEncryption(),
-).decode()
+).decode() if _private_key is not None else None
 
 PUBLIC_KEY_PEM = _public_key.public_bytes(
     encoding=serialization.Encoding.PEM,
     format=serialization.PublicFormat.SubjectPublicKeyInfo,
-).decode()
+).decode() if _public_key is not None else None
 
 # Stable identifier for this keypair, derived from the public key itself
 # (not random) so it's reproducible across a restart when the same key
 # material is configured, and changes automatically if the key ever does --
 # a real prerequisite for a future multi-key JWKS during key rotation, even
 # though this PR only ever publishes one key.
-KID = hashlib.sha256(PUBLIC_KEY_PEM.encode()).hexdigest()[:16]
+KID = hashlib.sha256(PUBLIC_KEY_PEM.encode()).hexdigest()[:16] if PUBLIC_KEY_PEM else None
 
 
 def public_jwk() -> dict:
     """JWKS-format ({kty, n, e, ...}) representation of the public key."""
+    if PUBLIC_KEY_PEM is None:
+        raise RuntimeError("JWKS keys are unavailable for the configured HS256 release")
     key_dict = jose_jwk.construct(PUBLIC_KEY_PEM, algorithm="RS256").to_dict()
     key_dict["kid"] = KID
     key_dict["use"] = "sig"

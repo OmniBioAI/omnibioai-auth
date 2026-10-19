@@ -16,11 +16,13 @@ from alembic import command
 from alembic.config import Config
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+CURRENT_HEAD = ScriptDirectory(str(REPO_ROOT / "alembic")).get_current_head()
 
 BASELINE_TABLES = {
     "users", "roles", "permissions", "user_roles", "role_permissions",
@@ -477,7 +479,7 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0031_integration_credentials"
+    assert recorded == CURRENT_HEAD
 
 
 def test_0031_accepts_exact_tables_precreated_by_runtime_create_all(sqlite_db_url):
@@ -499,7 +501,7 @@ def test_0031_accepts_exact_tables_precreated_by_runtime_create_all(sqlite_db_ur
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0031_integration_credentials"
+    assert recorded == CURRENT_HEAD
 
 
 def test_0031_rejects_partial_precreated_credential_schema(sqlite_db_url):
@@ -1155,7 +1157,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0031_integration_credentials"
+    assert recorded == CURRENT_HEAD
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

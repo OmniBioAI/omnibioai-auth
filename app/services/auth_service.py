@@ -15,7 +15,7 @@ from app.db.models import OrganizationMFAPolicy, User, RefreshToken, UserSession
 from app.core.config import settings
 from app.core.security import DUMMY_PASSWORD_HASH, hash_password, needs_rehash, verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
-from app.services import audit_service, login_throttle_service, org_service, session_service, team_service
+from app.services import audit_service, email_mfa_service, login_throttle_service, org_service, session_service, team_service
 from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
@@ -486,7 +486,9 @@ def generate_tokens_or_mfa_challenge(
         if policy is not None and policy.required and not policy.override_active:
             org_requires_mfa = True
 
-    if not user.mfa_enabled:
+    email_mfa_required = auth_method == "password" and email_mfa_service.is_enabled_for(user)
+
+    if not user.mfa_enabled and not email_mfa_required:
         if org_requires_mfa:
             raise MFAEnrollmentRequiredError()
         access, refresh = generate_tokens(
@@ -501,6 +503,7 @@ def generate_tokens_or_mfa_challenge(
         user.id, auth_method=auth_method, idp_org_id=idp_org_id,
         saml_name_id=saml_name_id, saml_session_index=saml_session_index,
         organization_saml_config_id=organization_saml_config_id,
+        required_stage="email" if email_mfa_required else None,
     )
 
     audit_service.log_event(
@@ -511,7 +514,12 @@ def generate_tokens_or_mfa_challenge(
         metadata={"authentication_method": auth_method},
     )
 
-    return {"mfa_required": True, "challenge_token": challenge_token, "methods": ["totp"]}
+    methods = ["totp"] if user.mfa_enabled else []
+    if email_mfa_required:
+        email_mfa_service.issue_code(db, user, challenge_token)
+        methods = ["email"]
+
+    return {"mfa_required": True, "challenge_token": challenge_token, "methods": methods}
 
 
 def revoke_token(db, token):

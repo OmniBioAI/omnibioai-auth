@@ -26,6 +26,14 @@ logger = logging.getLogger("omnibioai.auth.audit")
 class AuditEventType:
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILURE = "login_failure"
+    # Google/GitHub/Microsoft sign-in outcomes. Provider and email only --
+    # never the provider's code or tokens.
+    OAUTH_LOGIN = "oauth_login"
+    OAUTH_LINKED = "oauth_linked"
+    OAUTH_LINK_REQUIRED = "oauth_link_required"
+    OAUTH_ACCOUNT_CREATED = "oauth_account_created"
+    OAUTH_REJECTED_NOT_APPROVED = "oauth_rejected_not_approved"
+    OAUTH_REJECTED_UNVERIFIED_EMAIL = "oauth_rejected_unverified_email"
     ROLE_CREATED = "role_created"
     ROLE_ASSIGNED = "role_assigned"
     ROLE_REMOVED = "role_removed"
@@ -38,6 +46,8 @@ class AuditEventType:
     USER_ENABLED = "user_enabled"
     USER_DISABLED = "user_disabled"
     API_KEY_CREATED = "api_key_created"
+    # Never the key itself in metadata -- only masked_key()'s first group.
+    LICENSE_GENERATED = "license_generated"
     API_KEY_REVOKED = "api_key_revoked"
     # M9 (API-key lifecycle): renaming a key's display name only -- scopes,
     # status, and the key material itself are unaffected and keep their own
@@ -116,6 +126,8 @@ class AuditEventType:
     MFA_CHALLENGE_REQUIRED = "mfa_challenge_required"
     MFA_VERIFIED = "mfa_verified"
     MFA_VERIFICATION_FAILED = "mfa_verification_failed"
+    MFA_EMAIL_CODE_SENT = "mfa_email_code_sent"
+    MFA_EMAIL_CODE_RESENT = "mfa_email_code_resent"
     # PR11.5.4 (Enterprise MFA Recovery Codes + Admin Reset). See
     # docs/pr11-mfa-recovery-codes-discovery.md SS4.
     MFA_RECOVERY_CODES_GENERATED = "mfa_recovery_codes_generated"
