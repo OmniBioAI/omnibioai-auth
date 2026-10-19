@@ -9,7 +9,7 @@ Author:
 """
 
 from passlib.context import CryptContext
-from passlib.exc import PasswordSizeError
+from passlib.exc import PasswordSizeError, UnknownHashError
 
 # HIPAA Phase 1 PR2 discovery: plain bcrypt only ever hashes the first 72
 # BYTES of its input -- verified directly (a password differing only past
@@ -70,8 +70,32 @@ def verify_password(password: str, hashed: str):
     # this makes it behave that way instead of crashing the request.
     try:
         return pwd_context.verify(password, hashed)
+    except UnknownHashError:
+        # Disabled and unsupported verifiers must look like an ordinary
+        # failed password check. Spend the same verification cost as the
+        # other generic failure branches to limit timing differences.
+        try:
+            pwd_context.verify(password, DUMMY_PASSWORD_HASH)
+        except PasswordSizeError:
+            pass
+        return False
     except PasswordSizeError:
         return False
+
+
+def password_verifier_scheme(hashed: str | None) -> str | None:
+    """Return the scheme name only for verifiers recognized by this context.
+
+    ``None`` means absent, disabled, or unsupported. Never return or log the
+    verifier itself.
+    """
+    if not hashed:
+        return None
+    try:
+        scheme = pwd_context.identify(hashed)
+    except Exception:
+        return None
+    return scheme if scheme in {"bcrypt", "bcrypt_sha256"} else None
 
 
 def needs_rehash(hashed: str) -> bool:
