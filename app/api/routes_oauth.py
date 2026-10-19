@@ -20,10 +20,49 @@ from app.core.oauth_providers import PROVIDERS, is_configured
 from app.core.security import DUMMY_PASSWORD_HASH, verify_password
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody, OAuthLinkConfirmRequest
-from app.services import oauth_service, org_service, sso_discovery_service
+from app.services import audit_service, license_service, oauth_service, org_service, sso_discovery_service
+from app.services.audit_service import AuditEventType
 from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
+
+NOT_APPROVED_MESSAGE = "This email isn't approved yet. Request beta access at omnibioai.org"
+UNVERIFIED_EMAIL_MESSAGE = (
+    "Your sign-in provider hasn't verified this email address. "
+    "Verify it with the provider, or sign in another way."
+)
+# A passwordless account holding any of these is never linked
+# automatically; it keeps the password link-confirmation path.
+_NO_AUTO_LINK_ROLES = {"admin", "platform_admin"}
+
+
+def _audit_oauth(db: Session, event_type: str, provider: str, email: str | None, user=None, *, commit: bool = True, **extra) -> None:
+    audit_service.log_event(
+        db, event_type, actor_user_id=user.id if user else None, target_user_id=user.id if user else None,
+        resource_type="user" if user else None, resource_id=user.id if user else None,
+        metadata={"provider": provider, "email": email, **extra},
+        commit=commit,
+    )
+
+
+def _sign_in(db: Session, user, provider: str, email: str) -> dict:
+    result = _issue_tokens_or_challenge(db, user, auth_method="oauth")
+    _audit_oauth(db, AuditEventType.OAUTH_LOGIN, provider, email, user, mfa_required=bool(result["mfa_required"]))
+    if result["mfa_required"]:
+        return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
+    return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
+
+
+def _can_auto_link(user) -> bool:
+    """Only an active account with no password at all (NULL/empty, e.g. one
+    created by license activation) and no privileged global role. A
+    disabled-password marker is not "no password": it was disabled on
+    purpose, so it keeps the confirmation path."""
+    return (
+        not user.hashed_password
+        and user.status == "active"
+        and not ({r.name for r in user.roles} & _NO_AUTO_LINK_ROLES)
+    )
 
 
 def _issue_tokens_or_challenge(db: Session, user, auth_method: str, idp_org_id: int | None = None) -> dict:
@@ -68,6 +107,11 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
         provider_user_id, email = await oauth_service.exchange_code_for_userinfo(
             provider, code, code_verifier=code_verifier
         )
+    except oauth_service.OAuthUnverifiedEmail as e:
+        # Before any user lookup: an unverified email creates, links and
+        # signs in nothing.
+        _audit_oauth(db, AuditEventType.OAUTH_REJECTED_UNVERIFIED_EMAIL, provider, e.email)
+        raise HTTPException(403, detail={"reason": "unverified_email", "message": UNVERIFIED_EMAIL_MESSAGE})
     except oauth_service.OAuthError as e:
         raise HTTPException(400, str(e))
 
@@ -104,27 +148,39 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
             },
         )
 
+    # a. Identity already linked. PR11.5.3: single shared MFA decision
+    # point, see docs/pr11-mfa-login-challenge-discovery.md SS2.
     linked_user = oauth_service.find_linked_user(db, provider, provider_user_id)
     if linked_user:
-        # PR11.5.3: single shared MFA decision point, see
-        # docs/pr11-mfa-login-challenge-discovery.md SS2.
-        result = _issue_tokens_or_challenge(db, linked_user, auth_method="oauth")
-        if result["mfa_required"]:
-            return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
-        return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
+        return _sign_in(db, linked_user, provider, email)
 
+    # b. An account with this email exists but isn't linked to this identity.
     existing_user = oauth_service.find_user_by_email(db, email)
     if existing_user:
-        # Email matches an account this OAuth identity isn't linked to yet —
-        # never link silently; require the existing account's password first.
-        link_token = oauth_service.issue_link_confirmation(existing_user, provider, provider_user_id, email)
-        return {"status": "link_required", "link_token": link_token, "provider": provider, "email": email}
+        if not _can_auto_link(existing_user):
+            # Has a password: require it before linking, as before.
+            link_token = oauth_service.issue_link_confirmation(existing_user, provider, provider_user_id, email)
+            _audit_oauth(db, AuditEventType.OAUTH_LINK_REQUIRED, provider, email, existing_user)
+            return {"status": "link_required", "link_token": link_token, "provider": provider, "email": email}
+        # No password (e.g. created by license activation): the provider
+        # has verified this email, so link and sign in.
+        oauth_service.link_oauth_to_existing_user(
+            db, existing_user, provider, provider_user_id, email, commit=False,
+        )
+        _audit_oauth(db, AuditEventType.OAUTH_LINKED, provider, email, existing_user, commit=False)
+        db.commit()
+        return _sign_in(db, existing_user, provider, email)
 
-    new_user = oauth_service.create_user_with_oauth(db, provider, provider_user_id, email)
-    result = _issue_tokens_or_challenge(db, new_user, auth_method="oauth")
-    if result["mfa_required"]:
-        return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
-    return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
+    # c. No account: only an email with a live license may create one.
+    if not license_service.is_email_approved(db, email):
+        _audit_oauth(db, AuditEventType.OAUTH_REJECTED_NOT_APPROVED, provider, email)
+        raise HTTPException(403, detail={"reason": "not_approved", "message": NOT_APPROVED_MESSAGE})
+
+    new_user = oauth_service.create_user_with_oauth(db, provider, provider_user_id, email, commit=False)
+    _audit_oauth(db, AuditEventType.OAUTH_ACCOUNT_CREATED, provider, email, new_user, commit=False)
+    db.commit()
+    db.refresh(new_user)
+    return _sign_in(db, new_user, provider, email)
 
 
 @router.get("/{provider}/login")

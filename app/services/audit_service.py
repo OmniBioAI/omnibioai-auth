@@ -26,6 +26,14 @@ logger = logging.getLogger("omnibioai.auth.audit")
 class AuditEventType:
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILURE = "login_failure"
+    # Google/GitHub/Microsoft sign-in outcomes. Provider and email only --
+    # never the provider's code or tokens.
+    OAUTH_LOGIN = "oauth_login"
+    OAUTH_LINKED = "oauth_linked"
+    OAUTH_LINK_REQUIRED = "oauth_link_required"
+    OAUTH_ACCOUNT_CREATED = "oauth_account_created"
+    OAUTH_REJECTED_NOT_APPROVED = "oauth_rejected_not_approved"
+    OAUTH_REJECTED_UNVERIFIED_EMAIL = "oauth_rejected_unverified_email"
     ROLE_CREATED = "role_created"
     ROLE_ASSIGNED = "role_assigned"
     ROLE_REMOVED = "role_removed"

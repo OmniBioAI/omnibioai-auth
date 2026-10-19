@@ -12,6 +12,8 @@ import secrets
 import string
 from datetime import datetime, timedelta
 
+from sqlalchemy import func, or_
+
 from app.db.models import LicenseKey, User
 from app.services.role_service import assign_default_role
 
@@ -73,6 +75,23 @@ def masked_key(key: str) -> str:
     """OMNI-ABCD-••••-••••-•••• -- enough to recognize a key in an audit
     trail, never enough to use it."""
     return key[:9] + "-••••-••••-••••"
+
+
+def is_email_approved(db, email: str) -> bool:
+    """True when a live license (not revoked, not expired) is addressed to
+    this email, whatever its plan or activation state. Gates only the
+    creation of a NEW account through SSO; existing accounts never need it.
+    """
+    return (
+        db.query(LicenseKey.id)
+        .filter(
+            func.lower(LicenseKey.email) == email.lower(),
+            LicenseKey.revoked_at.is_(None),
+            or_(LicenseKey.expires_at.is_(None), LicenseKey.expires_at > datetime.utcnow()),
+        )
+        .first()
+        is not None
+    )
 
 
 def get_or_create_user_for_email(db, email: str) -> User:

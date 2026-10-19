@@ -141,7 +141,7 @@ def test_provider_configuration_and_userinfo_normalization_edges():
     assert oauth_providers.is_configured("does-not-exist") is False
     assert oauth_providers.redirect_uri_for("google").endswith("/auth/google/callback")
 
-    assert oauth_providers.parse_userinfo("google", {"sub": 12, "email": "g@example.test"}) == (
+    assert oauth_providers.parse_userinfo("google", {"sub": 12, "email": "g@example.test", "email_verified": True}) == (
         "12",
         "g@example.test",
     )
@@ -152,10 +152,13 @@ def test_provider_configuration_and_userinfo_normalization_edges():
          {"email": "verified@example.test", "verified": True, "primary": False}],
     ) == ("9", "verified@example.test")
     assert oauth_providers.parse_userinfo(
-        "microsoft", {"sub": "m1", "preferred_username": "m@example.test"}
+        "microsoft", {"sub": "m1", "email": "m@example.test"},
+        id_token_claims={"tid": oauth_providers.MICROSOFT_CONSUMER_TENANT_ID},
     ) == ("m1", "m@example.test")
-    with pytest.raises(KeyError):
+    with pytest.raises(oauth_providers.UnverifiedEmailError):
         oauth_providers.parse_userinfo("google", {})
+    with pytest.raises(KeyError):
+        oauth_providers.parse_userinfo("google", {"email_verified": True})
     with pytest.raises(ValueError):
         oauth_providers.parse_userinfo("unknown", {})
 
@@ -369,7 +372,7 @@ def test_exchange_raises_when_no_email_in_normalized_userinfo(monkeypatch):
     """
     _ScriptedAsyncClient.responses = [
         _FakeResponse(200, {"access_token": "provider-token"}),
-        _FakeResponse(200, {"sub": "g-1"}),  # no email key
+        _FakeResponse(200, {"sub": "g-1", "email_verified": True}),  # no email key
     ]
     monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
     with pytest.raises(OAuthError, match="did not return an email"):
@@ -395,3 +398,61 @@ def test_exchange_github_fetches_separate_emails_when_userinfo_omits_it(monkeypa
     provider_user_id, email = asyncio.run(exchange_code_for_userinfo("github", "code"))
     assert provider_user_id == "9"
     assert email == "verified@example.test"
+
+
+# ── v62: provider email verification ──────────────────────────────────────────
+
+def _microsoft_id_token(**claims) -> str:
+    # Signature is irrelevant: the exchange reads tid/xms_edov unverified.
+    return jwt.encode({"sub": "m-1", **claims}, "not-checked", algorithm="HS256")
+
+
+def test_exchange_rejects_google_email_not_verified(monkeypatch):
+    """Google with email_verified=false raises OAuthUnverifiedEmail carrying the claimed email."""
+    _ScriptedAsyncClient.responses = [
+        _FakeResponse(200, {"access_token": "provider-token"}),
+        _FakeResponse(200, {"sub": "g-1", "email": "g@example.test", "email_verified": False}),
+    ]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    with pytest.raises(oauth_service.OAuthUnverifiedEmail) as exc:
+        asyncio.run(exchange_code_for_userinfo("google", "code"))
+    assert exc.value.email == "g@example.test"
+
+
+def test_exchange_rejects_microsoft_without_email_claim(monkeypatch):
+    """Microsoft without an `email` claim is rejected, never falling back to preferred_username."""
+    _ScriptedAsyncClient.responses = [
+        _FakeResponse(200, {
+            "access_token": "provider-token",
+            "id_token": _microsoft_id_token(tid=oauth_providers.MICROSOFT_CONSUMER_TENANT_ID),
+        }),
+        _FakeResponse(200, {"sub": "m-1", "preferred_username": "m@example.test"}),
+    ]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    with pytest.raises(oauth_service.OAuthUnverifiedEmail):
+        asyncio.run(exchange_code_for_userinfo("microsoft", "code"))
+
+
+def test_exchange_rejects_microsoft_work_tenant_email_without_xms_edov(monkeypatch):
+    """A work/school tenant's `email` is admin-set; without xms_edov it is not trusted."""
+    _ScriptedAsyncClient.responses = [
+        _FakeResponse(200, {"access_token": "provider-token", "id_token": _microsoft_id_token(tid="some-work-tenant")}),
+        _FakeResponse(200, {"sub": "m-1", "email": "victim@example.test"}),
+    ]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    with pytest.raises(oauth_service.OAuthUnverifiedEmail):
+        asyncio.run(exchange_code_for_userinfo("microsoft", "code"))
+
+
+@pytest.mark.parametrize("claims", [
+    {"tid": oauth_providers.MICROSOFT_CONSUMER_TENANT_ID},
+    {"tid": "some-work-tenant", "xms_edov": True},
+])
+def test_exchange_accepts_microsoft_personal_or_domain_verified_email(monkeypatch, claims):
+    """Microsoft's email is accepted for the personal-account tenant or when xms_edov is true."""
+    _ScriptedAsyncClient.responses = [
+        _FakeResponse(200, {"access_token": "provider-token", "id_token": _microsoft_id_token(**claims)}),
+        _FakeResponse(200, {"sub": "m-1", "email": "m@example.test"}),
+    ]
+    monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
+    assert asyncio.run(exchange_code_for_userinfo("microsoft", "code")) == ("m-1", "m@example.test")
