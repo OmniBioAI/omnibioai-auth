@@ -8,6 +8,8 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
+from datetime import datetime
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
@@ -15,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.jwt import decode_token
 from app.core.token_revocation import assert_token_usable
 from app.db.session import get_db
-from app.db.models import Organization, OrganizationMembership, Team
+from app.db.models import OAuthClient, Organization, OrganizationMembership, Team
 from app.services import org_service, role_service, team_service
 
 security = HTTPBearer()
@@ -338,5 +340,42 @@ def require_service_identity():
             raise HTTPException(401, "Invalid token")
         if payload.get("auth_method") != "client_credentials":
             raise HTTPException(403, "Forbidden -- service token required")
+        return payload
+    return wrapper
+
+
+def require_permission_or_service_scope(permission: str, scope: str):
+    """A user token holding `permission`, or a client_credentials token
+    holding `scope` whose OAuth client is still active. Returns the token
+    payload; a service payload has `client_id` and no `sub`, so callers
+    must branch on auth_method before reading `sub`.
+
+    The live client check matters here: a service token outlives its
+    client's revocation by up to CLIENT_CREDENTIALS_TOKEN_EXPIRE_MINUTES,
+    and require_service_scope does not look the client up at all.
+    """
+    def wrapper(token=Depends(security), db: Session = Depends(get_db)):
+        try:
+            payload = decode_token(token.credentials)
+        except Exception:
+            raise HTTPException(401, "Invalid token")
+        if payload.get("auth_method") != "client_credentials":
+            user = get_current_user(token=token, db=db)
+            if permission not in user.get("permissions", []):
+                raise HTTPException(403, "Forbidden")
+            return user
+
+        assert_token_usable(payload, db)
+        oauth_client = (
+            db.query(OAuthClient).filter(OAuthClient.client_id == payload.get("client_id")).first()
+        )
+        if (
+            oauth_client is None
+            or oauth_client.status != "active"
+            or (oauth_client.expires_at and oauth_client.expires_at < datetime.utcnow())
+        ):
+            raise HTTPException(401, "Invalid token")
+        if scope not in payload.get("scopes", []) or scope not in (oauth_client.scopes or []):
+            raise HTTPException(403, "Forbidden")
         return payload
     return wrapper

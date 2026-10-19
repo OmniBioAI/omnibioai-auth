@@ -58,6 +58,9 @@ FUTURE_NAMES = {
 # `future_permissions` in registry_stats() -- see the stats test below.
 SERVICE_MINT_NAMES = {"service_token.mint"}
 
+# Auth v61: service-client license issuance.
+LICENSE_ISSUE_NAMES = {"license.issue"}
+
 LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -139,9 +142,10 @@ def test_response_contains_all_registered_permissions(client):
     # the 6th org entry counted above).
     # + 1 M15 entry (provider_keys.manage -- BYOK provider-key storage).
     # + 1 omnibioai-launcher entry (workspace.launch).
+    # + 1 auth v61 entry (license.issue -- service-client license issuance).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 34
+    assert len(REGISTRY) == 35
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -322,7 +326,7 @@ def test_platform_admin_can_get_registry_stats(client):
     body = resp.json()
     assert body["total_permissions"] == len(REGISTRY)
     assert body["legacy_permissions"] == len(LEGACY_NAMES)
-    assert body["future_permissions"] == len(FUTURE_NAMES) + len(SERVICE_MINT_NAMES)
+    assert body["future_permissions"] == len(FUTURE_NAMES) + len(SERVICE_MINT_NAMES) + len(LICENSE_ISSUE_NAMES)
     assert body["deprecated_permissions"] == 0
     assert sum(body["by_scope"].values()) == len(REGISTRY)
     assert sum(body["by_category"].values()) == len(REGISTRY)

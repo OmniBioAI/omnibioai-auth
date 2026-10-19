@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.rbac import get_current_user, require_permission
+from app.rbac import get_current_user, require_permission, require_permission_or_service_scope
 from app.schemas.license import (
     LicenseGenerateRequest,
     LicenseGenerateResponse,
@@ -27,12 +27,14 @@ from app.schemas.license import (
     LicenseValidateRequest,
     LicenseValidateResponse,
 )
-from app.services import license_service, org_service
+from app.services import audit_service, license_service, org_service
+from app.services.audit_service import AuditEventType
 from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
 router = APIRouter(prefix="/license", tags=["license"])
 
 MANAGE_LICENSES = "manage_licenses"
+LICENSE_ISSUE = "license.issue"
 
 
 # ---------------- VALIDATE ----------------
@@ -124,7 +126,7 @@ def pull_token(req: LicensePullTokenRequest, db: Session = Depends(get_db)):
 def generate_license(
     req: LicenseGenerateRequest,
     db: Session = Depends(get_db),
-    user=Depends(require_permission(MANAGE_LICENSES)),
+    caller=Depends(require_permission_or_service_scope(MANAGE_LICENSES, LICENSE_ISSUE)),
 ):
     license_key = license_service.create_license(
         db,
@@ -133,7 +135,30 @@ def generate_license(
         platform=req.platform,
         expires_days=req.expires_days,
         max_uses=req.max_uses,
+        commit=False,
     )
+    # A service caller has no user id; it is named by its OAuth client_id.
+    is_service = caller.get("auth_method") == "client_credentials"
+    audit_metadata = {"key": license_service.masked_key(license_key.key)}
+    if is_service:
+        audit_metadata.update(actor_type="oauth_client", actor_client_id=caller["client_id"])
+    audit_service.log_event(
+        db, AuditEventType.LICENSE_GENERATED,
+        actor_user_id=None if is_service else int(caller["sub"]),
+        organization_id=caller.get("org_id") if is_service else None,
+        resource_type="license_key", resource_id=license_key.id,
+        after_state={
+            "email": license_key.email,
+            "plan": license_key.plan,
+            "platform": license_key.platform,
+            "expires_at": license_key.expires_at.isoformat() if license_key.expires_at else None,
+            "max_uses": license_key.max_uses,
+        },
+        metadata=audit_metadata,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(license_key)
     return LicenseGenerateResponse(
         key=license_key.key,
         email=license_key.email,

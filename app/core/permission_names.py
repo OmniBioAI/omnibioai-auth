@@ -219,6 +219,21 @@ _register(
 # satisfy (enforced at import time, below in this file).
 _register(
     PermissionDef(
+        name="license.issue",
+        resource="license",
+        action="issue",
+        scope=PermissionScope.GLOBAL,
+        category=PermissionCategory.PLATFORM,
+        description=(
+            "Issue license keys as a client_credentials service (e.g. the "
+            "storefront checkout worker). Only a holder of manage_licenses "
+            "can grant it to an OAuth client."
+        ),
+        legacy=False,
+    )
+)
+_register(
+    PermissionDef(
         name="service_token.mint",
         resource="service_token",
         action="mint",

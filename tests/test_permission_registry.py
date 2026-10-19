@@ -140,6 +140,12 @@ WORKSPACE_LAUNCH_NAMES = {
     "workspace.launch": PermissionCategory.WORKSPACE,
 }
 
+# Auth v61: service-client license issuance (POST /license/generate with a
+# client_credentials token), GLOBAL like service_token.mint.
+LICENSE_ISSUE_NAMES = {
+    "license.issue": PermissionCategory.PLATFORM,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -432,7 +438,7 @@ def test_registry_contains_exactly_the_expected_names():
         | set(TES_NAMES.keys()) | set(MODEL_REGISTRY_OWNERSHIP_NAMES.keys())
         | set(MODEL_REGISTRY_READ_NAMES.keys()) | set(SERVICE_MINT_NAMES.keys())
         | set(DELEGATED_EXECUTION_NAMES.keys()) | set(RAG_NAMES.keys())
-        | set(WORKSPACE_LAUNCH_NAMES.keys())
+        | set(WORKSPACE_LAUNCH_NAMES.keys()) | set(LICENSE_ISSUE_NAMES.keys())
     )
 
 
@@ -592,7 +598,7 @@ def test_filter_registry_combines_filters_with_and_semantics():
     # #443: service_token.mint is the first non-legacy PLATFORM entry --
     # every other PLATFORM-category permission predates the registry.
     results2 = filter_registry(category=PermissionCategory.PLATFORM, legacy=False)
-    assert {p.name for p in results2} == {"service_token.mint"}
+    assert {p.name for p in results2} == {"service_token.mint", "license.issue"}
 
 
 def test_filter_registry_results_stay_sorted():
@@ -615,7 +621,7 @@ def test_registry_stats_totals_match_registry_size():
         len(FUTURE_NAMES) + len(WORKFLOW_BUNDLES_NAMES) + len(TES_NAMES)
         + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
         + len(SERVICE_MINT_NAMES) + len(DELEGATED_EXECUTION_NAMES) + len(RAG_NAMES)
-        + len(WORKSPACE_LAUNCH_NAMES)
+        + len(WORKSPACE_LAUNCH_NAMES) + len(LICENSE_ISSUE_NAMES)
     )
 
 
@@ -634,7 +640,8 @@ def test_registry_stats_by_scope_sums_to_total():
     # #443's own new non-legacy GLOBAL entry -- see SERVICE_MINT_NAMES
     # above, the first non-legacy permission in this registry that isn't
     # BOTH-scoped).
-    assert stats["by_scope"]["global"] == 9
+    # +1 for license.issue (LICENSE_ISSUE_NAMES above).
+    assert stats["by_scope"]["global"] == 10
     # 11 pre-runs.read + 1 (runs.read, added by the omnibioai-tes IAM
     # integration -- see TES_NAMES above) + 1 (model.resolve_ownership,
     # added by the omnibioai-model-registry Phase 2E integration -- see

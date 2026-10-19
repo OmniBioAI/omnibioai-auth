@@ -37,7 +37,11 @@ def create_license(
     platform: str = "both",
     expires_days: int | None = None,
     max_uses: int = 1,
+    *,
+    commit: bool = True,
 ) -> LicenseKey:
+    """``commit=False`` flushes instead, so a caller can commit the license
+    and its audit row together."""
     key = generate_key()
     # Astronomically unlikely, but a live service shouldn't silently accept
     # a collision — regenerate rather than fail the caller's request.
@@ -57,9 +61,18 @@ def create_license(
         ),
     )
     db.add(license_key)
+    if not commit:
+        db.flush()
+        return license_key
     db.commit()
     db.refresh(license_key)
     return license_key
+
+
+def masked_key(key: str) -> str:
+    """OMNI-ABCD-••••-••••-•••• -- enough to recognize a key in an audit
+    trail, never enough to use it."""
+    return key[:9] + "-••••-••••-••••"
 
 
 def get_or_create_user_for_email(db, email: str) -> User:
