@@ -34,10 +34,11 @@ Connection tests are authenticated and audited. V1 returns `TEST_NOT_SUPPORTED` 
 
 Both Auth and Workbench must receive the same `INTEGRATION_CREDENTIAL_SERVICE_SECRET`. Auth uses `WORKBENCH_PROVIDER_POLICY_BASE_URL` for the Workbench policy projection. References default to 300 seconds and are bounded to 30–900 seconds by `INTEGRATION_CREDENTIAL_REFERENCE_TTL_SECONDS`.
 
-Run `alembic upgrade head` before starting the new Auth image. Because the
-legacy startup path still invokes `Base.metadata.create_all()`, revision 0031
-also recognizes the exact empty table shape that startup may have already
-created while Alembic still records 0030. It verifies all expected columns,
+Run `alembic upgrade head` with the separate migration principal before
+starting the new Auth image. For compatibility with databases affected by the
+former runtime `create_all()` path, revision 0031 also recognizes the exact
+empty table shape that startup may have precreated while Alembic still records
+0030. It verifies all expected columns,
 indexes, checks, and foreign keys before advancing; partial or foreign schemas
 fail closed. Operators must not manually stamp around a mismatch.
 

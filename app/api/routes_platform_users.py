@@ -17,7 +17,12 @@ from app.db.models import User
 from app.db.session import get_db
 from app.rbac import MANAGE_ALL_ORGS, get_current_user, require_permission
 from app.schemas.mfa import MFAResetOut
-from app.schemas.user_admin import PlatformUserDetailOut, PlatformUserListOut, UserStatusUpdate
+from app.schemas.user_admin import (
+    PlatformUserDetailOut,
+    PlatformUserListOut,
+    UserEmailUpdate,
+    UserStatusUpdate,
+)
 from app.services import mfa_service, user_admin_service
 
 # Phase 3 PR3A. New prefix, mirroring routes_platform_admin.py's own
@@ -91,6 +96,30 @@ def update_platform_user_status(
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    detail = user_admin_service.get_user_detail(db, user_id)
+    return detail
+
+
+@router.patch("/{user_id}/email", response_model=PlatformUserDetailOut)
+def update_platform_user_email(
+    user_id: int,
+    body: UserEmailUpdate,
+    db: Session = Depends(get_db),
+    caller=Depends(get_current_user),
+    _admin=Depends(_require_platform_admin),
+):
+    try:
+        user_admin_service.change_user_email(
+            db,
+            user_id=user_id,
+            new_email=body.email,
+            reason=body.reason,
+            actor_user_id=int(caller["sub"]),
+        )
+    except LookupError:
+        raise HTTPException(404, "User not found")
+    except user_admin_service.EmailConflictError as exc:
+        raise HTTPException(409, str(exc))
     detail = user_admin_service.get_user_detail(db, user_id)
     return detail
 

@@ -41,10 +41,11 @@ INTERACTION_TABLES = {"interactions"}  # PR-B2 (0019)
 ORG_SAML_TABLES = {"organization_saml_configs"}  # SAML SSO PR2 (0021)
 MFA_TOTP_REPLAY_TABLES = {"mfa_used_totp_steps"}  # HIPAA Phase 3b (0024)
 INTEGRATION_CREDENTIAL_TABLES = {"integration_credentials", "integration_credential_references"}
+MANUAL_LICENSE_TABLES = {"license_issuance_requests"}
 ALL_TABLES = (
     BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
     | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES | INTERACTION_TABLES | ORG_SAML_TABLES
-    | MFA_TOTP_REPLAY_TABLES | INTEGRATION_CREDENTIAL_TABLES
+    | MFA_TOTP_REPLAY_TABLES | INTEGRATION_CREDENTIAL_TABLES | MANUAL_LICENSE_TABLES
 )
 
 
@@ -92,7 +93,10 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     assert ALL_TABLES <= actual_tables, f"Missing tables: {ALL_TABLES - actual_tables}"
 
     license_columns = {c["name"] for c in inspector.get_columns("license_keys")}
-    assert {"organization_id", "machine_id", "max_devices"} <= license_columns
+    assert {
+        "organization_id", "machine_id", "max_devices", "key_digest", "key_prefix",
+        "recipient_name", "renewed_at",
+    } <= license_columns
 
     oauth_account_columns = {c["name"] for c in inspector.get_columns("oauth_accounts")}
     assert {"organization_sso_config_id", "organization_saml_config_id"} <= oauth_account_columns
@@ -477,16 +481,15 @@ def test_sqlite_stamp_then_upgrade_matches_real_deployment_procedure(sqlite_db_u
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0031_integration_credentials"
+    assert recorded == "0035_organization_invitations"
 
 
-def test_0031_accepts_exact_tables_precreated_by_runtime_create_all(sqlite_db_url):
-    """Starting new app code before Alembic must remain recoverable.
+def test_0031_accepts_exact_tables_precreated_by_legacy_runtime_create_all(sqlite_db_url):
+    """Schema left by an older app-before-Alembic ordering remains recoverable.
 
-    app.main still calls create_all(), so an environment recorded at 0030
-    can receive the two new ORM tables before the 0031 upgrade is run. The
-    migration verifies that exact shape and advances normally; it never asks
-    an operator to stamp around the mismatch.
+    An older release could leave an environment recorded at 0030 with the two
+    new ORM tables precreated. The migration verifies that exact shape and
+    advances normally; it never asks an operator to stamp around the mismatch.
     """
     cfg = _alembic_config(sqlite_db_url)
     command.upgrade(cfg, "0030_user_timezone")
@@ -499,7 +502,7 @@ def test_0031_accepts_exact_tables_precreated_by_runtime_create_all(sqlite_db_ur
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0031_integration_credentials"
+    assert recorded == "0035_organization_invitations"
 
 
 def test_0031_rejects_partial_precreated_credential_schema(sqlite_db_url):
@@ -512,6 +515,21 @@ def test_0031_rejects_partial_precreated_credential_schema(sqlite_db_url):
 
     with pytest.raises(RuntimeError, match="does not match the expected create_all schema"):
         command.upgrade(cfg, "head")
+
+
+def test_0032_downgrade_refuses_to_drop_digest_only_licenses(sqlite_db_url):
+    """A rollback may not discard the only verifier for newly issued keys."""
+    cfg = _alembic_config(sqlite_db_url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(sqlite_db_url)
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO license_keys (key_digest, email) VALUES (:digest, :email)"),
+            {"digest": "a" * 64, "email": "rollback-test@omnibioai.test"},
+        )
+
+    with pytest.raises(RuntimeError, match="Refusing manual-license downgrade"):
+        command.downgrade(cfg, "0031_integration_credentials")
 
 
 def test_sqlite_0019_is_purely_additive_existing_session_rows_survive(sqlite_db_url):
@@ -1024,7 +1042,10 @@ def test_mysql_fresh_upgrade_head_creates_all_tables(mysql_db_url):
     assert ALL_TABLES <= actual_tables, f"Missing tables: {ALL_TABLES - actual_tables}"
 
     license_columns = {c["name"] for c in inspector.get_columns("license_keys")}
-    assert {"organization_id", "machine_id", "max_devices"} <= license_columns
+    assert {
+        "organization_id", "machine_id", "max_devices", "key_digest", "key_prefix",
+        "recipient_name", "renewed_at",
+    } <= license_columns
 
 
 def test_mysql_auth_audit_integrity_triggers_block_mutation(mysql_db_url):
@@ -1155,7 +1176,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0031_integration_credentials"
+    assert recorded == "0033_email_mfa_otp"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

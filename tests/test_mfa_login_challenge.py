@@ -21,7 +21,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.jwt import _sign, create_oauth_state_token, create_sso_state_token, decode_token
 from app.core.oauth_providers import PROVIDERS
-from app.db.models import AuditEvent, OAuthAccount, Organization, OrganizationSSOConfig, RefreshToken, User
+from app.db.models import AuditEvent, LicenseKey, OAuthAccount, Organization, OrganizationMembership, OrganizationSSOConfig, RefreshToken, User
 from app.services import mfa_service, oauth_service, org_oidc_service
 
 _direct_engine = create_engine("sqlite:///./test.db")
@@ -208,6 +208,85 @@ def test_challenge_with_valid_code_returns_tokens(client, mfa_user):
 
     row = _user_row(_user_id(client, data["access_token"]))
     assert row.mfa_last_verified_at is not None
+
+
+def test_manual_license_activation_completes_mfa_before_owner_validation(client, configured_crypto):
+    """The actual Auth path is password -> challenge -> MFA -> owner license validation."""
+    user = _register_and_login(client)
+    owner_headers = _auth_header(user["access_token"])
+    secret = _enable_mfa(client, owner_headers)
+
+    db = _DirectSession()
+    try:
+        owner = db.query(User).filter(User.email == user["email"]).one()
+        organization = db.query(Organization).order_by(Organization.id).first()
+        membership = OrganizationMembership(
+            organization_id=organization.id, user_id=owner.id, status="active", roles=[],
+        )
+        db.add(membership)
+        db.commit()
+        owner_id, organization_id = owner.id, organization.id
+    finally:
+        db.close()
+
+    admin_login = client.post(
+        "/auth/login",
+        json={"email": "admin@omnibioai", "password": "test-admin-password-not-for-prod"},
+    )
+    assert admin_login.status_code == 200
+    issue = client.post(
+        "/platform/licenses",
+        json={
+            "full_name": "MFA Activation Test", "email": user["email"],
+            "persona": "developer", "validity_days": 30,
+            "organization_id": organization_id,
+            "confirm_role_change": True, "confirm_replace_existing": False,
+        },
+        headers={
+            **_auth_header(admin_login.json()["access_token"]),
+            "Idempotency-Key": "mfa-activation-test-2026-01",
+        },
+    )
+    assert issue.status_code == 200, issue.text
+    key = issue.json()["key"]
+
+    password_login = client.post(
+        "/auth/login", json={"email": user["email"], "password": user["password"]},
+    )
+    assert password_login.status_code == 200
+    assert password_login.json()["mfa_required"] is True
+    assert "access_token" not in password_login.json()
+    challenge_token = password_login.json()["challenge_token"]
+    code = mfa_service._totp_code_at(secret, int(time.time()))
+    verified = client.post(
+        "/users/me/mfa/challenge", json={"challenge_token": challenge_token, "code": code},
+    )
+    assert verified.status_code == 200, verified.text
+
+    activated = client.post(
+        "/license/validate", json={"key": key, "email": user["email"], "platform": "desktop"},
+        headers=_auth_header(verified.json()["access_token"]),
+    )
+    assert activated.status_code == 200 and activated.json()["valid"] is True
+    assert activated.json()["access_token"] is None
+
+    replay = client.post(
+        "/users/me/mfa/challenge", json={"challenge_token": challenge_token, "code": code},
+    )
+    assert replay.status_code == 401
+
+    db = _DirectSession()
+    try:
+        license_row = db.query(LicenseKey).filter(LicenseKey.id == issue.json()["license"]["id"]).one()
+        owner = db.query(User).filter(User.id == owner_id).one()
+        member = db.query(OrganizationMembership).filter_by(
+            user_id=owner_id, organization_id=organization_id,
+        ).one()
+        assert license_row.user_id == owner_id and license_row.organization_id == organization_id
+        assert "scientist" in {role.name for role in member.roles}
+        assert "user" in {role.name for role in owner.roles}
+    finally:
+        db.close()
 
 
 def test_challenge_with_invalid_code_rejected(client, mfa_user):
@@ -412,6 +491,7 @@ def test_sso_login_with_mfa_enabled_returns_challenge(client, mfa_user, monkeypa
     assert "access_token" not in data
 
 
+@pytest.mark.skip(reason="license key is no longer an authentication factor")
 def test_license_login_with_mfa_enabled_returns_challenge(client, mfa_user):
     """/license/validate for an MFA-enabled user returns valid=true with mfa_required, a challenge
     token, and no access or refresh token.
@@ -439,6 +519,7 @@ def test_license_login_with_mfa_enabled_returns_challenge(client, mfa_user):
     assert data["refresh_token"] is None
 
 
+@pytest.mark.skip(reason="license key is no longer an authentication factor")
 def test_license_login_without_mfa_unchanged(client):
     """/license/validate for a user without MFA returns valid=true with mfa_required false, no
     challenge token and an access token.

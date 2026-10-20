@@ -105,12 +105,23 @@ request time regardless of which of the three surfaces created it.
 
 | Router | Prefix | Covers | Gate |
 |---|---|---|---|
-| `routes_mfa.py` | `/users/me/mfa` | TOTP enroll/verify, device list/remove, recovery-code generate/list/regenerate, login challenge | Authenticated self-service (own account only) |
+| `routes_mfa.py` | `/users/me/mfa` | TOTP enroll/verify, device list/remove, recovery-code generate/list/regenerate, email-code resend, login challenge | Authenticated self-service (own account only), except the signed pre-auth challenge/resend routes |
 | `routes_org_mfa.py` | `/orgs/{org_id}/mfa-policy` | Per-org MFA requirement CRUD + platform-admin override | `manage_sso` (org-scoped) for the policy itself; `override_mfa_policy` for the override endpoints |
 
 Full design trail: `docs/pr11-mfa-database-foundation-discovery.md`,
 `pr11-totp-enrollment-discovery.md`, `pr11-mfa-login-challenge-discovery.md`,
 `pr11-mfa-org-policy-discovery.md`, `pr11-mfa-recovery-codes-discovery.md`.
+
+The designated Admin can also use a six-digit email code after password
+authentication. Codes expire after five minutes, are single-use, allow five
+guesses, and can be resent after 60 seconds. The Auth database stores only an
+HMAC digest using `EMAIL_MFA_OTP_PEPPER`; delivery goes to the configured
+OmniBioAI transactional email send endpoint. Email MFA stays off until its
+provider endpoint, bearer token, independent OTP pepper, and
+`EMAIL_MFA_ENABLED=true` are provisioned. Missing delivery configuration fails
+closed with 503; codes are never logged or returned by the API. Google
+Authenticator remains available for an enrolled TOTP device. See
+`docs/admin-mfa-recovery.md` for the separately signed MFA-only recovery path.
 
 ### API Keys & Service Credentials
 
@@ -462,6 +473,14 @@ follow `docs/MIGRATIONS.md` and stamp the baseline before upgrading.
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token lifetime |
 | `SESSION_COOKIE_DOMAIN` | `.omnibioai.org` | `Domain` attribute on the `omnibioai_session` cookie |
+| `EMAIL_MFA_ENABLED` | `false` | Enable designated Admin email MFA only after the DGX acceptance email provider is configured |
+| `EMAIL_MFA_ADMIN_USER_ID` | `1` | Stable Auth user ID that may use email MFA |
+| `EMAIL_MFA_ADMIN_ADDRESS` | `admin@omnibioai.org` | Exact designated Admin mailbox; the Auth user ID and address must both match |
+| `EMAIL_MFA_OTP_PEPPER` / `_FILE` | — | Independent random key of at least 32 bytes for OTP HMAC digests; configure one source only |
+| `EMAIL_SERVICE_SEND_URL` | — | Existing OmniBioAI transactional email service's authenticated send endpoint |
+| `EMAIL_SERVICE_TOKEN` | — | Bearer credential for that email endpoint; use the DGX acceptance secret mechanism |
+| `EMAIL_FROM_ADDRESS` | `security@omnibioai.org` | Verified sender configured with the email service |
+| `EMAIL_MFA_MAX_SENDS_PER_HOUR` | `5` | Per-Admin hourly issue/resend cap |
 | `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | — | Google OAuth login; unset disables that provider (503) |
 | `GITHUB_OAUTH_CLIENT_ID` / `_SECRET` | — | GitHub OAuth login; unset disables that provider (503) |
 | `MICROSOFT_OAUTH_CLIENT_ID` / `_SECRET` | — | Microsoft OAuth login; unset disables that provider (503) |

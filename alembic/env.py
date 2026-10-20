@@ -9,13 +9,13 @@ Author:
 """
 
 from logging.config import fileConfig
+import os
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 # Ensure app/ is importable when alembic is invoked from the repo root
 # (alembic.ini sets prepend_sys_path = . for this).
-from app.core.config import settings
 from app.db.base import Base
 
 # Imported for its side effect of registering every ORM model class onto
@@ -29,15 +29,17 @@ import app.db.models  # noqa: F401,E402
 # the .ini file in use.
 config = context.config
 
-# Drive the connection from the same settings the running app uses, rather
-# than a URL hardcoded in alembic.ini -- keeps migrations and the app
-# permanently pointed at the same database with no separate config to drift.
-# Only applied as a fallback: if a caller has already set sqlalchemy.url on
-# this Config object (tests/test_migrations.py does this to point migrations
-# at an isolated throwaway database), that value wins -- real `alembic`
-# CLI usage never sets it, so this is a no-op for normal operation.
+# Programmatic callers (the isolated migration tests) may set sqlalchemy.url
+# directly. CLI execution must use a separately provisioned migration URL;
+# never fall back to the runtime DML principal.
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    migration_database_url = os.getenv("MIGRATION_DATABASE_URL", "").strip()
+    if not migration_database_url:
+        raise RuntimeError(
+            "MIGRATION_DATABASE_URL is required for Alembic CLI execution; "
+            "refusing to use the Auth runtime database principal."
+        )
+    config.set_main_option("sqlalchemy.url", migration_database_url)
 
 # Interpret the config file for Python logging. disable_existing_loggers
 # defaults to True, which silently disables (permanently, for the rest of

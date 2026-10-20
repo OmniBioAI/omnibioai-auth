@@ -23,6 +23,10 @@ background on why the baseline is `stamp`ed rather than `upgrade`d.
 
 ## Applying the migration
 
+- [ ] Provision `MIGRATION_DATABASE_URL` through the approved secret mechanism
+      for a separate, short-lived migration principal scoped to the target
+      Auth schema. Do not reuse the Auth runtime account or place the URL in
+      command history, logs, source, or the container image.
 - [ ] Confirm no other deploy/migration is in flight against the same
       database (single MySQL instance, no read replica — there is only one
       copy of this data)

@@ -158,5 +158,15 @@ def update_user_roles(
                 "Cannot modify your own roles to grant yourself additional permissions",
             )
 
-    role_service.set_user_roles(db, target, new_roles)
+    privileged_change = (
+        {r.name for r in target.roles} ^ {r.name for r in new_roles}
+    ) & role_service.PRIVILEGED_SINGLETON_ROLES
+    if privileged_change and "manage_all_orgs" not in (current_user.get("permissions") or []):
+        raise HTTPException(403, "Privileged roles require Platform Owner authorization")
+    try:
+        role_service.set_user_roles(
+            db, target, new_roles, actor_user_id=int(current_user["sub"])
+        )
+    except role_service.PrivilegedRolePolicyError as exc:
+        raise HTTPException(409, str(exc))
     return UserRolesOut(user_id=target.id, roles=[r.name for r in target.roles])

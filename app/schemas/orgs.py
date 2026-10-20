@@ -53,6 +53,36 @@ class InviteRequest(BaseModel):
     email: str
 
 
+class OrganizationInvitationCreate(BaseModel):
+    email: str
+    roles: list[str] = []
+
+
+class OrganizationInvitationOut(BaseModel):
+    id: int
+    organization_id: int
+    organization_name: str
+    email: str
+    roles: list[str]
+    status: str
+    created_at: datetime
+    expires_at: datetime
+    accepted_at: datetime | None = None
+
+
+class InvitationTokenRequest(BaseModel):
+    token: str
+
+
+class InvitationAcceptRequest(InvitationTokenRequest):
+    password: str
+    totp_code: str | None = None
+
+
+class InvitationExistingAcceptRequest(InvitationTokenRequest):
+    totp_code: str | None = None
+
+
 class MemberOut(BaseModel):
     user_id: int
     email: str

@@ -33,6 +33,7 @@ from app.db.init_admin import (
     ensure_platform_owner,
 )
 from app.db.models import AuditEvent, Role, User
+from app.services import role_service
 from app.services.role_service import get_or_create_role
 
 
@@ -56,6 +57,19 @@ def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"
     ensure_platform_owner(db)
 
 
+def _bootstrap_separate_owner(db, monkeypatch, email="owner@example.test"):
+    """Create stable designated Admin user 1, then configure a separate Owner."""
+    monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", "regression-test-password-not-for-prod")
+    create_admin(db)
+    ensure_platform_admin_role(db)
+    owner = User(email=email, hashed_password="x", status="active")
+    db.add(owner)
+    db.commit()
+    monkeypatch.setenv("PLATFORM_OWNER_EMAIL", email)
+    ensure_platform_owner(db)
+    return owner
+
+
 # ── Default (opt-out) behavior: unchanged from before this change ──────────
 
 
@@ -72,7 +86,9 @@ def test_unset_env_var_grants_platform_admin_to_nobody(db_session, monkeypatch):
         "PLATFORM_OWNER_EMAIL is unset -- platform_admin must not be "
         "granted to anyone, including the bootstrap admin"
     )
-    assert db_session.query(AuditEvent).count() == 0
+    events = db_session.query(AuditEvent).all()
+    assert len(events) == 1
+    assert events[0].event_metadata["source"] == "bootstrap.admin"
 
 
 def test_blank_env_var_is_treated_the_same_as_unset(db_session, monkeypatch):
@@ -89,17 +105,14 @@ def test_blank_env_var_is_treated_the_same_as_unset(db_session, monkeypatch):
 # ── Opt-in: designates the bootstrap admin as platform owner ───────────────
 
 
-def test_platform_owner_email_matching_bootstrap_admin_grants_platform_admin(db_session, monkeypatch):
-    """When PLATFORM_OWNER_EMAIL matches the bootstrap admin, that account gains platform_admin
-    while keeping its admin role.
-    """
+def test_designated_admin_cannot_become_platform_owner(db_session, monkeypatch):
+    """Stable user ID 1 remains the separate Admin identity."""
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
     _bootstrap(db_session, monkeypatch)
 
     admin = db_session.query(User).filter(User.email == "admin@omnibioai").first()
     role_names = {r.name for r in admin.roles}
-    assert "platform_admin" in role_names
-    # Purely additive -- the pre-existing "admin" role/grant is untouched.
+    assert "platform_admin" not in role_names
     assert "admin" in role_names
 
 
@@ -107,13 +120,10 @@ def test_grant_is_audit_logged_with_no_human_actor(db_session, monkeypatch):
     """The grant writes exactly one role_assigned audit event with no actor user and source
     "bootstrap.platform_owner_email".
     """
-    monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
-    _bootstrap(db_session, monkeypatch)
-
-    admin = db_session.query(User).filter(User.email == "admin@omnibioai").first()
-    events = db_session.query(AuditEvent).filter(AuditEvent.target_user_id == admin.id).all()
-    assert len(events) == 1
-    event = events[0]
+    owner = _bootstrap_separate_owner(db_session, monkeypatch)
+    events = db_session.query(AuditEvent).filter(AuditEvent.target_user_id == owner.id).all()
+    assert len(events) == 2
+    event = next(e for e in events if e.event_metadata.get("role") == "platform_admin")
     assert event.event_type == "role_assigned"
     assert event.actor_user_id is None  # startup, not an authenticated request
     assert event.event_metadata["source"] == "bootstrap.platform_owner_email"
@@ -122,25 +132,21 @@ def test_grant_is_audit_logged_with_no_human_actor(db_session, monkeypatch):
 
 def test_idempotent_across_repeated_startups(db_session, monkeypatch):
     """Repeated startups leave a single platform_admin assignment and a single audit event."""
-    monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
-    _bootstrap(db_session, monkeypatch)
+    owner = _bootstrap_separate_owner(db_session, monkeypatch)
     ensure_platform_owner(db_session)  # simulate a second container restart
     ensure_platform_owner(db_session)  # and a third
 
-    admin = db_session.query(User).filter(User.email == "admin@omnibioai").first()
-    assert [r.name for r in admin.roles].count("platform_admin") == 1
+    db_session.refresh(owner)
+    assert [r.name for r in owner.roles].count("platform_admin") == 1
     # No duplicate audit rows on the no-op re-runs either.
-    assert db_session.query(AuditEvent).filter(AuditEvent.target_user_id == admin.id).count() == 1
+    assert db_session.query(AuditEvent).filter(AuditEvent.target_user_id == owner.id).count() == 2
 
 
 def test_does_not_remove_or_touch_any_other_role(db_session, monkeypatch):
     """Purely additive, both for the target account and for the roles it
     already holds."""
-    monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
-    _bootstrap(db_session, monkeypatch)
-
-    admin = db_session.query(User).filter(User.email == "admin@omnibioai").first()
-    assert any(r.name == "admin" for r in admin.roles)
+    admin = _bootstrap_separate_owner(db_session, monkeypatch)
+    assert {r.name for r in admin.roles} >= {"admin", "platform_admin"}
     admin_role = db_session.query(Role).filter(Role.name == "admin").first()
     # The pre-existing "admin" role's own permission set is untouched.
     assert {p.name for p in admin_role.permissions} == {
@@ -156,18 +162,12 @@ def test_platform_owner_email_can_designate_a_non_bootstrap_user(db_session, mon
     """PLATFORM_OWNER_EMAIL can name another existing user, who gains platform_admin, while the
     bootstrap admin does not.
     """
-    other = User(email="owner@example.test", hashed_password="x", status="active")
-    db_session.add(other)
-    db_session.commit()
-
-    monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "owner@example.test")
-    _bootstrap(db_session, monkeypatch)
+    other = _bootstrap_separate_owner(db_session, monkeypatch)
 
     db_session.refresh(other)
     assert any(r.name == "platform_admin" for r in other.roles)
 
-    # And nobody else -- specifically not the bootstrap admin, who was
-    # never named -- gets it as a side effect.
+    # The designated Admin remains separate and does not gain Owner.
     admin = db_session.query(User).filter(User.email == "admin@omnibioai").first()
     assert all(r.name != "platform_admin" for r in admin.roles)
 
@@ -179,7 +179,10 @@ def test_platform_owner_email_with_no_matching_user_is_a_safe_no_op(db_session, 
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "nobody-has-signed-up-yet@example.test")
     _bootstrap(db_session, monkeypatch)  # must not raise
 
-    assert db_session.query(AuditEvent).count() == 0
+    assert not any(
+        event.event_metadata.get("source") == "bootstrap.platform_owner_email"
+        for event in db_session.query(AuditEvent).all()
+    )
     admin = db_session.query(User).filter(User.email == "admin@omnibioai").first()
     assert all(r.name != "platform_admin" for r in admin.roles)
 
@@ -194,7 +197,9 @@ def test_platform_owner_email_before_role_exists_is_a_safe_no_op(db_session, mon
     ensure_platform_owner(db_session)  # platform_admin role does not exist yet
 
     assert db_session.query(Role).filter(Role.name == "platform_admin").first() is None
-    assert db_session.query(AuditEvent).count() == 0
+    events = db_session.query(AuditEvent).all()
+    assert len(events) == 1
+    assert events[0].event_metadata["source"] == "bootstrap.admin"
 
 
 # ── Never widens to "every admin" ───────────────────────────────────────────
@@ -205,14 +210,16 @@ def test_second_admin_style_user_is_not_granted_platform_admin(db_session, monke
     later through the platform's own role-management API) must not
     inherit platform_admin just by sharing that role -- only the exact
     PLATFORM_OWNER_EMAIL match does."""
-    monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
-    _bootstrap(db_session, monkeypatch)
-
-    admin_role = get_or_create_role(db_session, "admin")
+    owner = _bootstrap_separate_owner(db_session, monkeypatch)
     second_admin = User(email="second-admin@example.test", hashed_password="x", status="active")
-    second_admin.roles.append(admin_role)
     db_session.add(second_admin)
+    db_session.flush()
+    role_service.assign_default_role(db_session, second_admin)
     db_session.commit()
+    with pytest.raises(role_service.PrivilegedRolePolicyError):
+        role_service.add_user_role(
+            db_session, second_admin, get_or_create_role(db_session, "admin"), actor_user_id=owner.id
+        )
 
     ensure_platform_owner(db_session)  # simulate the next startup
 

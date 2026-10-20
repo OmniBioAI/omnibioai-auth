@@ -48,6 +48,8 @@ REASON_IDLE_TIMEOUT = "idle_timeout"
 REASON_ABSOLUTE_TIMEOUT = "absolute_timeout"
 REASON_CONCURRENT_LIMIT = "concurrent_session_limit"
 REASON_ACCOUNT_DISABLED = "account_disabled"
+REASON_IDENTITY_EMAIL_CHANGED = "identity_email_changed"
+REASON_CREDENTIAL_RECOVERY = "credential_recovery"
 
 _MAX_USER_AGENT_LEN = 255
 

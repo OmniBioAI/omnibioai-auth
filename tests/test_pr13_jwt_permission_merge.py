@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.jwt import decode_token
 from app.db.models import Organization, OrganizationMembership, User
 from app.services import role_service
+from app.services.org_service import ORG_ADMIN_PERMISSIONS
 from app.services.auth_service import generate_tokens
 
 _direct_engine = create_engine("sqlite:///./test.db")
@@ -34,6 +35,11 @@ def _make_active_membership(db, user: User, role_name: str) -> OrganizationMembe
     org = Organization(slug=f"pr13-jwt-{uuid.uuid4().hex[:8]}", name="PR13 JWT Merge Org")
     db.add(org)
     db.flush()
+    # This helper creates organizations directly instead of using
+    # org_service.create_organization(), which normally seeds org_admin.
+    # Ensure the direct-session fixture matches that production contract.
+    if role_name == "org_admin":
+        role_service.get_or_create_role(db, role_name, ORG_ADMIN_PERMISSIONS)
     role = role_service.get_role_by_name(db, role_name)
     assert role is not None, f"{role_name!r} should have been seeded by ensure_default_org_roles at startup"
     membership = OrganizationMembership(organization_id=org.id, user_id=user.id, status="active", roles=[role])

@@ -26,17 +26,24 @@ logger = logging.getLogger("omnibioai.auth.audit")
 class AuditEventType:
     LOGIN_SUCCESS = "login_success"
     LOGIN_FAILURE = "login_failure"
+    CREDENTIAL_RECOVERY_COMPLETED = "credential_recovery_completed"
     ROLE_CREATED = "role_created"
     ROLE_ASSIGNED = "role_assigned"
     ROLE_REMOVED = "role_removed"
     PERMISSION_GRANTED = "permission_granted"
     PERMISSION_REVOKED = "permission_revoked"
     ORG_MEMBERSHIP_CHANGED = "organization_membership_changed"
+    ORG_INVITATION_CREATED = "organization_invitation_created"
+    ORG_INVITATION_ACCEPTED = "organization_invitation_accepted"
+    ORG_INVITATION_REVOKED = "organization_invitation_revoked"
+    ORG_INVITATION_EXPIRED = "organization_invitation_expired"
+    ORG_INVITATION_DENIED = "organization_invitation_denied"
     # PR11.4b (Identity Audit Trail Foundation). See
     # docs/pr11-identity-audit-discovery.md (omnibioai-control-center)
     # for the full discovery this set was built from.
     USER_ENABLED = "user_enabled"
     USER_DISABLED = "user_disabled"
+    USER_EMAIL_CHANGED = "user_email_changed"
     API_KEY_CREATED = "api_key_created"
     API_KEY_REVOKED = "api_key_revoked"
     # M9 (API-key lifecycle): renaming a key's display name only -- scopes,
@@ -116,12 +123,15 @@ class AuditEventType:
     MFA_CHALLENGE_REQUIRED = "mfa_challenge_required"
     MFA_VERIFIED = "mfa_verified"
     MFA_VERIFICATION_FAILED = "mfa_verification_failed"
+    MFA_EMAIL_CODE_SENT = "mfa_email_code_sent"
+    MFA_EMAIL_CODE_RESENT = "mfa_email_code_resent"
     # PR11.5.4 (Enterprise MFA Recovery Codes + Admin Reset). See
     # docs/pr11-mfa-recovery-codes-discovery.md SS4.
     MFA_RECOVERY_CODES_GENERATED = "mfa_recovery_codes_generated"
     MFA_RECOVERY_CODES_REGENERATED = "mfa_recovery_codes_regenerated"
     MFA_RECOVERY_CODE_USED = "mfa_recovery_code_used"
     MFA_RESET_BY_ADMIN = "mfa_reset_by_admin"
+    MFA_RECOVERY_COMPLETED = "mfa_recovery_completed"
     # PR11.5.5 (Enterprise Organization MFA Policy). See
     # docs/pr11-mfa-org-policy-discovery.md SS7.
     MFA_POLICY_ENABLED = "mfa_policy_enabled"
@@ -155,6 +165,12 @@ class AuditEventType:
     # app/services/auth_service.py's `_log_session_revoked` for the one
     # place this is emitted from.
     SESSION_REVOKED = "session_revoked"
+    PRIVILEGED_ROLE_REPLACED = "privileged_role_replaced"
+    LICENSE_ISSUED = "license_issued"
+    LICENSE_ACTIVATED = "license_activated"
+    LICENSE_VALIDATED = "license_validated"
+    LICENSE_RENEWED = "license_renewed"
+    LICENSE_REVOKED = "license_revoked"
     # HIPAA Phase 3 (MFA/TOTP Challenge Throttling). Same "once per
     # dimension, only on the request that newly crosses that dimension's
     # threshold" convention as AUTH_RATE_LIMIT_TRIGGERED above -- a

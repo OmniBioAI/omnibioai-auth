@@ -25,9 +25,9 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.core import crypto
-from app.core.jwt import decode_token
-from app.db.models import MFADevice, MFARecoveryCode, MFAUsedTOTPStep, OrganizationMFAPolicy, RevokedToken, User
-from app.services import audit_service, mfa_throttle_service, org_service
+from app.core.jwt import create_mfa_challenge_token, decode_token
+from app.db.models import MFADevice, MFAEmailOTP, MFARecoveryCode, MFAUsedTOTPStep, OrganizationMFAPolicy, RevokedToken, User
+from app.services import audit_service, email_mfa_service, mfa_throttle_service, org_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import generate_tokens
 
@@ -91,6 +91,29 @@ def verify_totp_code(secret_b32: str, code: str, for_time: int | None = None) ->
         candidate = _totp_code_at(secret_b32, for_time + step * _PERIOD)
         if hmac.compare_digest(candidate, code):
             return True
+    return False
+
+
+def verify_user_totp_step_up(db: Session, user_id: int, code: str) -> bool:
+    """Verify and atomically claim a fresh enrolled TOTP step for a
+    sensitive action outside the login challenge flow (for example,
+    accepting an invitation into an MFA-required organization)."""
+    if not code or len(code) != _DIGITS or not code.isdigit():
+        return False
+    devices = db.query(MFADevice).filter(
+        MFADevice.user_id == user_id,
+        MFADevice.device_type == "totp",
+        MFADevice.verified_at.isnot(None),
+        MFADevice.disabled_at.is_(None),
+    ).all()
+    for device in devices:
+        try:
+            secret = crypto.decrypt(device.encrypted_secret)
+            step = _totp_matched_step(secret, code)
+            if step is not None and _try_claim_totp_step(db, device.id, step):
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -402,7 +425,13 @@ def _try_claim_totp_step(db: Session, device_id: int, time_step: int) -> bool:
         return False
 
 
-def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip: str | None = None) -> tuple[str, str]:
+def verify_mfa_challenge(
+    db: Session,
+    challenge_token: str,
+    code: str,
+    client_ip: str | None = None,
+    method: str | None = None,
+) -> tuple[str, str] | dict:
     """Completes an MFA-gated login. Validates `challenge_token` (issued
     by auth_service.generate_tokens_or_mfa_challenge), verifies `code`
     against every verified TOTP device the user holds -- not just one,
@@ -472,6 +501,9 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
 
     jti = payload.get("jti")
     user_id = payload.get("user_id")
+    required_stage = payload.get("required_stage")
+    if required_stage not in (None, "email", "totp"):
+        raise MFAChallengeError("Invalid or expired challenge token")
 
     # HIPAA Phase 3: earliest point a trusted account identifier exists
     # (the token's signature is already verified above) -- checked before
@@ -493,7 +525,9 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     # MFA (removes their last verified device, see remove_device above)
     # between requesting and completing a challenge must not be able to
     # finish logging in on a now-stale challenge token.
-    if not user.mfa_enabled:
+    if not user.mfa_enabled and not email_mfa_service.is_enabled_for(user):
+        raise MFAChallengeError("Invalid or expired challenge token")
+    if required_stage == "totp" and not user.mfa_enabled:
         raise MFAChallengeError("Invalid or expired challenge token")
 
     devices = (
@@ -507,7 +541,7 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     )
 
     matched_device = None
-    for device in devices:
+    for device in devices if required_stage != "email" and method in (None, "totp") else []:
         try:
             secret = crypto.decrypt(device.encrypted_secret)
             step = _totp_matched_step(secret, code)
@@ -569,7 +603,11 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
     # disambiguates, never a separate endpoint or field. See
     # docs/pr11-mfa-recovery-codes-discovery.md SS3.
     try:
-        recovery_match = verify_recovery_code(db, user.id, code)
+        recovery_match = (
+            verify_recovery_code(db, user.id, code)
+            if required_stage != "email" and method in (None, "recovery_code")
+            else None
+        )
     except Exception:
         # Same "treat as no-match, never let the throttle be bypassed by
         # an unexpected error" reasoning as the TOTP loop above.
@@ -594,6 +632,48 @@ def verify_mfa_challenge(db: Session, challenge_token: str, code: str, client_ip
             resource_type="user", resource_id=user.id,
             metadata={"authentication_method": auth_method},
         )
+        return generate_tokens(
+            db, user, auth_method=auth_method, idp_org_id=idp_org_id,
+            saml_name_id=saml_name_id, saml_session_index=saml_session_index,
+            organization_saml_config_id=organization_saml_config_id,
+        )
+
+    email_matched = False
+    if required_stage != "totp" and method in (None, "email") and email_mfa_service.is_enabled_for(user):
+        try:
+            email_matched = email_mfa_service.verify_code(db, user.id, jti, code)
+        except Exception:
+            email_matched = False
+    if email_matched:
+        now = datetime.utcnow()
+        user.mfa_last_verified_at = now
+        _consume_challenge_jti(db, jti)
+        mfa_throttle_service.record_success(user_id, client_ip)
+        audit_service.log_event(
+            db, AuditEventType.MFA_VERIFIED,
+            actor_user_id=user.id, target_user_id=user.id, organization_id=organization_id,
+            resource_type="mfa_email_otp", resource_id=None,
+            metadata={"authentication_method": auth_method, "factor": "email"},
+        )
+        if user.mfa_enabled:
+            # Email is mandatory for DGX password login, but it is not a
+            # substitute for an already-enrolled authenticator/recovery
+            # factor.  Consume the email-stage challenge and issue a fresh,
+            # signed TOTP-only stage without creating a session.
+            next_challenge = create_mfa_challenge_token(
+                user.id,
+                auth_method=auth_method,
+                idp_org_id=idp_org_id,
+                saml_name_id=saml_name_id,
+                saml_session_index=saml_session_index,
+                organization_saml_config_id=organization_saml_config_id,
+                required_stage="totp",
+            )
+            return {
+                "mfa_required": True,
+                "challenge_token": next_challenge,
+                "methods": ["totp", "recovery_code"],
+            }
         return generate_tokens(
             db, user, auth_method=auth_method, idp_org_id=idp_org_id,
             saml_name_id=saml_name_id, saml_session_index=saml_session_index,
@@ -683,7 +763,7 @@ def _hash_recovery_code(code: str) -> str:
     return hashlib.sha256(code.strip().upper().encode()).hexdigest()
 
 
-def invalidate_recovery_codes(db: Session, user_id: int) -> int:
+def invalidate_recovery_codes(db: Session, user_id: int, *, commit: bool = True) -> int:
     """Marks every currently-unused recovery code for this user as used
     -- MFARecoveryCode has no separate disabled_at column (and none is
     added by this PR); reusing `used_at` as a general "no longer
@@ -702,8 +782,10 @@ def invalidate_recovery_codes(db: Session, user_id: int) -> int:
     )
     for row in unused:
         row.used_at = now
-    if unused:
+    if unused and commit:
         db.commit()
+    elif unused:
+        db.flush()
     return len(unused)
 
 
@@ -838,7 +920,9 @@ def try_consume_recovery_code(db: Session, code_id: int) -> bool:
     return claimed == 1
 
 
-def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None:
+def reset_user_mfa(
+    db: Session, target_user_id: int, actor_user_id: int, *, commit: bool = True,
+) -> None:
     """Admin break-glass: fully resets a user's MFA state. Disables
     every device, invalidates every recovery code, and clears the
     user's own mfa_* fields -- but never touches User.status,
@@ -852,6 +936,11 @@ def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None
         raise LookupError("User not found")
 
     now = datetime.utcnow()
+    db.query(MFAEmailOTP).filter(
+        MFAEmailOTP.user_id == target_user_id,
+        MFAEmailOTP.consumed_at.is_(None),
+        MFAEmailOTP.invalidated_at.is_(None),
+    ).update({MFAEmailOTP.invalidated_at: now}, synchronize_session=False)
     devices = (
         db.query(MFADevice)
         .filter(MFADevice.user_id == target_user_id, MFADevice.disabled_at.is_(None))
@@ -860,7 +949,7 @@ def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None
     for device in devices:
         device.disabled_at = now
 
-    invalidated_codes = invalidate_recovery_codes(db, target_user_id)
+    invalidated_codes = invalidate_recovery_codes(db, target_user_id, commit=False)
 
     user.mfa_enabled = False
     user.mfa_status = "disabled"
@@ -875,7 +964,10 @@ def reset_user_mfa(db: Session, target_user_id: int, actor_user_id: int) -> None
         metadata={"devices_disabled": len(devices), "recovery_codes_invalidated": invalidated_codes},
         commit=False,
     )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
 # ---------------------------------------------------------------------------

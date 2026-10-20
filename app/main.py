@@ -17,8 +17,10 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_roles import router as roles_router
 from app.api.routes_oauth import router as oauth_router
 from app.api.routes_license import router as license_router
+from app.api.routes_platform_licenses import router as platform_licenses_router
 from app.api.routes_config import router as config_router
 from app.api.routes_orgs import router as orgs_router
+from app.api.routes_org_invitations import router as org_invitations_router
 from app.api.routes_teams import router as teams_router
 from app.api.routes_apikeys import router as apikeys_router
 from app.api.routes_apikeys import exchange_router as apikeys_exchange_router
@@ -52,7 +54,7 @@ from app.api.routes_integration_credentials import internal_router as integratio
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
-from app.db.schema_guard import assert_schema_matches_models
+from app.db.startup_schema import prepare_startup_schema
 from app.db.init_admin import (
     create_admin,
     ensure_bio_agent_service_role,
@@ -79,14 +81,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-Base.metadata.create_all(bind=engine)
-
-# create_all() above only ever creates tables that don't exist yet -- it
-# never alters an existing table, so a database that's behind on Alembic
-# migrations (see docs/MIGRATIONS.md) sails through it unnoticed and then
-# crashes on whatever bootstrap query below happens to touch the missing
-# column first. Catch that here, once, with an actionable message instead.
-assert_schema_matches_models(engine, Base.metadata)
+prepare_startup_schema(
+    engine,
+    Base.metadata,
+    app_env=settings.APP_ENV,
+    mode=settings.AUTH_STARTUP_SCHEMA_MODE,
+)
 
 # bootstrap admin
 db = SessionLocal()
@@ -118,8 +118,10 @@ app.include_router(auth_router)
 app.include_router(roles_router)
 app.include_router(oauth_router)
 app.include_router(license_router)
+app.include_router(platform_licenses_router)
 app.include_router(config_router)
 app.include_router(orgs_router)
+app.include_router(org_invitations_router)
 app.include_router(teams_router)
 app.include_router(apikeys_router)
 app.include_router(apikeys_exchange_router)

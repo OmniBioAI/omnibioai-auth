@@ -1,11 +1,17 @@
 # Database Migrations (omnibioai-auth)
 
-This service used to create its schema purely via `Base.metadata.create_all(bind=engine)`
-at startup (`app/main.py`), with no versioned migration history. Alembic is now
-initialized (see `alembic/`), but `create_all()` has **not** been removed from
-`app/main.py` yet — that removal is deliberately deferred to a later, separate
-change once Alembic has proven itself in real deployments (see "Known risk:
-create_all() vs. Alembic drift" below — this is not a free lunch).
+This service historically created schema with
+`Base.metadata.create_all(bind=engine)` at startup. Production startup now
+defaults to read-only validation: the database must record the exact Alembic
+head in this checkout and contain every ORM-backed table and column before any
+bootstrap DML runs. Schema creation remains available only through the
+explicit `AUTH_STARTUP_SCHEMA_MODE=test-create` mode, which is rejected unless
+`APP_ENV=test`.
+
+Alembic CLI execution requires `MIGRATION_DATABASE_URL`, provisioned for a
+separate migration principal. It never falls back to `DB_USER`/`DB_PASSWORD`
+or the runtime `settings.DATABASE_URL`. Keep the runtime principal limited to
+the DML and metadata-read privileges Auth requires; do not grant it DDL.
 
 > **Note (2026-08-06):** the paragraph that used to be here claimed
 > `create_all()` and Alembic "manage disjoint sets of tables" because the
@@ -14,9 +20,8 @@ create_all() vs. Alembic drift" below — this is not a free lunch).
 > table this service owns (`organizations`, `teams`, `api_keys`,
 > `oauth_clients`, `organization_sso_configs`, `audit_events`,
 > `mfa_devices`, `mfa_recovery_codes`, `organization_mfa_policies`, ...) is
-> now backed by an ORM class in `app/db/models.py`, registered on the same
-> `Base.metadata` `create_all()` walks at every startup. See the section
-> below for what that actually means in practice.
+> now backed by an ORM class in `app/db/models.py`. This history explains why
+> production startup no longer walks that metadata with `create_all()`.
 
 ## Known risk: `create_all()` vs. Alembic drift
 
@@ -44,21 +49,14 @@ against the affected database (`0015_refresh_token_length` →
 prescribed — the gap was that nothing enforced it actually happening
 before the container was (re)started.
 
-**Structural fix (`app/db/schema_guard.py`):** `app/main.py` now calls
-`assert_schema_matches_models(engine, Base.metadata)` immediately after
-`create_all()` and before any bootstrap query runs. It diffs every
-already-existing table's live columns against what the ORM currently
-declares and refuses to start — with a message naming the missing
-columns and pointing at `alembic upgrade head` — if any are missing,
-rather than letting bootstrap crash on whichever query happens to touch
-the gap first. It does not run migrations itself and does not consult
-Alembic's own bookkeeping table; it only checks "does the live schema
-already satisfy what the code needs". This is a diagnostic/fail-fast net,
-not a substitute for actually running migrations before deploying —
-`create_all()` is still not removed, and its removal is still deferred
-(see the note above) since a straightforward removal would leave any
-environment that has never run Alembic at all with zero tables at
-startup instead of a clear error.
+**Structural fix:** `app/main.py` now calls `prepare_startup_schema()` before
+any bootstrap query. In the default `validate` mode this first requires the
+database's Alembic revision set to equal the checkout's head set, then checks
+that every ORM-backed table and column exists. It performs no DDL and refuses
+startup with a sanitized error when the database is absent, behind, ahead,
+multi-head, or structurally incomplete. The historical `create_all()` path is
+available only for isolated tests with both `APP_ENV=test` and
+`AUTH_STARTUP_SCHEMA_MODE=test-create`.
 
 Historically, the two mechanisms mostly coexisted without conflict
 because they manage overlapping but not-identical concerns:

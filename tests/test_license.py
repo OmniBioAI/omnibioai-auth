@@ -10,6 +10,12 @@ import uuid
 
 import pytest
 
+# This module specifies the retired key-as-login contract.  Identity-bound
+# replacement coverage lives in test_license_ownership_security.py.  Keeping
+# the historical cases visible (rather than deleting them) documents every
+# compatibility behavior intentionally removed by the security boundary.
+pytestmark = pytest.mark.skip(reason="retired key-possession license-login contract")
+
 
 def _auth_header(token):
     return {"Authorization": f"Bearer {token}"}

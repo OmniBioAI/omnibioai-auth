@@ -23,6 +23,8 @@ from app.rbac import get_current_user
 from app.schemas.auth import TokenResponse
 from app.schemas.mfa import (
     MFAChallengeVerifyIn,
+    MFAEmailResendIn,
+    MFAEmailResendOut,
     MFADeviceOut,
     RecoveryCodesOut,
     RecoveryCodesStatusOut,
@@ -131,7 +133,7 @@ def regenerate_recovery_codes(
     return RecoveryCodesOut(codes=codes)
 
 
-@router.post("/challenge", response_model=TokenResponse)
+@router.post("/challenge")
 def verify_mfa_challenge(
     body: MFAChallengeVerifyIn,
     request: Request,
@@ -155,7 +157,9 @@ def verify_mfa_challenge(
     """
     client_ip = request.client.host if request.client else None
     try:
-        access, refresh = mfa_service.verify_mfa_challenge(db, body.challenge_token, body.code, client_ip=client_ip)
+        result = mfa_service.verify_mfa_challenge(
+            db, body.challenge_token, body.code, client_ip=client_ip, method=body.method,
+        )
     except mfa_service.MFAThrottledError as e:
         # Same 429 + Retry-After shape as routes_auth.py::login's own
         # throttle response -- deliberately generic, revealing neither
@@ -170,8 +174,34 @@ def verify_mfa_challenge(
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    if isinstance(result, dict):
+        # A mandatory email stage can advance to an existing TOTP/recovery
+        # requirement without issuing any session credentials.
+        return JSONResponse(result)
+
+    access, refresh = result
     # Same cookie helper /auth/login itself uses -- imported rather than
     # reimplemented so domain/secure/httponly/samesite/max-age stay in
     # exact lockstep with that route's own policy.
     _set_session_cookie(response, refresh)
     return TokenResponse(access_token=access, refresh_token=refresh)
+
+
+@router.post("/email/resend", response_model=MFAEmailResendOut)
+def resend_email_mfa_code(body: MFAEmailResendIn, db: Session = Depends(get_db)):
+    """Issue a replacement email OTP for an already authenticated challenge."""
+    from app.services import email_mfa_service
+
+    try:
+        cooldown = email_mfa_service.resend_code(db, body.challenge_token)
+    except email_mfa_service.EmailMFAResendLimitedError as e:
+        return JSONResponse(
+            status_code=429,
+            content={"error": "resend_limited", "message": "A new code cannot be sent yet."},
+            headers={"Retry-After": str(e.retry_after_seconds)},
+        )
+    except email_mfa_service.EmailMFAChallengeError as e:
+        raise HTTPException(401, str(e))
+    except email_mfa_service.EmailMFAUnavailableError:
+        raise HTTPException(503, "Email verification is temporarily unavailable")
+    return MFAEmailResendOut(sent=True, cooldown_seconds=cooldown)

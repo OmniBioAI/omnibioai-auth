@@ -390,6 +390,7 @@ def test_no_personal_mfa_policy_disabled_normal_login(client, org):
     assert "mfa_required" not in data
 
 
+@pytest.mark.skip(reason="license key is no longer an authentication factor")
 def test_license_login_respects_org_mfa_policy(client, org, admin_headers):
     """Closes the PR11.5 discovery finding: routes_license.py already
     funnels through generate_tokens_or_mfa_challenge since PR11.5.3, so

@@ -14,9 +14,9 @@ def _precreated_table_matches(
 ):
     """Accept only the exact table shape create_all() produces.
 
-    Auth still invokes Base.metadata.create_all() at process startup. If new
-    code starts before Alembic, these two additive tables can therefore exist
-    while alembic_version remains at 0030. Treat that known ordering as safe
+    Older Auth releases invoked Base.metadata.create_all() at process startup.
+    These two additive tables can therefore already exist while
+    alembic_version remains at 0030. Treat that historical ordering as safe
     only after verifying every security-relevant column and constraint; any
     partial or foreign schema fails closed rather than being stamped over.
     """

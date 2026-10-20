@@ -10,12 +10,48 @@ Author:
 
 from datetime import datetime
 
-from pydantic import BaseModel
+import re
+
+from pydantic import BaseModel, field_validator
 
 # Phase 3 PR3A. Suspending/reactivating a user reuses the same two-value
 # vocabulary org status already uses (Phase 3 PR2) -- no new status model
 # invented for this resource.
 ALLOWED_USER_STATUSES = {"active", "suspended"}
+
+_EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+
+
+def normalize_email(value: str) -> str:
+    value = value.strip().lower()
+    if len(value) > 255 or not _EMAIL_RE.fullmatch(value):
+        raise ValueError("Invalid email address")
+    local, domain = value.rsplit("@", 1)
+    if len(local) > 64 or len(domain) > 253 or ".." in value:
+        raise ValueError("Invalid email address")
+    return value
+
+
+class UserEmailUpdate(BaseModel):
+    email: str
+    reason: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return normalize_email(value)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 500:
+            raise ValueError("A reason of 1-500 characters is required")
+        return value
 
 
 class PlatformUserSummary(BaseModel):

@@ -8,14 +8,13 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.rbac import get_current_user, require_permission
+from app.db.models import User
+from app.rbac import get_current_user, get_optional_current_user, require_permission
 from app.schemas.license import (
     LicenseGenerateRequest,
     LicenseGenerateResponse,
@@ -27,8 +26,8 @@ from app.schemas.license import (
     LicenseValidateRequest,
     LicenseValidateResponse,
 )
-from app.services import license_service, org_service
-from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
+from app.services import audit_service, license_service, org_service
+from app.services.audit_service import AuditEventType
 
 router = APIRouter(prefix="/license", tags=["license"])
 
@@ -36,81 +35,113 @@ MANAGE_LICENSES = "manage_licenses"
 
 
 # ---------------- VALIDATE ----------------
+@router.post("/activate", response_model=LicenseValidateResponse)
 @router.post("/validate", response_model=LicenseValidateResponse)
-def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db)):
-    license_key, reason = license_service.validate_and_consume(
-        db, req.key, req.email, req.platform
-    )
+def validate_license(
+    req: LicenseValidateRequest,
+    db: Session = Depends(get_db),
+    identity=Depends(get_optional_current_user),
+):
+    presented = license_service.lookup_license(db, req.key, lock=True)
+    if presented is None:
+        return LicenseValidateResponse(valid=False, reason="invalid_key")
+
+    activation_without_session = identity is None
+    if activation_without_session:
+        if not req.email:
+            raise HTTPException(422, "Email is required for license activation")
+        authenticated_user = (
+            db.query(User).filter(User.id == presented.user_id).first()
+            if presented.user_id is not None
+            else db.query(User).filter(User.email == presented.email).first()
+        )
+        if authenticated_user is None or authenticated_user.status != "active":
+            return LicenseValidateResponse(valid=False, reason="owner_unavailable")
+    else:
+        authenticated_user = db.query(User).filter(User.id == int(identity["sub"])).first()
+
+    license_key, reason = license_service.authorize_for_identity(db, req.key, authenticated_user, req.platform)
     if not license_key:
         return LicenseValidateResponse(valid=False, reason=reason)
+    if req.email is not None and req.email.strip().lower() != authenticated_user.email.lower():
+        return LicenseValidateResponse(valid=False, reason="identity_mismatch")
 
-    user = license_service.get_or_create_user_for_email(db, req.email or license_key.email)
-    license_service.mark_used(db, license_key, user)
+    first_activation = license_service.mark_used(db, license_key, authenticated_user, commit=False)
     if req.machine_id:
-        license_service.bind_machine_id(db, license_key, req.machine_id)
+        license_service.bind_machine_id(db, license_key, req.machine_id, commit=False)
+
+    audit_service.log_event(
+        db,
+        AuditEventType.LICENSE_ACTIVATED if first_activation else AuditEventType.LICENSE_VALIDATED,
+        actor_user_id=authenticated_user.id,
+        target_user_id=authenticated_user.id,
+        organization_id=license_key.organization_id,
+        resource_type="license",
+        resource_id=license_key.id,
+        after_state={"status": "active", "platform": req.platform},
+        metadata={"activation_without_session": activation_without_session},
+        commit=False,
+    )
+    db.commit()
 
     days_remaining = None
     expiry = None
     if license_key.expires_at:
-        days_remaining = max((license_key.expires_at - datetime.utcnow()).days, 0)
+        days_remaining = max((license_key.expires_at - license_service.utc_now()).days, 0)
         expiry = license_key.expires_at.date().isoformat()
 
-    membership = org_service.resolve_primary_membership(db, user.id)
-    user_info = {"id": user.id, "email": user.email, "plan": license_key.plan}
+    membership = org_service.resolve_primary_membership(db, authenticated_user.id)
+    user_info = {
+        "id": authenticated_user.id,
+        "email": authenticated_user.email,
+        "plan": license_key.plan,
+    }
 
-    # PR11.5.3: single shared MFA decision point, see
-    # docs/pr11-mfa-login-challenge-discovery.md SS2. The license itself
-    # is already valid/consumed regardless of this branch -- only token
-    # issuance is gated.
-    # PR11.5.5: org-required MFA the user hasn't personally enrolled --
-    # same 403 shape every other login route uses. Confirms this route
-    # was never a bypass path: it already funnels through the shared
-    # decision point since PR11.5.3, so org policy applies here for
-    # free -- see docs/pr11-mfa-org-policy-discovery.md SS5.
-    try:
-        result = generate_tokens_or_mfa_challenge(db, user, auth_method="license")
-    except MFAEnrollmentRequiredError:
-        raise HTTPException(403, detail={
-            "error": "mfa_enrollment_required",
-            "message": "Your organization requires MFA enrollment",
-        })
-    if result["mfa_required"]:
-        return LicenseValidateResponse(
-            valid=True,
-            mfa_required=True,
-            challenge_token=result["challenge_token"],
-            methods=result["methods"],
-            user_info=user_info,
-            tier=license_key.plan,
-            expiry=expiry,
-            days_remaining=days_remaining,
-            org_id=membership.organization_id if membership else None,
-        )
-
-    return LicenseValidateResponse(
+    response = LicenseValidateResponse(
         valid=True,
-        access_token=result["access_token"],
-        refresh_token=result["refresh_token"],
         user_info=user_info,
         tier=license_key.plan,
         expiry=expiry,
         days_remaining=days_remaining,
         org_id=membership.organization_id if membership else None,
     )
+    return response
 
 
 # ---------------- PULL-TOKEN ----------------
 @router.post("/pull-token", response_model=LicensePullTokenResponse)
-def pull_token(req: LicensePullTokenRequest, db: Session = Depends(get_db)):
+def pull_token(
+    req: LicensePullTokenRequest,
+    db: Session = Depends(get_db),
+    identity=Depends(get_optional_current_user),
+):
     """Separate from /validate so the GHCR credential is only ever handed to
     a client that is specifically about to pull private images (Docker
     startup), not returned on every routine license check -- same split
     license_server.py used, now folded into this service (Phase 1 PR4).
-    Key-only lookup (no email), same as Electron's /validate calls; does
-    not consume a use or issue tokens, purely a validity + credential
-    check.
+    Requires the same independently authenticated owner identity as
+    /validate. It does not consume a use or issue identity tokens.
     """
-    license_key, reason = license_service.validate_and_consume(db, req.key, None, "desktop")
+    presented = license_service.lookup_license(db, req.key)
+    if presented is None:
+        raise HTTPException(404, "invalid_key")
+    if identity is not None:
+        authenticated_user = db.query(User).filter(User.id == int(identity["sub"])).first()
+    else:
+        if not req.email:
+            raise HTTPException(422, "Email is required")
+        authenticated_user = (
+            db.query(User).filter(User.id == presented.user_id).first()
+            if presented.user_id is not None
+            else db.query(User).filter(User.email == presented.email).first()
+        )
+    if authenticated_user is None or authenticated_user.status != "active":
+        raise HTTPException(403, "owner_unavailable")
+    if req.email is not None and req.email.strip().lower() != authenticated_user.email.lower():
+        raise HTTPException(403, "identity_mismatch")
+    license_key, reason = license_service.authorize_for_identity(
+        db, req.key, authenticated_user, "desktop"
+    )
     if not license_key:
         status_code = 404 if reason == "invalid_key" else 403
         raise HTTPException(status_code, reason)
@@ -126,22 +157,7 @@ def generate_license(
     db: Session = Depends(get_db),
     user=Depends(require_permission(MANAGE_LICENSES)),
 ):
-    license_key = license_service.create_license(
-        db,
-        email=req.email,
-        plan=req.plan,
-        platform=req.platform,
-        expires_days=req.expires_days,
-        max_uses=req.max_uses,
-    )
-    return LicenseGenerateResponse(
-        key=license_key.key,
-        email=license_key.email,
-        plan=license_key.plan,
-        platform=license_key.platform,
-        expires_at=license_key.expires_at,
-        max_uses=license_key.max_uses,
-    )
+    raise HTTPException(410, "Use the idempotent /platform/licenses issuance API")
 
 
 # ---------------- STATUS ----------------
@@ -151,7 +167,8 @@ def license_status(db: Session = Depends(get_db), user=Depends(get_current_user)
     if not license_key:
         raise HTTPException(404, "No license found for this account")
     return LicenseStatusResponse(
-        key=license_key.key,
+        key=None,
+        key_prefix=license_key.key_prefix or ((license_key.key or "")[:9]),
         plan=license_key.plan,
         platform=license_key.platform,
         expires_at=license_key.expires_at,

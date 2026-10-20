@@ -145,9 +145,9 @@ def test_runtime_smoke_jobs_are_fail_closed_and_bounded() -> None:
 
 
 def test_runtime_smoke_supplies_mandatory_auth_runtime_configuration() -> None:
-    """Auth's process cannot even finish importing without a reachable
-    MySQL (app/main.py calls Base.metadata.create_all(bind=engine) at
-    module level, unconditionally) and a valid AUTH_AUDIT_INTEGRITY_KEY
+    """Auth's process cannot finish importing without a reachable, fully
+    migrated MySQL (app/main.py validates Alembic head and model shape) and a
+    valid AUTH_AUDIT_INTEGRITY_KEY
     (ensure_default_org_roles -> create_role -> audit_service.log_event
     signs an audit record at import time too) -- the smoke harness must
     stand up a real, ephemeral MySQL (and Redis, for full correctness)

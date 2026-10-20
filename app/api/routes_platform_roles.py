@@ -34,6 +34,7 @@ from app.schemas.role_admin import (
     RolePermissionsUpdateRequest,
     RoleSummary,
     UserRoleAssignment,
+    PrivilegedRoleReplacementRequest,
 )
 from app.services import role_service
 
@@ -265,7 +266,10 @@ def assign_platform_user_role(
                 "Cannot assign yourself a role that grants additional permissions",
             )
 
-    role_service.add_user_role(db, target, role, actor_user_id=int(caller.get("sub")))
+    try:
+        role_service.add_user_role(db, target, role, actor_user_id=int(caller.get("sub")))
+    except role_service.PrivilegedRolePolicyError as exc:
+        raise HTTPException(409, str(exc))
     return _user_role_assignments(target)
 
 
@@ -287,4 +291,30 @@ def remove_platform_user_role(
     if role not in target.roles:
         raise HTTPException(404, "Role is not assigned to this user")
 
-    role_service.remove_user_role(db, target, role, actor_user_id=int(user.get("sub")))
+    try:
+        role_service.remove_user_role(db, target, role, actor_user_id=int(user.get("sub")))
+    except role_service.PrivilegedRolePolicyError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post("/privileged-roles/{role_name}/replace", response_model=list[UserRoleAssignment])
+def replace_platform_privileged_role(
+    role_name: str,
+    body: PrivilegedRoleReplacementRequest,
+    db: Session = Depends(get_db),
+    caller=Depends(get_current_user),
+    _admin=Depends(_require_platform_admin),
+):
+    reason = body.reason.strip()
+    if not reason or len(reason) > 500:
+        raise HTTPException(422, "A reason of 1-500 characters is required")
+    try:
+        _current, replacement = role_service.replace_privileged_role(
+            db, role_name, body.current_user_id, body.replacement_user_id,
+            actor_user_id=int(caller["sub"]), reason=reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except (ValueError, role_service.PrivilegedRolePolicyError) as exc:
+        raise HTTPException(409, str(exc))
+    return _user_role_assignments(replacement)

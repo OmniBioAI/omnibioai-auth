@@ -109,3 +109,11 @@ def assert_token_usable(payload: dict, db: Session) -> None:
         user = db.query(User).filter(User.id == sub).first()
         if not user or user.status != "active":
             raise HTTPException(401, "User inactive")
+        # Email is part of every user access/refresh token's identity
+        # projection.  A canonical-email change must invalidate already-
+        # issued access tokens immediately; otherwise their stale email
+        # remains trusted until expiry even after every refresh family is
+        # revoked.  Tokens predating the email claim remain compatible.
+        token_email = payload.get("email")
+        if token_email is not None and token_email != user.email:
+            raise HTTPException(401, "Token identity is stale")

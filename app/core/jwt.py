@@ -298,6 +298,7 @@ def create_mfa_challenge_token(
     saml_name_id: str | None = None,
     saml_session_index: str | None = None,
     organization_saml_config_id: int | None = None,
+    required_stage: str | None = None,
 ):
     """PR11.5.3: short-lived, self-contained proof that primary
     authentication (password/oauth/sso/license) already succeeded for
@@ -336,6 +337,11 @@ def create_mfa_challenge_token(
             "saml_name_id": saml_name_id,
             "saml_session_index": saml_session_index,
             "organization_saml_config_id": organization_saml_config_id,
+            # Password login can require email verification before an
+            # already-enrolled authenticator/recovery factor.  Keeping the
+            # stage in the signed challenge prevents callers from selecting a
+            # later factor and bypassing the mandatory email step.
+            "required_stage": required_stage,
             "exp": datetime.utcnow() + timedelta(minutes=5),
             "jti": str(uuid.uuid4()),
         }

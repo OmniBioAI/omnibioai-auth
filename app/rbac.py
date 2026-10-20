@@ -19,6 +19,7 @@ from app.db.models import Organization, OrganizationMembership, Team
 from app.services import org_service, role_service, team_service
 
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(token=Depends(security), db: Session = Depends(get_db)):
@@ -55,6 +56,27 @@ def get_current_user(token=Depends(security), db: Session = Depends(get_db)):
     # individual route to remember it). See
     # docs/pr11-mfa-login-challenge-discovery.md SS7.
     if payload.get("type") == "mfa_challenge":
+        raise HTTPException(401, "Invalid token")
+    return payload
+
+
+def get_optional_current_user(token=Depends(optional_security), db: Session = Depends(get_db)):
+    """Return a validated user claim when bearer auth is present.
+
+    This exists only for the license compatibility boundary: digest-only new
+    keys require a claim, while untouched plaintext legacy keys may continue
+    through the documented migration path.
+    """
+    if token is None:
+        return None
+    try:
+        payload = decode_token(token.credentials)
+        assert_token_usable(payload, db)
+    except Exception:
+        raise HTTPException(401, "Invalid token")
+    if payload.get("auth_method") == "client_credentials" or payload.get("type") in {
+        "delegated_execution", "mfa_challenge",
+    }:
         raise HTTPException(401, "Invalid token")
     return payload
 

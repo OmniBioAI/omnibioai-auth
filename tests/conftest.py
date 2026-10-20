@@ -15,6 +15,10 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-omnibioai-32-chars-x!")
 # Explicit test-only 256-bit audit key. Production must provision an
 # independent value through its protected secret mechanism.
 os.environ.setdefault("AUTH_AUDIT_INTEGRITY_KEY", "a1" * 32)
+os.environ.setdefault("LICENSE_KEY_PEPPER", "test-only-license-pepper-not-for-production")
+os.environ.setdefault("LICENSE_ALLOWED_VALIDITY_DAYS", "30,90")
+os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("AUTH_STARTUP_SCHEMA_MODE", "test-create")
 
 # create_admin() (called at app import time, below) no longer bakes in a
 # hardcoded default password -- give it a fixed, known-to-tests-only value
@@ -39,8 +43,8 @@ TestingSessionLocal = sessionmaker(
 )
 
 # Patch db.session BEFORE importing app.main.
-# app/main.py calls Base.metadata.create_all(bind=engine) at module level,
-# so the SQLite engine must be in place before that code runs.
+# app/main.py's explicit test-only startup mode creates the isolated SQLite
+# schema at module import, so the test engine must be in place first.
 import app.db.session as _db_session
 
 _db_session.engine = test_engine

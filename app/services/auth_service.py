@@ -15,7 +15,7 @@ from app.db.models import OrganizationMFAPolicy, User, RefreshToken, UserSession
 from app.core.config import settings
 from app.core.security import DUMMY_PASSWORD_HASH, hash_password, needs_rehash, verify_password
 from app.core.jwt import create_access_token, create_mfa_challenge_token, create_refresh_token, decode_token
-from app.services import audit_service, login_throttle_service, org_service, session_service, team_service
+from app.services import audit_service, email_mfa_service, login_throttle_service, org_service, session_service, team_service
 from app.services.audit_service import AuditEventType
 
 REFRESH_TOKEN_TTL_DAYS = 7
@@ -38,7 +38,10 @@ def _log_login_failure(db, email: str, user: User | None, reason: str) -> None:
     )
 
 
-def _log_session_revoked(db, user_id: int, session_id: str | None, reason: str, actor_user_id: int | None = None) -> None:
+def _log_session_revoked(
+    db, user_id: int, session_id: str | None, reason: str,
+    actor_user_id: int | None = None, *, commit: bool = True,
+) -> None:
     """HIPAA Phase 1 PR3: the single place SESSION_REVOKED is emitted
     from -- see that event type's own docstring in audit_service.py for
     why session-lifecycle auditing didn't exist at all before this PR,
@@ -54,6 +57,7 @@ def _log_session_revoked(db, user_id: int, session_id: str | None, reason: str, 
         target_user_id=user_id,
         resource_type="session", resource_id=session_id,
         metadata={"reason": reason},
+        commit=commit,
     )
 
 
@@ -486,7 +490,9 @@ def generate_tokens_or_mfa_challenge(
         if policy is not None and policy.required and not policy.override_active:
             org_requires_mfa = True
 
-    if not user.mfa_enabled:
+    email_mfa_required = auth_method == "password" and email_mfa_service.is_enabled_for(user)
+
+    if not user.mfa_enabled and not email_mfa_required:
         if org_requires_mfa:
             raise MFAEnrollmentRequiredError()
         access, refresh = generate_tokens(
@@ -501,6 +507,7 @@ def generate_tokens_or_mfa_challenge(
         user.id, auth_method=auth_method, idp_org_id=idp_org_id,
         saml_name_id=saml_name_id, saml_session_index=saml_session_index,
         organization_saml_config_id=organization_saml_config_id,
+        required_stage="email" if email_mfa_required else None,
     )
 
     audit_service.log_event(
@@ -510,8 +517,15 @@ def generate_tokens_or_mfa_challenge(
         resource_type="user", resource_id=user.id,
         metadata={"authentication_method": auth_method},
     )
+    methods = ["totp"] if user.mfa_enabled else []
+    if email_mfa_required:
+        email_mfa_service.issue_code(db, user, challenge_token)
+        # Email is the mandatory first stage for password login.  Existing
+        # TOTP/recovery requirements are returned only after this stage has
+        # succeeded, so email never becomes a bypass for enrolled MFA.
+        methods = ["email"]
 
-    return {"mfa_required": True, "challenge_token": challenge_token, "methods": ["totp"]}
+    return {"mfa_required": True, "challenge_token": challenge_token, "methods": methods}
 
 
 def revoke_token(db, token):
@@ -584,7 +598,7 @@ def revoke_session(db, session_id: str) -> bool:
     return True
 
 
-def _revoke_family(db, family_id: str | None) -> None:
+def _revoke_family(db, family_id: str | None, *, commit: bool = True) -> None:
     """Revokes every refresh_tokens row descended from the same login as
     `family_id` -- the reuse-detection response. Deliberately revokes the
     *entire* family, including any token legitimately rotated after the
@@ -600,10 +614,15 @@ def _revoke_family(db, family_id: str | None) -> None:
     db.query(RefreshToken).filter(RefreshToken.family_id == family_id).update(
         {"revoked": True}
     )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
-def revoke_all_sessions_for_user(db, user_id: int, reason: str, actor_user_id: int | None = None) -> int:
+def revoke_all_sessions_for_user(
+    db, user_id: int, reason: str, actor_user_id: int | None = None, *, commit: bool = True,
+) -> int:
     """HIPAA Phase 1 PR3: called from user_admin_service.set_user_status
     on the active-\\>suspended transition -- see that function's own
     updated docstring for the gap this closes. `assert_token_usable`
@@ -636,11 +655,20 @@ def revoke_all_sessions_for_user(db, user_id: int, reason: str, actor_user_id: i
     )
     revoked_count = 0
     for session in sessions:
-        _revoke_family(db, session.session_id)
+        _revoke_family(db, session.session_id, commit=commit)
         session_service.revoke(db, session.session_id, reason)
-        _log_session_revoked(db, user_id, session.session_id, reason, actor_user_id=actor_user_id)
+        _log_session_revoked(
+            db, user_id, session.session_id, reason, actor_user_id=actor_user_id,
+            commit=commit,
+        )
         revoked_count += 1
-    db.commit()
+    # Legacy callers keep the default commit behavior. Credential recovery
+    # passes commit=False so every session event and mutation can commit
+    # atomically with the password update and recovery audit event.
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return revoked_count
 
 

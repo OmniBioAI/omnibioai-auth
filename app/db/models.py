@@ -272,9 +272,15 @@ class LicenseKey(Base):
     __tablename__ = "license_keys"
 
     id = Column(Integer, primary_key=True)
-    key = Column(String(29), unique=True, index=True)  # OMNI-XXXX-XXXX-XXXX-XXXX
+    # Legacy rows retain plaintext `key` during the compatibility window.
+    # Newly-issued rows leave it NULL and store only key_digest + a short,
+    # non-secret display prefix.  No migration rewrites a live legacy row.
+    key = Column(String(29), unique=True, index=True, nullable=True)  # legacy only
+    key_digest = Column(String(64), unique=True, index=True, nullable=True)
+    key_prefix = Column(String(9), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # bound on first successful validate
     email = Column(String(255), index=True)
+    recipient_name = Column(String(255), nullable=True)
     plan = Column(String(50), default="beta")  # beta | pro | enterprise
     platform = Column(String(20), default="both")  # web | desktop | both
     max_uses = Column(Integer, default=1)
@@ -284,6 +290,7 @@ class LicenseKey(Base):
     last_used_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
     revoked_reason = Column(String(255), nullable=True)
+    renewed_at = Column(DateTime, nullable=True)
 
     # Added by the 0002_multi_tenant_schema migration -- nullable, and not
     # yet read or written by license_service.py/routes_license.py (that
@@ -294,6 +301,21 @@ class LicenseKey(Base):
     max_devices = Column(Integer, nullable=True)
 
     user = relationship("User")
+
+
+class LicenseIssuanceRequest(Base):
+    """Durable idempotency record for privileged manual issuance."""
+    __tablename__ = "license_issuance_requests"
+    __table_args__ = (
+        UniqueConstraint("actor_user_id", "idempotency_key_hash", name="uq_license_issue_actor_key"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    idempotency_key_hash = Column(String(64), nullable=False)
+    request_fingerprint = Column(String(64), nullable=False)
+    license_id = Column(Integer, ForeignKey("license_keys.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +442,45 @@ class OrganizationMembership(Base):
     user = relationship("User", foreign_keys=[user_id])
     organization = relationship("Organization")
     roles = relationship("Role", secondary=membership_roles)
+
+
+class OrganizationInvitation(Base):
+    """Single-use, email-bound invitation. Only the SHA-256 token digest is
+    stored; the raw token is sent once to the invitee and is never audited.
+    ``active_key`` is populated only while pending, providing a portable
+    unique constraint against duplicate active invitations on MySQL/SQLite.
+    """
+    __tablename__ = "organization_invitations"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_org_invitations_token_hash"),
+        UniqueConstraint("active_key", name="uq_org_invitations_active_key"),
+        Index("ix_org_invitations_org_status", "organization_id", "status"),
+        Index("ix_org_invitations_expires_at", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    invited_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    inviter_is_platform_admin = Column(Boolean, nullable=False, default=False)
+    invited_email = Column(String(255), nullable=False)
+    role_names = Column(JSON, nullable=False)
+    token_hash = Column(String(64), nullable=False)
+    active_key = Column(String(64), nullable=True)
+    status = Column(String(20), nullable=False, default="pending")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    accepted_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    mfa_secret_encrypted = Column(String(1000), nullable=True)
+    mfa_setup_at = Column(DateTime, nullable=True)
+    mfa_attempts = Column(Integer, nullable=False, default=0)
+
+    organization = relationship("Organization")
+    invited_by = relationship("User", foreign_keys=[invited_by_user_id])
+    accepted_user = relationship("User", foreign_keys=[accepted_user_id])
+    revoked_by = relationship("User", foreign_keys=[revoked_by_user_id])
 
 
 class ApiKey(Base):
@@ -868,6 +929,28 @@ class MFAUsedTOTPStep(Base):
     device_id = Column(Integer, ForeignKey("mfa_devices.id"), nullable=False, index=True)
     time_step = Column(Integer, nullable=False)  # RFC 6238 counter: unix_time // period
     consumed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class MFAEmailOTP(Base):
+    """Short-lived, single-use email MFA code stored only as an HMAC digest."""
+
+    __tablename__ = "mfa_email_otps"
+    __table_args__ = (
+        Index("ix_mfa_email_otps_user_created", "user_id", "created_at"),
+        Index("ix_mfa_email_otps_challenge_jti", "challenge_jti"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    challenge_jti = Column(String(64), nullable=False)
+    code_hash = Column(String(64), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True)
+    invalidated_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
 
 
 class UserSession(Base):

@@ -22,7 +22,13 @@ from app.core.security import hash_password
 from app.db.models import Organization, Permission, Role, User
 from app.services import audit_service, org_service
 from app.services.audit_service import AuditEventType
-from app.services.role_service import assign_default_role, get_or_create_role
+from app.services.role_service import (
+    DESIGNATED_ADMIN_USER_ID,
+    PrivilegedRolePolicyError,
+    assign_default_role,
+    get_or_create_role,
+    validate_privileged_role_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +130,23 @@ def create_admin(db):
         if manage_content_perm not in admin_role.permissions:
             admin_role.permissions.append(manage_content_perm)
 
-    admin = db.query(User).filter(User.email == "admin@omnibioai").first()
+    admin = db.query(User).filter(User.id == DESIGNATED_ADMIN_USER_ID).first()
+    if admin is None:
+        legacy_admin = db.query(User).filter(User.email == "admin@omnibioai").first()
+        if legacy_admin is not None:
+            logger.error(
+                "Legacy Admin email belongs to user ID %s, expected designated ID %s; bootstrap assignment skipped.",
+                legacy_admin.id, DESIGNATED_ADMIN_USER_ID,
+            )
+            db.rollback()
+            return
+        if db.query(User.id).first() is not None:
+            logger.error(
+                "Designated Admin user ID %s is absent from a non-empty identity database; bootstrap creation skipped.",
+                DESIGNATED_ADMIN_USER_ID,
+            )
+            db.rollback()
+            return
     if not admin:
         # No hardcoded default password: an operator-supplied
         # ADMIN_BOOTSTRAP_PASSWORD is used if set (e.g. scripted deployments
@@ -159,7 +181,23 @@ def create_admin(db):
             )
 
     if admin_role not in admin.roles:
+        try:
+            validate_privileged_role_transition(db, admin, [*admin.roles, admin_role])
+        except PrivilegedRolePolicyError as exc:
+            # Keep startup from silently creating a second active Admin.
+            # Existing conflicting assignments remain untouched for an
+            # explicitly authorized recovery workflow.
+            logger.error("Bootstrap Admin assignment rejected by singleton policy: %s", exc)
+            db.rollback()
+            return
         admin.roles.append(admin_role)
+        audit_service.log_event(
+            db, AuditEventType.ROLE_ASSIGNED,
+            actor_user_id=None, target_user_id=admin.id,
+            resource_type="role", resource_id=admin_role.id,
+            after_state={"role": "admin"},
+            metadata={"source": "bootstrap.admin"}, commit=False,
+        )
 
     db.commit()
 
@@ -200,7 +238,8 @@ def ensure_platform_admin_role(db):
 
 
 def ensure_platform_owner(db):
-    """Grants `platform_admin` to exactly one operator-designated account,
+    """Grants `platform_admin` and `admin` to exactly one
+    operator-designated Platform Owner account,
     if and only if the operator has explicitly opted in via the
     `PLATFORM_OWNER_EMAIL` environment variable. Unset (the default): this
     function is a complete no-op, and `ensure_platform_admin_role`'s own
@@ -238,9 +277,11 @@ def ensure_platform_owner(db):
       through the platform's own normal signup/bootstrap paths, with all
       the validation those already do), never fabricates one from an
       environment variable.
-    - Purely additive: appends `platform_admin` to `user.roles` if absent;
-      never removes any role the account already holds (including its own
-      `admin` role, if any), never touches any other user's roles.
+    - Purely additive: appends the required `platform_admin` and `admin`
+      roles to the designated Owner if absent; it never removes any role
+      the account already holds and never touches another user's roles.
+    - The separate designated Admin remains the stable user ID 1 and may
+      not receive `platform_admin` through this bootstrap.
     - Idempotent: safe to call on every process start (mirrors
       create_admin's/ensure_platform_admin_role's own pattern) -- a repeat
       run with the same env var is a no-op once the grant exists.
@@ -277,15 +318,29 @@ def ensure_platform_owner(db):
         )
         return
 
-    if platform_admin_role not in owner.roles:
-        owner.roles.append(platform_admin_role)
-        audit_service.log_event(
-            db, AuditEventType.ROLE_ASSIGNED,
-            actor_user_id=None, target_user_id=owner.id,
-            resource_type="role", resource_id=platform_admin_role.id,
-            metadata={"role": "platform_admin", "source": "bootstrap.platform_owner_email", "email": owner_email},
-            commit=False,
-        )
+    admin_role = db.query(Role).filter(Role.name == "admin").first()
+    if admin_role is None:
+        logger.error("PLATFORM_OWNER_EMAIL is set but the admin role does not exist; skipping.")
+        return
+
+    additions = [role for role in (platform_admin_role, admin_role) if role not in owner.roles]
+    if additions:
+        try:
+            validate_privileged_role_transition(db, owner, [*owner.roles, *additions])
+        except PrivilegedRolePolicyError as exc:
+            logger.error("PLATFORM_OWNER_EMAIL assignment rejected by singleton policy: %s", exc)
+            db.rollback()
+            return
+        for role in additions:
+            owner.roles.append(role)
+            audit_service.log_event(
+                db, AuditEventType.ROLE_ASSIGNED,
+                actor_user_id=None, target_user_id=owner.id,
+                resource_type="role", resource_id=role.id,
+                after_state={"role": role.name},
+                metadata={"role": role.name, "source": "bootstrap.platform_owner_email", "email": owner_email},
+                commit=False,
+            )
         db.commit()
 
 
@@ -300,7 +355,7 @@ def ensure_default_organization(db):
     """
     org = db.query(Organization).filter(Organization.slug == "default").first()
     if not org:
-        admin = db.query(User).filter(User.email == "admin@omnibioai").first()
+        admin = db.query(User).filter(User.id == DESIGNATED_ADMIN_USER_ID).first()
         org = Organization(
             slug="default",
             name="Default Organization",

@@ -1,8 +1,8 @@
 """Startup smoke test.
 
 `conftest.py` already imports `app.main` at collection time -- if
-`app/main.py`'s module-level bootstrap (`create_all()` ->
-`assert_schema_matches_models()` -> `create_admin()` -> ...) raises, every
+`app/main.py`'s module-level bootstrap (test-only schema preparation ->
+schema validation -> `create_admin()` -> ...) raises, every
 test in the suite fails to collect, not just these. These tests exist to
 name that path explicitly and assert the service is actually reachable and
 functional afterwards -- this is the exact sequence that crash-looped in

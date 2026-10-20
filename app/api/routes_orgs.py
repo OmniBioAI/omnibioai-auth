@@ -21,6 +21,7 @@ from app.rbac import (
 )
 from app.schemas.orgs import (
     InviteRequest,
+    OrganizationInvitationCreate,
     MemberOut,
     MemberRolesOut,
     MemberRolesUpdate,
@@ -30,10 +31,45 @@ from app.schemas.orgs import (
 )
 from app.schemas.role_admin import OrganizationRoleAssignment, RoleAssignRequest, RoleSummary
 from app.services import org_service, role_service
+from app.services import org_invitation_service
+from app.services.org_invitation_service import OrganizationInvitationError
+from app.services import audit_service
+from app.services.audit_service import AuditEventType
 
 router = APIRouter(prefix="/orgs", tags=["orgs"])
 
 MANAGE_ORG = "manage_org"
+
+
+def _invitation_result(call):
+    try:
+        return call()
+    except OrganizationInvitationError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "detail": str(exc)}) from None
+
+
+def require_invitation_manage_org(
+    org_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+) -> OrganizationMembership:
+    """Use the established org membership/platform-admin resolver while
+    ensuring authenticated scope/permission denials are audited."""
+    try:
+        membership = get_org_membership_or_platform_admin(org_id=org_id, db=db, user=user)
+        if MANAGE_ORG not in org_service.permissions_for_membership(membership):
+            raise HTTPException(403, "Forbidden")
+        return membership
+    except HTTPException:
+        organization_exists = db.query(Organization.id).filter(Organization.id == org_id).first() is not None
+        audit_service.log_event(
+            db, AuditEventType.ORG_INVITATION_DENIED,
+            actor_user_id=int(user["sub"]),
+            organization_id=org_id if organization_exists else None,
+            resource_type="organization_invitation",
+            metadata={"reason": "authorization_denied"},
+        )
+        raise
 
 
 def _org_out(org: Organization) -> OrganizationOut:
@@ -125,6 +161,54 @@ def list_members(
 ):
     members = org_service.list_members(db, org_id)
     return [_member_out(m, m.user.email) for m in members]
+
+
+@router.post("/{org_id}/invitations", status_code=201)
+def create_organization_invitation(
+    org_id: int,
+    body: OrganizationInvitationCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    membership: OrganizationMembership = Depends(require_invitation_manage_org),
+):
+    actor = db.query(User).filter(User.id == int(user["sub"])).first()
+    if actor is None:
+        raise HTTPException(401, "Invalid user")
+    invitation = _invitation_result(lambda: org_invitation_service.create_invitation(
+        db, organization=membership.organization, actor=actor, email=body.email,
+        role_names=body.roles, caller_is_platform_admin=MANAGE_ALL_ORGS in (user.get("permissions") or []),
+    ))
+    return org_invitation_service._safe_view(invitation)
+
+
+@router.get("/{org_id}/invitations")
+def get_organization_invitations(
+    org_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    membership: OrganizationMembership = Depends(require_invitation_manage_org),
+):
+    return _invitation_result(lambda: org_invitation_service.list_invitations(
+        db, membership.organization.id, int(user["sub"]),
+    ))
+
+
+@router.post("/{org_id}/invitations/{invitation_id}/revoke")
+def revoke_organization_invitation(
+    org_id: int,
+    invitation_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    membership: OrganizationMembership = Depends(require_invitation_manage_org),
+):
+    invitation = db.query(org_invitation_service.OrganizationInvitation).filter_by(
+        id=invitation_id, organization_id=membership.organization.id,
+    ).first()
+    if invitation is None:
+        raise HTTPException(404, "Invitation not found")
+    actor = db.query(User).filter(User.id == int(user["sub"])).first()
+    revoked = _invitation_result(lambda: org_invitation_service.revoke_invitation(db, invitation, actor))
+    return org_invitation_service._safe_view(revoked)
 
 
 @router.post("/{org_id}/invite", response_model=MemberOut, status_code=201)

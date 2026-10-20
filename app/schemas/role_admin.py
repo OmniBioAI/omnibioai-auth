@@ -39,6 +39,12 @@ class RoleAssignRequest(BaseModel):
     role: str
 
 
+class PrivilegedRoleReplacementRequest(BaseModel):
+    current_user_id: int
+    replacement_user_id: int
+    reason: str
+
+
 class RoleCreateRequest(BaseModel):
     """PR13: body for POST /platform/roles and POST
     /organizations/{organization_id}/roles. `organization_id` is never a

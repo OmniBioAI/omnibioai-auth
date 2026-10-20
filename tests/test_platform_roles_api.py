@@ -37,8 +37,11 @@ def _grant_platform_admin(email: str) -> None:
     try:
         user = db.query(User).filter(User.email == email).first()
         role = db.query(Role).filter(Role.name == "platform_admin").first()
+        admin_role = db.query(Role).filter(Role.name == "admin").first()
         assert role is not None, "ensure_platform_admin_role should have created this at startup"
         user.roles.append(role)
+        # Platform Owner is explicitly allowed and required to retain Admin.
+        user.roles.append(admin_role)
         db.commit()
     finally:
         db.close()
@@ -100,26 +103,14 @@ def test_get_user_roles(client):
         assert a["assigned_by"] is None
 
 
-def test_assign_and_remove_global_role(client):
-    """Assigning the admin role to a user returns 201 with roles {user, admin}, and removing it
-    returns 204.
-    """
+def test_second_admin_assignment_is_rejected(client):
+    """The bootstrap administrator is the singleton Admin; a second grant is denied."""
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
 
-    roles_catalog = client.get("/platform/roles", headers=admin["headers"]).json()
-    admin_role_id = _role_id_by_name(roles_catalog, "admin")
-
     assign = client.post(f"/platform/users/{target_id}/roles", json={"role": "admin"}, headers=admin["headers"])
-    assert assign.status_code == 201
-    assert {a["role"] for a in assign.json()} == {"user", "admin"}
-
-    remove = client.delete(f"/platform/users/{target_id}/roles/{admin_role_id}", headers=admin["headers"])
-    assert remove.status_code == 204
-
-    after = client.get(f"/platform/users/{target_id}/roles", headers=admin["headers"])
-    assert {a["role"] for a in after.json()} == {"user"}
+    assert assign.status_code == 409
 
 
 def test_assign_unknown_role_rejected(client):
@@ -197,20 +188,16 @@ def test_non_platform_admin_cannot_remove_role(client):
 # ── D. Self-escalation guard ─────────────────────────────────────────────────
 
 
-def test_platform_admin_cannot_grant_self_a_role_with_new_permissions(client):
-    """Mirrors routes_roles.py's existing global self-escalation guard,
-    applied to this new platform-admin-gated POST path: a platform admin
-    holds manage_all_orgs, but assigning themselves "admin" (which carries
-    manage_roles/manage_licenses/manage_config/override_sso_enforcement --
-    none of which manage_all_orgs implies) must still be blocked."""
+def test_platform_owner_may_hold_admin_role(client):
+    """The corrected role model explicitly permits Owner/Admin overlap."""
     admin = _platform_admin(client)
     admin_id = _user_id(client, admin["access_token"])
 
     resp = client.post(f"/platform/users/{admin_id}/roles", json={"role": "admin"}, headers=admin["headers"])
-    assert resp.status_code == 403
+    assert resp.status_code == 201
 
     unchanged = client.get(f"/platform/users/{admin_id}/roles", headers=admin["headers"])
-    assert {a["role"] for a in unchanged.json()} == {"user", "platform_admin"}
+    assert {a["role"] for a in unchanged.json()} == {"user", "admin", "platform_admin"}
 
 
 def test_platform_admin_can_grant_self_a_role_with_no_new_permissions(client):
@@ -226,14 +213,11 @@ def test_platform_admin_can_grant_self_a_role_with_no_new_permissions(client):
     assert resp.status_code == 201
 
 
-def test_platform_admin_can_grant_another_user_the_admin_role(client):
-    """The self-escalation guard only applies to acting on your own
-    account -- granting someone ELSE a wider role is exactly what this
-    endpoint is for."""
+def test_platform_admin_cannot_grant_a_second_admin(client):
+    """A Platform Owner cannot bypass the platform-wide singleton Admin rule."""
     admin = _platform_admin(client)
     target = _register_and_login(client)
     target_id = _user_id(client, target["access_token"])
 
     resp = client.post(f"/platform/users/{target_id}/roles", json={"role": "admin"}, headers=admin["headers"])
-    assert resp.status_code == 201
-    assert "admin" in {a["role"] for a in resp.json()}
+    assert resp.status_code == 409

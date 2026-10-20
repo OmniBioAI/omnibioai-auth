@@ -13,7 +13,68 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def parse_license_allowed_validity_days(raw: str | None) -> tuple[int, ...]:
+    """Parse the comma-separated license policy, failing closed on bad input."""
+    if raw is None or not raw.strip():
+        return ()
+    values = []
+    for item in raw.split(","):
+        token = item.strip()
+        if not token or not token.isdecimal() or int(token) <= 0:
+            raise ValueError("LICENSE_ALLOWED_VALIDITY_DAYS must be positive comma-separated day counts")
+        values.append(int(token))
+    return tuple(sorted(set(values)))
+
+
+def load_license_key_pepper() -> str:
+    """Load a pepper from a mounted secret file or inline environment value.
+
+    The file form supports container secret mounts. The secret itself is never
+    included in errors or logs. Operators should provide at least 32 random
+    bytes encoded as text (for example, base64).
+    """
+    inline = os.getenv("LICENSE_KEY_PEPPER", "")
+    secret_file = os.getenv("LICENSE_KEY_PEPPER_FILE", "")
+    if inline and secret_file:
+        raise ValueError("Configure only one of LICENSE_KEY_PEPPER or LICENSE_KEY_PEPPER_FILE")
+    if secret_file:
+        try:
+            with open(secret_file, "rb") as handle:
+                value = handle.read().strip().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            raise ValueError("Configured LICENSE_KEY_PEPPER_FILE cannot be read as UTF-8") from None
+    else:
+        value = inline
+    if value and len(value.encode("utf-8")) < 32:
+        raise ValueError("LICENSE_KEY_PEPPER must contain at least 32 bytes")
+    return value
+
+
+def load_email_otp_pepper() -> str:
+    """Load the independent email-OTP HMAC key without a JWT-key fallback."""
+    inline = os.getenv("EMAIL_MFA_OTP_PEPPER", "")
+    secret_file = os.getenv("EMAIL_MFA_OTP_PEPPER_FILE", "")
+    if inline and secret_file:
+        raise ValueError("Configure only one of EMAIL_MFA_OTP_PEPPER or EMAIL_MFA_OTP_PEPPER_FILE")
+    if secret_file:
+        try:
+            with open(secret_file, "rb") as handle:
+                value = handle.read().strip().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            raise ValueError("Configured EMAIL_MFA_OTP_PEPPER_FILE cannot be read as UTF-8") from None
+    else:
+        value = inline
+    if value and len(value.encode("utf-8")) < 32:
+        raise ValueError("EMAIL_MFA_OTP_PEPPER must contain at least 32 bytes")
+    return value
+
 class Settings:
+    # Runtime startup is read-only with respect to schema by default. The
+    # alternate mode exists solely for isolated SQLite tests and is rejected
+    # by app.db.startup_schema unless APP_ENV is exactly "test".
+    APP_ENV = os.getenv("APP_ENV", "production")
+    AUTH_STARTUP_SCHEMA_MODE = os.getenv("AUTH_STARTUP_SCHEMA_MODE", "validate")
     DB_USER = os.getenv("DB_USER")
     DB_PASSWORD = os.getenv("DB_PASSWORD")
     DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -25,6 +86,27 @@ class Settings:
     # text representing at least 32 random bytes in the protected runtime
     # secret store; there is deliberately no application-secret fallback.
     AUTH_AUDIT_INTEGRITY_KEY = os.getenv("AUTH_AUDIT_INTEGRITY_KEY", "")
+    # Admin email MFA. Delivery is delegated to the existing OmniBioAI
+    # email service; empty credentials disable the method and never fall
+    # back to logging or returning a code.
+    EMAIL_MFA_ENABLED = os.getenv("EMAIL_MFA_ENABLED", "false").lower() == "true"
+    EMAIL_MFA_ADMIN_USER_ID = int(os.getenv("EMAIL_MFA_ADMIN_USER_ID", "1"))
+    EMAIL_MFA_ADMIN_ADDRESS = os.getenv("EMAIL_MFA_ADMIN_ADDRESS", "admin@omnibioai.org").strip().lower()
+    EMAIL_MFA_OTP_PEPPER = load_email_otp_pepper()
+    EMAIL_SERVICE_SEND_URL = os.getenv("EMAIL_SERVICE_SEND_URL", "")
+    EMAIL_SERVICE_TOKEN = os.getenv("EMAIL_SERVICE_TOKEN", "")
+    EMAIL_FROM_ADDRESS = os.getenv("EMAIL_FROM_ADDRESS", "security@omnibioai.org")
+    # Organization invitations remain disabled unless an operator explicitly
+    # enables the workflow and configures its public acceptance URL. This
+    # prevents an unreviewed deployment from sending outbound invitations.
+    ORG_INVITATIONS_ENABLED = os.getenv("ORG_INVITATIONS_ENABLED", "false").lower() == "true"
+    ORG_INVITATION_ACCEPT_URL = os.getenv("ORG_INVITATION_ACCEPT_URL", "").strip()
+    ORG_INVITATION_TTL_SECONDS = int(os.getenv("ORG_INVITATION_TTL_SECONDS", "604800"))
+    ORG_INVITATION_MAX_ACCEPT_ATTEMPTS = int(os.getenv("ORG_INVITATION_MAX_ACCEPT_ATTEMPTS", "5"))
+    EMAIL_MFA_TTL_SECONDS = 300
+    EMAIL_MFA_MAX_ATTEMPTS = 5
+    EMAIL_MFA_RESEND_COOLDOWN_SECONDS = 60
+    EMAIL_MFA_MAX_SENDS_PER_HOUR = int(os.getenv("EMAIL_MFA_MAX_SENDS_PER_HOUR", "5"))
     ALGORITHM = "HS256"
 
     # SSO Phase 2 PR15: which algorithm *newly issued* tokens are signed
@@ -155,6 +237,14 @@ class Settings:
     # client right before it `docker pull`s a private image -- same secret
     # the now-decommissioned license_server.py exposed (Phase 1 PR4 cutover).
     GHCR_PULL_TOKEN = os.getenv("GHCR_PULL_TOKEN", "")
+
+    # Manual-license issuance is fail-closed until operators provide both
+    # an independent verifier secret and an explicit validity policy.  The
+    # verifier is not the JWT/audit key and must be managed separately.
+    LICENSE_KEY_PEPPER = load_license_key_pepper()
+    LICENSE_ALLOWED_VALIDITY_DAYS = parse_license_allowed_validity_days(
+        os.getenv("LICENSE_ALLOWED_VALIDITY_DAYS", "")
+    )
 
     # HIPAA Phase 1 PR1: local-password login brute-force protection
     # (app/core/rate_limit.py, app/services/login_throttle_service.py).

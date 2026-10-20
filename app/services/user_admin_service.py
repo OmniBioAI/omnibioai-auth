@@ -17,9 +17,19 @@ from typing import Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import MFADevice, MFARecoveryCode, OrganizationMembership, Role, User
+from app.db.models import (
+    LicenseKey,
+    MFADevice,
+    MFARecoveryCode,
+    OAuthAccount,
+    OrganizationMembership,
+    RefreshToken,
+    Role,
+    User,
+    UserSession,
+)
 from app.schemas.user_admin import ALLOWED_USER_STATUSES
-from app.services import audit_service, auth_service, session_service
+from app.services import audit_service, auth_service, role_service, session_service
 from app.services.audit_service import AuditEventType
 
 DEFAULT_PAGE_SIZE = 20
@@ -256,6 +266,8 @@ def set_user_status(
     before_status = user.status
 
     if changed:
+        if status == "active":
+            role_service.validate_user_activation(db, user, actor_user_id=actor_user_id)
         user.status = status
         user.status_changed_at = datetime.utcnow()
         user.status_changed_reason = reason
@@ -287,3 +299,94 @@ def set_user_status(
         )
     db.commit()
     return user
+
+
+class EmailConflictError(ValueError):
+    pass
+
+
+def change_user_email(
+    db: Session,
+    user_id: int,
+    new_email: str,
+    reason: str,
+    actor_user_id: int,
+) -> User:
+    """Atomically change one canonical email and invalidate stale sessions.
+
+    The target row is locked for the transaction.  MySQL's unique users.email
+    index remains the final race-safe collision guard.  Only denormalized
+    references whose ownership is unambiguous are updated: OAuth rows owned by
+    this user and licenses already bound by user_id.  Historical audit payloads
+    and unbound email-only licenses are intentionally immutable/ambiguous.
+    """
+    try:
+        user = db.query(User).filter(User.id == user_id).with_for_update().first()
+        if user is None:
+            raise LookupError("User not found")
+
+        conflict = (
+            db.query(User)
+            .filter(func.lower(User.email) == new_email.lower(), User.id != user_id)
+            .first()
+        )
+        if conflict is not None:
+            raise EmailConflictError("Email address is already assigned")
+
+        old_email = user.email
+        if old_email == new_email:
+            return user
+
+        db.query(OAuthAccount).filter(
+            OAuthAccount.user_id == user_id,
+            OAuthAccount.email == old_email,
+        ).update({OAuthAccount.email: new_email}, synchronize_session=False)
+        db.query(LicenseKey).filter(LicenseKey.user_id == user_id).update(
+            {LicenseKey.email: new_email}, synchronize_session=False
+        )
+
+        # Revoke refresh families and their queryable session shadows in the
+        # same transaction as the rename.  Existing access tokens fail the
+        # canonical-email check in assert_token_usable immediately.
+        db.query(RefreshToken).filter(RefreshToken.user_id == user_id).update(
+            {RefreshToken.revoked: True}, synchronize_session=False
+        )
+        sessions = db.query(UserSession).filter(
+            UserSession.user_id == user_id,
+            UserSession.status != session_service.STATUS_REVOKED,
+        ).with_for_update().all()
+        now = datetime.utcnow()
+        for session in sessions:
+            session.status = session_service.STATUS_REVOKED
+            session.revoked_at = now
+            session.revoked_reason = session_service.REASON_IDENTITY_EMAIL_CHANGED
+            audit_service.log_event(
+                db,
+                AuditEventType.SESSION_REVOKED,
+                actor_user_id=actor_user_id,
+                target_user_id=user_id,
+                resource_type="session",
+                resource_id=session.session_id,
+                metadata={"reason": session_service.REASON_IDENTITY_EMAIL_CHANGED},
+                commit=False,
+            )
+
+        user.email = new_email
+        audit_service.log_event(
+            db,
+            AuditEventType.USER_EMAIL_CHANGED,
+            actor_user_id=actor_user_id,
+            target_user_id=user_id,
+            resource_type="user",
+            resource_id=user_id,
+            before_state={"email": old_email},
+            after_state={"email": new_email},
+            metadata={"reason": reason},
+            commit=False,
+        )
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception:
+        db.rollback()
+        raise
