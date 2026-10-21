@@ -8,6 +8,7 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
+import logging
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,6 +26,41 @@ from app.services.audit_service import AuditEventType
 from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
+logger = logging.getLogger("omnibioai.auth.oauth")
+
+_OAUTH_CALLBACK_MESSAGES = {
+    "cancelled": "Sign-in was cancelled. You can try again.",
+    "not_test_user": "This app is still being tested. Ask an administrator to add your account as a test user.",
+    "misconfigured": "Sign-in is temporarily unavailable. Ask an administrator to check the OAuth app configuration.",
+    "failed": "Sign-in couldn't be completed. Please try again or contact support.",
+}
+
+
+def _oauth_callback_failure(error: str | None, description: str | None) -> tuple[str, str]:
+    """Return a safe category/message without echoing provider-controlled text."""
+    code = (error or "").strip().casefold()
+    detail = (description or "").casefold()
+
+    test_user_markers = (
+        "test user", "test users", "testing", "test mode", "test account",
+        "developer-approved", "developer approved", "not been added as a tester",
+    )
+    if any(marker in detail for marker in test_user_markers):
+        category = "not_test_user"
+    elif code in {
+        "invalid_client", "unauthorized_client", "invalid_request", "invalid_scope",
+        "redirect_uri_mismatch", "unauthorized", "aadsts50011",
+    } or any(marker in detail for marker in (
+        "redirect_uri", "redirect uri", "reply url", "client_id", "client id",
+        "client_secret", "client secret", "misconfigured", "configuration error",
+        "application with identifier", "aadsts50011",
+    )):
+        category = "misconfigured"
+    elif code in {"access_denied", "user_cancelled", "user_canceled"}:
+        category = "cancelled"
+    else:
+        category = "failed"
+    return category, _OAUTH_CALLBACK_MESSAGES[category]
 
 NOT_APPROVED_MESSAGE = "This email isn't approved yet. Request beta access at omnibioai.org"
 UNVERIFIED_EMAIL_MESSAGE = (
@@ -190,9 +226,32 @@ def oauth_login(provider: str):
 
 
 @router.get("/{provider}/callback")
-async def oauth_callback_redirect(provider: str, code: str, state: str, db: Session = Depends(get_db)):
+async def oauth_callback_redirect(
+    provider: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    db: Session = Depends(get_db),
+):
     # This is a real browser navigation (the provider's redirect), so failures
     # must land the user back in the app with a message, never a raw JSON error page.
+    if provider not in PROVIDERS:
+        _require_provider(provider)
+
+    if error is not None:
+        category, message = _oauth_callback_failure(error, error_description)
+        # Provider error strings/descriptions can contain user data or other
+        # sensitive material. Log only the provider and normalized category.
+        logger.warning("oauth_callback_provider_error provider=%s category=%s", provider, category)
+        result = {"status": "error", "error": message}
+        return RedirectResponse(f"{settings.FRONTEND_BASE_URL}/oauth-complete?{urlencode(result)}")
+
+    if not code or not state:
+        logger.warning("oauth_callback_missing_parameters provider=%s", provider)
+        result = {"status": "error", "error": _OAUTH_CALLBACK_MESSAGES["failed"]}
+        return RedirectResponse(f"{settings.FRONTEND_BASE_URL}/oauth-complete?{urlencode(result)}")
+
     try:
         _require_provider(provider)
         code_verifier = _verify_state(provider, state)

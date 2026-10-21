@@ -184,6 +184,64 @@ def test_get_callback_failure_redirects_with_error_not_raw_json(client, configur
     assert "status=error" in location
 
 
+@pytest.mark.parametrize(
+    ("provider_error", "description", "expected_message"),
+    [
+        ("access_denied", "The user denied the request", "Sign-in was cancelled. You can try again."),
+        (
+            "access_denied",
+            "The app is currently being tested and you are not a test user",
+            "This app is still being tested. Ask an administrator to add your account as a test user.",
+        ),
+        (
+            "invalid_request",
+            "redirect_uri_mismatch: check the client configuration",
+            "Sign-in is temporarily unavailable. Ask an administrator to check the OAuth app configuration.",
+        ),
+    ],
+)
+def test_get_callback_provider_error_redirects_to_friendly_studio_message(
+    client, configured_google, provider_error, description, expected_message,
+):
+    """Provider errors without code/state return a safe, friendly Studio redirect."""
+    from urllib.parse import parse_qs, urlparse
+
+    resp = client.get(
+        "/auth/google/callback",
+        params={"error": provider_error, "error_description": description},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 307)
+    location = urlparse(resp.headers["location"])
+    assert location.path == "/oauth-complete"
+    query = parse_qs(location.query)
+    assert query["status"] == ["error"]
+    assert query["error"] == [expected_message]
+    assert provider_error not in location.query
+    assert description not in location.query
+
+
+def test_get_callback_provider_error_log_excludes_provider_text_and_secrets(
+    client, configured_google, caplog,
+):
+    """Callback logs retain useful classification while dropping provider-controlled text."""
+    from urllib.parse import parse_qs, urlparse
+
+    sentinel = "private-provider-detail-secret-sentinel"
+    with caplog.at_level("WARNING", logger="omnibioai.auth.oauth"):
+        resp = client.get(
+            "/auth/google/callback",
+            params={"error": "access_denied", "error_description": sentinel},
+            follow_redirects=False,
+        )
+
+    query = parse_qs(urlparse(resp.headers["location"]).query)
+    assert query["error"] == ["Sign-in was cancelled. You can try again."]
+    assert sentinel not in resp.headers["location"]
+    assert sentinel not in caplog.text
+    assert "provider=google category=cancelled" in caplog.text
+
+
 # ── Callback: existing email → link confirmation required ───────────────────────
 
 def test_callback_existing_email_requires_link_confirmation(client, configured_google, monkeypatch, registered_user):
