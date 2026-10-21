@@ -27,7 +27,7 @@ from app.schemas.license import (
     LicenseValidateRequest,
     LicenseValidateResponse,
 )
-from app.services import audit_service, license_service, org_service
+from app.services import audit_service, license_service, mfa_enrollment_service, org_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
@@ -75,6 +75,7 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
         raise HTTPException(403, detail={
             "error": "mfa_enrollment_required",
             "message": "Your organization requires MFA enrollment",
+            "enrollment_token": mfa_enrollment_service.create_enrollment_token(db, user.id),
         })
     if result["mfa_required"]:
         return LicenseValidateResponse(

@@ -790,6 +790,28 @@ class MFADevice(Base):
     user = relationship("User")
 
 
+class MFAEnrollmentSession(Base):
+    """One-time, short-lived pre-authentication TOTP enrollment capability.
+
+    The raw signed token is never stored. Its jti binds the 10-minute token
+    to one user and one pending device; consumed_at is set only after a
+    successful TOTP verification, after which the same token cannot start
+    or verify another enrollment.
+    """
+    __tablename__ = "mfa_enrollment_sessions"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token_jti = Column(String(36), nullable=False, unique=True)
+    device_id = Column(Integer, ForeignKey("mfa_devices.id"), nullable=True, unique=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+    device = relationship("MFADevice")
+
+
 class MFARecoveryCode(Base):
     """PR11.5.1: one-time-use recovery codes, hashed at rest -- never
     the plaintext code. Same "store a hash, never the plaintext"

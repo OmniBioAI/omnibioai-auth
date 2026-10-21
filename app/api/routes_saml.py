@@ -22,6 +22,7 @@ from app.db.session import get_db
 from app.schemas.auth import LogoutRequest
 from app.services import (
     auth_service,
+    mfa_enrollment_service,
     oauth_service,
     org_saml_service,
     org_service,
@@ -59,6 +60,7 @@ def _issue_tokens_or_challenge(
         raise HTTPException(403, detail={
             "error": "mfa_enrollment_required",
             "message": "Your organization requires MFA enrollment",
+            "enrollment_token": mfa_enrollment_service.create_enrollment_token(db, user.id),
         })
 
 
