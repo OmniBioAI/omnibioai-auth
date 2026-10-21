@@ -118,6 +118,7 @@ DELEGATED_EXECUTION_NAMES = {
     # Service-only TES -> ToolServer /register_tools credential (no user
     # principal) -- see app/services/toolserver_registration_service.py.
     "toolserver.register": PermissionCategory.WORKFLOW,
+    "storage_ledger.write": PermissionCategory.DATASET,
 }
 
 # HIPAA-V2-001 RAG R1 (authoritative write identity for /v1/ingest,
@@ -640,8 +641,9 @@ def test_registry_stats_by_scope_sums_to_total():
     # #443's own new non-legacy GLOBAL entry -- see SERVICE_MINT_NAMES
     # above, the first non-legacy permission in this registry that isn't
     # BOTH-scoped).
-    # +1 for license.issue (LICENSE_ISSUE_NAMES above).
-    assert stats["by_scope"]["global"] == 10
+    # +1 for license.issue (LICENSE_ISSUE_NAMES above), +1 for
+    # storage_ledger.write (DELEGATED_EXECUTION_NAMES above).
+    assert stats["by_scope"]["global"] == 11
     # 11 pre-runs.read + 1 (runs.read, added by the omnibioai-tes IAM
     # integration -- see TES_NAMES above) + 1 (model.resolve_ownership,
     # added by the omnibioai-model-registry Phase 2E integration -- see

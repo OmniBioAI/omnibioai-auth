@@ -140,6 +140,19 @@ _register(
     )
 )
 
+_register(
+    PermissionDef(
+        name="storage_ledger.write", resource="storage_ledger", action="write",
+        scope=PermissionScope.GLOBAL, category=PermissionCategory.DATASET,
+        description=(
+            "Authorize an active TES service identity to provision tenant-owned "
+            "Storage Ledger output allocations. Runtime workers receive only "
+            "allocation-scoped capabilities minted by Workbench."
+        ),
+        legacy=False,
+    )
+)
+
 
 # --- Platform (global) permissions -- legacy -------------------------------
 

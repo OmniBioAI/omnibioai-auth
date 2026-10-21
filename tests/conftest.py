@@ -65,14 +65,11 @@ def override_get_db():
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_db():
-    """Create every table on the SQLite test engine for the session and drop it (and the test.db
-    file) afterwards.
-    """
+    """Create and drop tables only on the explicitly selected test engine."""
     Base.metadata.create_all(bind=test_engine)
     yield
     Base.metadata.drop_all(bind=test_engine)
-    if os.path.exists("./test.db"):
-        os.remove("./test.db")
+    test_engine.dispose()
 
 
 @pytest.fixture(scope="session")
