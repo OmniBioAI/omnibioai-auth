@@ -20,7 +20,7 @@ from app.core.oauth_providers import PROVIDERS, is_configured
 from app.core.security import DUMMY_PASSWORD_HASH, verify_password
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody, OAuthLinkConfirmRequest
-from app.services import audit_service, license_service, oauth_service, org_service, sso_discovery_service
+from app.services import audit_service, license_service, mfa_enrollment_service, oauth_service, org_service, sso_discovery_service
 from app.services.audit_service import AuditEventType
 from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
@@ -76,6 +76,7 @@ def _issue_tokens_or_challenge(db: Session, user, auth_method: str, idp_org_id: 
         raise HTTPException(403, detail={
             "error": "mfa_enrollment_required",
             "message": "Your organization requires MFA enrollment",
+            "enrollment_token": mfa_enrollment_service.create_enrollment_token(db, user.id),
         })
 
 

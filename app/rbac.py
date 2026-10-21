@@ -56,7 +56,7 @@ def get_current_user(token=Depends(security), db: Session = Depends(get_db)):
     # dependency, one explicit check, rather than relying on every
     # individual route to remember it). See
     # docs/pr11-mfa-login-challenge-discovery.md SS7.
-    if payload.get("type") == "mfa_challenge":
+    if payload.get("type") in {"mfa_challenge", "mfa_enrollment"}:
         raise HTTPException(401, "Invalid token")
     return payload
 

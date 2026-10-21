@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_mfa_enrollment_user
 from app.api.routes_auth import _set_session_cookie
 from app.db.models import MFADevice
 from app.db.session import get_db
@@ -31,7 +32,7 @@ from app.schemas.mfa import (
     TOTPEnrollOut,
     TOTPVerifyIn,
 )
-from app.services import mfa_service
+from app.services import mfa_enrollment_service, mfa_service
 
 router = APIRouter(prefix="/users/me/mfa", tags=["mfa"])
 
@@ -50,8 +51,18 @@ def _device_out(device: MFADevice) -> MFADeviceOut:
 @router.post("/totp/enroll", response_model=TOTPEnrollOut, status_code=201)
 def start_totp_enrollment(
     db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_mfa_enrollment_user),
 ):
+    enrollment_session = None
+    if user.get("mfa_enrollment_only"):
+        enrollment_session = mfa_enrollment_service.get_active_session(
+            db,
+            user_id=int(user["sub"]),
+            token_jti=user.get("mfa_enrollment_jti", ""),
+            lock=True,
+        )
+        if enrollment_session is None or enrollment_session.device_id is not None:
+            raise HTTPException(401, "Invalid or already used enrollment token")
     try:
         device, uri = mfa_service.start_totp_enrollment(db, int(user["sub"]), user["email"])
     except RuntimeError as e:
@@ -59,6 +70,9 @@ def start_totp_enrollment(
         # isn't set -- same handling as routes_config.py's update_config:
         # a loud, clear 500, never a silently-stored plaintext secret.
         raise HTTPException(500, str(e))
+    if enrollment_session is not None:
+        enrollment_session.device_id = device.id
+        db.commit()
     return TOTPEnrollOut(device_id=device.id, otpauth_uri=uri)
 
 
@@ -66,14 +80,26 @@ def start_totp_enrollment(
 def verify_totp_enrollment(
     body: TOTPVerifyIn,
     db: Session = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_mfa_enrollment_user),
 ):
+    enrollment_session = None
+    if user.get("mfa_enrollment_only"):
+        enrollment_session = mfa_enrollment_service.get_active_session(
+            db,
+            user_id=int(user["sub"]),
+            token_jti=user.get("mfa_enrollment_jti", ""),
+            lock=True,
+        )
+        if enrollment_session is None or enrollment_session.device_id != body.device_id:
+            raise HTTPException(401, "Invalid or expired enrollment token")
     try:
         device = mfa_service.verify_totp_enrollment(db, int(user["sub"]), body.device_id, body.code)
     except LookupError:
         raise HTTPException(404, "MFA device not found")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if enrollment_session is not None and not mfa_enrollment_service.consume_session(db, enrollment_session.id):
+        raise HTTPException(401, "Enrollment token already used or expired")
     return _device_out(device)
 
 

@@ -346,6 +346,29 @@ def create_mfa_challenge_token(
     )
 
 
+def create_mfa_enrollment_token(
+    user_id: int,
+    token_jti: str,
+    expires_at: datetime | None = None,
+):
+    """Issue a short-lived, purpose-bound credential for a pending MFA
+    enrollment. It intentionally carries `user_id`, not `sub`, and has a
+    distinct token type so regular user dependencies cannot treat it as an
+    access token. Server-side enrollment state makes the capability
+    single-use once enrollment is successfully verified.
+    """
+    now = datetime.utcnow()
+    expires_at = expires_at or now + timedelta(minutes=10)
+    return _sign({
+        "type": "mfa_enrollment",
+        "purpose": "totp_enrollment",
+        "user_id": int(user_id),
+        "iat": now,
+        "exp": expires_at,
+        "jti": token_jti,
+    })
+
+
 def create_link_token(
     user_id: int,
     provider: str,

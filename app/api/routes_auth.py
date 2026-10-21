@@ -40,7 +40,7 @@ from app.services.auth_service import (
     rotate_refresh_token,
 )
 from app.services.role_service import assign_default_role
-from app.services import login_throttle_service, org_service, sso_discovery_service, team_service
+from app.services import login_throttle_service, mfa_enrollment_service, org_service, sso_discovery_service, team_service
 from app.services.email_mfa_service import EmailMFAResendLimitedError, EmailMFAUnavailableError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -227,6 +227,7 @@ def login(req: LoginRequest, request: Request, response: Response, db: Session =
         raise HTTPException(403, detail={
             "error": "mfa_enrollment_required",
             "message": "Your organization requires MFA enrollment",
+            "enrollment_token": mfa_enrollment_service.create_enrollment_token(db, user.id),
         })
     except EmailMFAResendLimitedError as e:
         return JSONResponse(status_code=429,

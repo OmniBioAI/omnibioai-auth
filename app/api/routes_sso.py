@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.jwt import create_sso_state_token, decode_token
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody
-from app.services import org_oidc_service, org_service, org_sso_service, oauth_service, sso_discovery_service
+from app.services import mfa_enrollment_service, org_oidc_service, org_service, org_sso_service, oauth_service, sso_discovery_service
 from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 # Reusing PR2's own PKCE helpers rather than re-implementing them --
 # they're pure functions with no shared state, and the task this PR
@@ -38,6 +38,7 @@ def _issue_tokens_or_challenge(db: Session, user, auth_method: str, idp_org_id: 
         raise HTTPException(403, detail={
             "error": "mfa_enrollment_required",
             "message": "Your organization requires MFA enrollment",
+            "enrollment_token": mfa_enrollment_service.create_enrollment_token(db, user.id),
         })
 
 
