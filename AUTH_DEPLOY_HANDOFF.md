@@ -2,7 +2,7 @@
 
 Date: 2026-10-27  
 Target project: `omnibioai-studio`  
-Target Auth commit/image: `049ce9df2e81` / `obai-auth-v62:049ce9df2e81`
+Target Auth commit/image: `15349061a298` / `obai-auth-v62:15349061a298`
 
 ## Current decision: NO-GO
 
@@ -40,7 +40,7 @@ set -euo pipefail
 export MACHINE_DIR=/home/manish/Desktop/omnibioai-ecosystem
 export AUTH_REPO="$MACHINE_DIR/omnibioai-auth"
 export STUDIO_DIR="$MACHINE_DIR/omnibioai-studio"
-export AUTH_IMAGE=obai-auth-v62:049ce9df2e81
+export AUTH_IMAGE=obai-auth-v62:15349061a298
 export MYSQL_CONTAINER=omnibioai-full-mac-dev-v1
 export MYSQL_NETWORK=omnibioai-full-mac-dev-v1-net
 export AUTH_DB=omnibioai
