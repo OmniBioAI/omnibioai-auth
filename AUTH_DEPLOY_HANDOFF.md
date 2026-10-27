@@ -2,7 +2,7 @@
 
 Date: 2026-10-27  
 Target project: `omnibioai-studio`  
-Target Auth commit/image: `15349061a298` / `obai-auth-v62:15349061a298`
+Target Auth commit/image: `b9819e0b57f4` / `obai-auth-v62:b9819e0b57f4`
 
 ## Current decision: NO-GO
 
@@ -40,7 +40,7 @@ set -euo pipefail
 export MACHINE_DIR=/home/manish/Desktop/omnibioai-ecosystem
 export AUTH_REPO="$MACHINE_DIR/omnibioai-auth"
 export STUDIO_DIR="$MACHINE_DIR/omnibioai-studio"
-export AUTH_IMAGE=obai-auth-v62:15349061a298
+export AUTH_IMAGE=obai-auth-v62:b9819e0b57f4
 export MYSQL_CONTAINER=omnibioai-full-mac-dev-v1
 export MYSQL_NETWORK=omnibioai-full-mac-dev-v1-net
 export AUTH_DB=omnibioai
@@ -151,11 +151,18 @@ includes issuing a license:
      environment:
 +      APP_ENV: production
 +      AUTH_STARTUP_SCHEMA_MODE: validate
++      ADMIN_BOOTSTRAP_EMAIL: ${AUTH_ADMIN_BOOTSTRAP_EMAIL:?set to the verified email for users.id=1}
 +      LICENSE_KEY_PEPPER_FILE: /run/secrets/license_key_pepper
 +      LICENSE_ALLOWED_VALIDITY_DAYS: ${LICENSE_ALLOWED_VALIDITY_DAYS:?set approved values, e.g. 30,90,365}
 +    volumes:
 +      - ${AUTH_LICENSE_KEY_PEPPER_FILE:?set a mode-0400/0600 secret file}:/run/secrets/license_key_pepper:ro
 ```
+
+Set `AUTH_ADMIN_BOOTSTRAP_EMAIL` to the exact email returned by the approved
+read-only lookup for `users.id=1`; do not infer it from the operator's login.
+That live lookup was not available from this Docker-restricted session, so the
+value remains deliberately required and unresolved here. Confirm it maps to
+ID 1 before applying this diff.
 
 Do not add email-MFA or invitation delivery variables unless those features are
 being enabled in this release. If enabled, review and supply the independent
@@ -343,7 +350,8 @@ protected Compose environment file. The container mount is read-only.
        APP_ENV: production
        AUTH_STARTUP_SCHEMA_MODE: validate
 +      LICENSE_KEY_PEPPER_FILE: /run/secrets/license_key_pepper
-+      LICENSE_ALLOWED_VALIDITY_DAYS: ${LICENSE_ALLOWED_VALIDITY_DAYS:?set approved positive day counts, e.g. 30,90}
++      ADMIN_BOOTSTRAP_EMAIL: ${AUTH_ADMIN_BOOTSTRAP_EMAIL:?set to the verified email for users.id=1}
++      LICENSE_ALLOWED_VALIDITY_DAYS: ${LICENSE_ALLOWED_VALIDITY_DAYS:?set approved positive day counts: 30,90,365}
 +    volumes:
 +      - ${AUTH_LICENSE_KEY_PEPPER_FILE:?set path to a mode-0600 secret file}:/run/secrets/license_key_pepper:ro
 ```
