@@ -139,9 +139,10 @@ def test_response_contains_all_registered_permissions(client):
     # the 6th org entry counted above).
     # + 1 M15 entry (provider_keys.manage -- BYOK provider-key storage).
     # + 1 omnibioai-launcher entry (workspace.launch).
+    # + 1 TES Storage Ledger entry (storage_ledger.write).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 34
+    assert len(REGISTRY) == 35
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -203,6 +204,16 @@ def test_service_mint_permission_present_and_correctly_flagged(client):
         assert by_name[name]["legacy"] is False
         assert by_name[name]["scope"] == "global"
         assert by_name[name]["deprecated"] is False
+
+
+def test_storage_ledger_write_permission_present_and_global(client):
+    """TES's allocation-provisioning permission is global, not org-scoped."""
+    admin = _platform_admin(client)
+    resp = client.get("/platform/permissions", headers=admin["headers"])
+    by_name = {p["name"]: p for p in resp.json()}
+    assert by_name["storage_ledger.write"]["scope"] == "global"
+    assert by_name["storage_ledger.write"]["legacy"] is False
+    assert by_name["storage_ledger.write"]["deprecated"] is False
 
 
 # ── Legacy permissions present ───────────────────────────────────────────────
@@ -322,7 +333,7 @@ def test_platform_admin_can_get_registry_stats(client):
     body = resp.json()
     assert body["total_permissions"] == len(REGISTRY)
     assert body["legacy_permissions"] == len(LEGACY_NAMES)
-    assert body["future_permissions"] == len(FUTURE_NAMES) + len(SERVICE_MINT_NAMES)
+    assert body["future_permissions"] == len(FUTURE_NAMES) + len(SERVICE_MINT_NAMES) + 1
     assert body["deprecated_permissions"] == 0
     assert sum(body["by_scope"].values()) == len(REGISTRY)
     assert sum(body["by_category"].values()) == len(REGISTRY)

@@ -42,10 +42,13 @@ ORG_SAML_TABLES = {"organization_saml_configs"}  # SAML SSO PR2 (0021)
 MFA_TOTP_REPLAY_TABLES = {"mfa_used_totp_steps"}  # HIPAA Phase 3b (0024)
 INTEGRATION_CREDENTIAL_TABLES = {"integration_credentials", "integration_credential_references"}
 MANUAL_LICENSE_TABLES = {"license_issuance_requests"}
+EMAIL_MFA_TABLES = {"mfa_email_otps"}
+ORG_INVITATION_TABLES = {"organization_invitations"}
 ALL_TABLES = (
     BASELINE_TABLES | MULTI_TENANT_TABLES | OAUTH_CLIENTS_TABLES | ORG_SSO_TABLES | AUDIT_TABLES
     | MFA_TABLES | MFA_ORG_POLICY_TABLES | SESSION_TABLES | INTERACTION_TABLES | ORG_SAML_TABLES
     | MFA_TOTP_REPLAY_TABLES | INTEGRATION_CREDENTIAL_TABLES | MANUAL_LICENSE_TABLES
+    | EMAIL_MFA_TABLES | ORG_INVITATION_TABLES
 )
 
 
@@ -91,6 +94,20 @@ def test_sqlite_fresh_upgrade_head_creates_all_tables(sqlite_db_url):
     actual_tables = set(inspector.get_table_names())
 
     assert ALL_TABLES <= actual_tables, f"Missing tables: {ALL_TABLES - actual_tables}"
+
+    email_otp_columns = {c["name"] for c in inspector.get_columns("mfa_email_otps")}
+    assert {
+        "id", "user_id", "challenge_jti", "code_hash", "attempts", "created_at",
+        "expires_at", "consumed_at", "invalidated_at",
+    } <= email_otp_columns
+
+    invitation_columns = {c["name"] for c in inspector.get_columns("organization_invitations")}
+    assert {
+        "id", "organization_id", "invited_by_user_id", "invited_email", "role_names",
+        "token_hash", "active_key", "status", "created_at", "expires_at", "accepted_at",
+        "accepted_user_id", "revoked_at", "revoked_by_user_id", "mfa_secret_encrypted",
+        "mfa_setup_at", "mfa_attempts",
+    } <= invitation_columns
 
     license_columns = {c["name"] for c in inspector.get_columns("license_keys")}
     assert {
@@ -1176,7 +1193,7 @@ def test_mysql_pre_existing_role_rows_survive_0016_as_platform_wide(mysql_db_url
 
     with engine.connect() as conn:
         recorded = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert recorded == "0033_email_mfa_otp"
+    assert recorded == "0035_organization_invitations"
 
 
 def test_mysql_0020_pre_existing_team_membership_row_backfills_member_role(mysql_db_url):

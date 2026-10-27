@@ -34,6 +34,10 @@ ORG_MEMBERSHIP_QUALNAMES = {
     "require_org_permission.<locals>.wrapper",
     "get_org_membership_or_platform_admin",
     "require_org_permission_or_platform_admin.<locals>.wrapper",
+    # Organization-invitation management adds audit records to denials, but
+    # still delegates to get_org_membership_or_platform_admin and checks
+    # manage_org. See routes_orgs.require_invitation_manage_org.
+    "require_invitation_manage_org",
 }
 GLOBAL_PERMISSION_QUALNAMES = {
     "require_permission.<locals>.wrapper",
@@ -179,7 +183,9 @@ def test_org_scoped_route_inventory_matches_expected_count():
     manage_org already gates elsewhere (e.g. GET/PUT /orgs/{org_id}
     itself), not a new permission.
     """
-    assert len(list(_org_scoped_routes())) == 47
+    # Three invitation lifecycle endpoints (create/list/revoke) use the
+    # audited require_invitation_manage_org dependency above.
+    assert len(list(_org_scoped_routes())) == 50
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
@@ -197,6 +203,7 @@ def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
     platform_admin_aware = {
         "get_org_membership_or_platform_admin",
         "require_org_permission_or_platform_admin.<locals>.wrapper",
+        "require_invitation_manage_org",
     }
     not_migrated = []
     for route in _org_scoped_routes():
