@@ -38,8 +38,8 @@ def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"
     """The subset of app/main.py's real startup sequence this persona seed
     depends on, in the exact order app/main.py runs them."""
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", password)
-    create_admin(db)
-    ensure_default_organization(db)
+    create_admin(db, bootstrap_email="admin@omnibioai")
+    ensure_default_organization(db, bootstrap_email="admin@omnibioai")
 
 
 def test_unset_env_var_creates_nobody(db_session, monkeypatch):

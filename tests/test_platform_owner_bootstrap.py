@@ -51,7 +51,7 @@ def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"
     """The exact three-call sequence app/main.py runs at every real
     startup, in the exact order."""
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", password)
-    create_admin(db)
+    create_admin(db, bootstrap_email="admin@omnibioai")
     ensure_platform_admin_role(db)
     ensure_platform_owner(db)
 
@@ -189,7 +189,7 @@ def test_platform_owner_email_before_role_exists_is_a_safe_no_op(db_session, mon
     invoked before ensure_platform_admin_role, it must not raise."""
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", "regression-test-password-not-for-prod")
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
-    create_admin(db_session)
+    create_admin(db_session, bootstrap_email="admin@omnibioai")
 
     ensure_platform_owner(db_session)  # platform_admin role does not exist yet
 
