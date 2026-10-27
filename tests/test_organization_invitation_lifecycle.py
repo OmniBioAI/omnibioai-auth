@@ -8,6 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from cryptography.fernet import Fernet
+import pytest
 
 from app.core import crypto
 from app.core.config import settings
@@ -18,6 +19,17 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.services import email_delivery_service, mfa_service, role_service
 from app.services.org_service import ORG_MEMBER_ROLE
+
+
+@pytest.fixture(autouse=True)
+def _configure_invitation_test_delivery(monkeypatch):
+    """Keep lifecycle tests deterministic despite the production-safe
+    default-off feature flag and absent outbound email credentials.
+    Individual tests may override either setting or the delivery stub.
+    """
+    monkeypatch.setattr(settings, "ORG_INVITATIONS_ENABLED", True)
+    monkeypatch.setattr(settings, "ORG_INVITATION_ACCEPT_URL", "https://admin.example.com/invitations/accept")
+    monkeypatch.setattr(email_delivery_service, "send_organization_invitation", lambda *_args, **_kwargs: None)
 
 
 def _register_login(client, email=None):
@@ -187,7 +199,7 @@ def test_expired_invitation_is_marked_and_rejected(client, monkeypatch):
         assert invitation.status == "expired" and invitation.active_key is None
 
 
-def test_invitation_feature_disabled_by_default_is_rejected(client, monkeypatch):
+def test_invitation_feature_disabled_is_rejected(client, monkeypatch):
     monkeypatch.setattr(settings, "ORG_INVITATIONS_ENABLED", False)
     _email, _password, headers = _register_login(client)
     org_id = _org(client, headers)

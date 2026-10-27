@@ -94,6 +94,30 @@ def verify_totp_code(secret_b32: str, code: str, for_time: int | None = None) ->
     return False
 
 
+def verify_user_totp_step_up(db: Session, user_id: int, code: str) -> bool:
+    """Verify and atomically claim a fresh enrolled TOTP step for a
+    sensitive action outside the login challenge flow (for example,
+    accepting an invitation into an MFA-required organization).
+    """
+    if not code or len(code) != _DIGITS or not code.isdigit():
+        return False
+    devices = db.query(MFADevice).filter(
+        MFADevice.user_id == user_id,
+        MFADevice.device_type == "totp",
+        MFADevice.verified_at.isnot(None),
+        MFADevice.disabled_at.is_(None),
+    ).all()
+    for device in devices:
+        try:
+            secret = crypto.decrypt(device.encrypted_secret)
+            step = _totp_matched_step(secret, code)
+            if step is not None and _try_claim_totp_step(db, device.id, step):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _totp_matched_step(secret_b32: str, code: str, for_time: int | None = None) -> int | None:
     """HIPAA Phase 3b: same window/candidate-generation/constant-time-
     comparison semantics as verify_totp_code above -- clock-skew handling
