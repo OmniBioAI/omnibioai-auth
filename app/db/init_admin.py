@@ -41,8 +41,6 @@ def create_admin(db, *, bootstrap_email: str | None = None):
     admin role merely because it owns that primary key.
     """
     bootstrap_email = (bootstrap_email or "").strip().lower()
-    if not bootstrap_email:
-        return
 
     # Baseline role for regular signups (register/license/oauth) -- see
     # role_service.assign_default_role, called from each of those sites.
@@ -140,6 +138,16 @@ def create_admin(db, *, bootstrap_email: str | None = None):
         if manage_content_perm not in admin_role.permissions:
             admin_role.permissions.append(manage_content_perm)
 
+    # Role/permission catalog seeding is startup maintenance, independent of
+    # whether this deployment has opted into creating or assigning an admin.
+    # Commit before identity checks so a safely skipped bootstrap can never
+    # roll back the shared catalog.
+    db.commit()
+
+    if not bootstrap_email:
+        logger.info("ADMIN_BOOTSTRAP_EMAIL is unset; admin identity bootstrap skipped.")
+        return
+
     admin = db.query(User).filter(User.email == bootstrap_email).first()
     if admin is None:
         if db.query(User.id).first() is not None:
@@ -147,14 +155,12 @@ def create_admin(db, *, bootstrap_email: str | None = None):
                 "ADMIN_BOOTSTRAP_EMAIL does not match an existing user in a non-empty identity database; "
                 "bootstrap creation skipped."
             )
-            db.rollback()
             return
     elif admin.id != DESIGNATED_ADMIN_USER_ID:
         logger.error(
             "ADMIN_BOOTSTRAP_EMAIL identity has user ID %s; expected designated ID %s. Bootstrap assignment skipped.",
             admin.id, DESIGNATED_ADMIN_USER_ID,
         )
-        db.rollback()
         return
     if not admin:
         # No hardcoded default password: an operator-supplied

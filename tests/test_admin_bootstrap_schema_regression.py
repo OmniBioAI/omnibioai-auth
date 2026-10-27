@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import app.db.models  # noqa: F401 -- registers every ORM class on Base.metadata
 from app.db.base import Base
 from app.db.init_admin import create_admin
-from app.db.models import User
+from app.db.models import Permission, Role, User
 from app.db.schema_guard import SchemaDriftError, assert_schema_matches_models
 from app.services.role_service import get_or_create_role
 
@@ -94,6 +94,85 @@ def test_create_admin_is_idempotent_across_repeated_startups(fresh_engine, monke
 
         assert len(admins) == 1
         assert admins[0].hashed_password == first_hash  # password untouched on re-run
+    finally:
+        db.close()
+
+
+def test_unset_bootstrap_email_still_seeds_catalog_without_admin(fresh_engine):
+    Base.metadata.create_all(bind=fresh_engine)
+    Session = sessionmaker(bind=fresh_engine)
+    db = Session()
+    try:
+        create_admin(db)
+
+        assert db.query(Role).filter_by(name="user").one()
+        admin_role = db.query(Role).filter_by(name="admin").one()
+        assert {p.name for p in admin_role.permissions} >= {
+            "manage_roles", "manage_licenses", "manage_config", "override_sso_enforcement",
+        }
+        assert db.query(Permission).filter_by(name="manage_licenses").one()
+        assert db.query(User).count() == 0
+        assert not db.query(User).join(User.roles).filter(Role.name == "admin").first()
+    finally:
+        db.close()
+
+
+def test_configured_email_for_designated_user_id_one_gets_admin(fresh_engine, monkeypatch):
+    Base.metadata.create_all(bind=fresh_engine)
+    Session = sessionmaker(bind=fresh_engine)
+    db = Session()
+    try:
+        db.add(User(id=1, email="designated@example.test", hashed_password="existing", status="active"))
+        db.commit()
+
+        create_admin(db, bootstrap_email="DESIGNATED@example.test")
+
+        user = db.query(User).filter_by(id=1).one()
+        assert "admin" in {role.name for role in user.roles}
+    finally:
+        db.close()
+
+
+def test_non_designated_configured_identity_keeps_seed_but_is_not_granted(
+    fresh_engine, caplog,
+):
+    Base.metadata.create_all(bind=fresh_engine)
+    Session = sessionmaker(bind=fresh_engine)
+    db = Session()
+    try:
+        db.add(User(id=7, email="not-designated@example.test", hashed_password="existing", status="active"))
+        db.commit()
+
+        create_admin(db, bootstrap_email="not-designated@example.test")
+
+        user = db.query(User).filter_by(id=7).one()
+        assert "admin" not in {role.name for role in user.roles}
+        assert db.query(Role).filter_by(name="user").one()
+        admin_role = db.query(Role).filter_by(name="admin").one()
+        assert "manage_licenses" in {permission.name for permission in admin_role.permissions}
+        assert "expected designated ID 1" in caplog.text
+    finally:
+        db.close()
+
+
+def test_missing_configured_identity_in_nonempty_db_keeps_seed_and_creates_nothing(
+    fresh_engine, caplog,
+):
+    Base.metadata.create_all(bind=fresh_engine)
+    Session = sessionmaker(bind=fresh_engine)
+    db = Session()
+    try:
+        db.add(User(id=7, email="unrelated@example.test", hashed_password="existing", status="active"))
+        db.commit()
+
+        create_admin(db, bootstrap_email="missing@example.test")
+
+        assert db.query(User).count() == 1
+        assert db.query(User).filter_by(email="missing@example.test").first() is None
+        assert db.query(Role).filter_by(name="user").one()
+        admin_role = db.query(Role).filter_by(name="admin").one()
+        assert "manage_licenses" in {permission.name for permission in admin_role.permissions}
+        assert "non-empty identity database" in caplog.text
     finally:
         db.close()
 
