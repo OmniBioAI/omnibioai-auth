@@ -8,6 +8,7 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
+import logging
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,10 +21,117 @@ from app.core.oauth_providers import PROVIDERS, is_configured
 from app.core.security import DUMMY_PASSWORD_HASH, verify_password
 from app.db.session import get_db
 from app.schemas.oauth import OAuthCallbackBody, OAuthLinkConfirmRequest
-from app.services import oauth_service, org_service, sso_discovery_service
+from app.services import audit_service, license_service, oauth_service, org_service, sso_discovery_service
+from app.services.audit_service import AuditEventType
 from app.services.auth_service import MFAEnrollmentRequiredError, generate_tokens_or_mfa_challenge
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
+logger = logging.getLogger("omnibioai.auth.oauth")
+
+_OAUTH_CALLBACK_MESSAGES = {
+    "cancelled": "Sign-in was cancelled. You can try again.",
+    "not_test_user": "This app is still being tested. Ask an administrator to add your account as a test user.",
+    "misconfigured": "Sign-in is temporarily unavailable. Ask an administrator to check the OAuth app configuration.",
+    "failed": "Sign-in couldn't be completed. Please try again or contact support.",
+}
+
+NOT_APPROVED_MESSAGE = "This email isn't approved yet. Request beta access at omnibioai.org"
+UNVERIFIED_EMAIL_MESSAGE = (
+    "Your sign-in provider hasn't verified this email address. "
+    "Verify it with the provider, or sign in another way."
+)
+_NO_AUTO_LINK_ROLES = {"admin", "platform_admin"}
+
+
+def _oauth_callback_failure(error: str | None, description: str | None) -> tuple[str, str]:
+    """Map provider-controlled errors to a safe category and message."""
+    code = (error or "").strip().casefold()
+    detail = (description or "").casefold()
+    test_user_markers = (
+        "test user", "test users", "testing", "test mode", "test account",
+        "developer-approved", "developer approved", "not been added as a tester",
+    )
+    if any(marker in detail for marker in test_user_markers):
+        category = "not_test_user"
+    elif code in {
+        "invalid_client", "unauthorized_client", "invalid_request", "invalid_scope",
+        "redirect_uri_mismatch", "unauthorized", "aadsts50011",
+    } or any(marker in detail for marker in (
+        "redirect_uri", "redirect uri", "reply url", "client_id", "client id",
+        "client_secret", "client secret", "misconfigured", "configuration error",
+        "application with identifier", "aadsts50011",
+    )):
+        category = "misconfigured"
+    elif code in {"access_denied", "user_cancelled", "user_canceled"}:
+        category = "cancelled"
+    else:
+        category = "failed"
+    return category, _OAUTH_CALLBACK_MESSAGES[category]
+
+
+def _audit_oauth(
+    db: Session,
+    event_type: str,
+    provider: str,
+    email: str | None,
+    user=None,
+    *,
+    commit: bool = True,
+    **extra,
+) -> None:
+    audit_service.log_event(
+        db,
+        event_type,
+        actor_user_id=user.id if user else None,
+        target_user_id=user.id if user else None,
+        resource_type="user" if user else None,
+        resource_id=user.id if user else None,
+        metadata={"provider": provider, "email": email, **extra},
+        commit=commit,
+    )
+
+
+def _sign_in(db: Session, user, provider: str, email: str) -> dict:
+    result = _issue_tokens_or_challenge(db, user, auth_method="oauth")
+    _audit_oauth(
+        db,
+        AuditEventType.OAUTH_LOGIN,
+        provider,
+        email,
+        user,
+        mfa_required=bool(result["mfa_required"]),
+    )
+    if result["mfa_required"]:
+        return {
+            "status": "mfa_required",
+            "mfa_required": True,
+            "challenge_token": result["challenge_token"],
+            "methods": result["methods"],
+        }
+    return {
+        "status": "ok",
+        "access_token": result["access_token"],
+        "refresh_token": result["refresh_token"],
+        "token_type": "bearer",
+    }
+
+
+def _can_auto_link(user) -> bool:
+    """Allow a verified provider email to unlock ordinary passwordless accounts.
+
+    License activation and a first OAuth login can provision an active account
+    without a password. Requiring password confirmation for that account would
+    make it permanently unlinkable, so a verified email match is the recovery
+    path. Privileged passwordless accounts use the signed Platform Owner
+    credential-recovery workflow to establish a password before confirmation.
+    Disabled-password accounts likewise never silently link. See
+    docs/oauth-account-linking.md.
+    """
+    return (
+        not user.hashed_password
+        and user.status == "active"
+        and not ({role.name for role in user.roles} & _NO_AUTO_LINK_ROLES)
+    )
 
 
 def _issue_tokens_or_challenge(db: Session, user, auth_method: str, idp_org_id: int | None = None) -> dict:
@@ -68,6 +176,18 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
         provider_user_id, email = await oauth_service.exchange_code_for_userinfo(
             provider, code, code_verifier=code_verifier
         )
+    except oauth_service.OAuthUnverifiedEmail as exc:
+        # Reject before any user lookup, link, account creation, or token issue.
+        _audit_oauth(
+            db,
+            AuditEventType.OAUTH_REJECTED_UNVERIFIED_EMAIL,
+            provider,
+            exc.email,
+        )
+        raise HTTPException(
+            403,
+            detail={"reason": "unverified_email", "message": UNVERIFIED_EMAIL_MESSAGE},
+        )
     except oauth_service.OAuthError as e:
         raise HTTPException(400, str(e))
 
@@ -106,25 +226,70 @@ async def _complete_oauth_flow(db: Session, provider: str, code: str, code_verif
 
     linked_user = oauth_service.find_linked_user(db, provider, provider_user_id)
     if linked_user:
-        # PR11.5.3: single shared MFA decision point, see
-        # docs/pr11-mfa-login-challenge-discovery.md SS2.
-        result = _issue_tokens_or_challenge(db, linked_user, auth_method="oauth")
-        if result["mfa_required"]:
-            return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
-        return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
+        return _sign_in(db, linked_user, provider, email)
 
     existing_user = oauth_service.find_user_by_email(db, email)
     if existing_user:
-        # Email matches an account this OAuth identity isn't linked to yet —
-        # never link silently; require the existing account's password first.
-        link_token = oauth_service.issue_link_confirmation(existing_user, provider, provider_user_id, email)
-        return {"status": "link_required", "link_token": link_token, "provider": provider, "email": email}
+        if not _can_auto_link(existing_user):
+            link_token = oauth_service.issue_link_confirmation(
+                existing_user, provider, provider_user_id, email
+            )
+            _audit_oauth(
+                db,
+                AuditEventType.OAUTH_LINK_REQUIRED,
+                provider,
+                email,
+                existing_user,
+            )
+            return {
+                "status": "link_required",
+                "link_token": link_token,
+                "provider": provider,
+                "email": email,
+            }
 
-    new_user = oauth_service.create_user_with_oauth(db, provider, provider_user_id, email)
-    result = _issue_tokens_or_challenge(db, new_user, auth_method="oauth")
-    if result["mfa_required"]:
-        return {"status": "mfa_required", "mfa_required": True, "challenge_token": result["challenge_token"], "methods": result["methods"]}
-    return {"status": "ok", "access_token": result["access_token"], "refresh_token": result["refresh_token"], "token_type": "bearer"}
+        # A verified provider email is the intentional linking path for an
+        # ordinary passwordless account; otherwise it could never satisfy the
+        # password-confirmation endpoint.
+        oauth_service.link_oauth_to_existing_user(
+            db, existing_user, provider, provider_user_id, email, commit=False
+        )
+        _audit_oauth(
+            db,
+            AuditEventType.OAUTH_LINKED,
+            provider,
+            email,
+            existing_user,
+            commit=False,
+        )
+        db.commit()
+        return _sign_in(db, existing_user, provider, email)
+
+    # Unknown identities may provision an active account only when a live
+    # email-addressed license authorizes them.
+    if not license_service.is_email_approved(db, email):
+        _audit_oauth(
+            db, AuditEventType.OAUTH_REJECTED_NOT_APPROVED, provider, email
+        )
+        raise HTTPException(
+            403,
+            detail={"reason": "not_approved", "message": NOT_APPROVED_MESSAGE},
+        )
+
+    new_user = oauth_service.create_user_with_oauth(
+        db, provider, provider_user_id, email, commit=False
+    )
+    _audit_oauth(
+        db,
+        AuditEventType.OAUTH_ACCOUNT_CREATED,
+        provider,
+        email,
+        new_user,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(new_user)
+    return _sign_in(db, new_user, provider, email)
 
 
 @router.get("/{provider}/login")
@@ -134,9 +299,40 @@ def oauth_login(provider: str):
 
 
 @router.get("/{provider}/callback")
-async def oauth_callback_redirect(provider: str, code: str, state: str, db: Session = Depends(get_db)):
+async def oauth_callback_redirect(
+    provider: str,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    db: Session = Depends(get_db),
+):
     # This is a real browser navigation (the provider's redirect), so failures
     # must land the user back in the app with a message, never a raw JSON error page.
+    # Unknown providers remain a real 404. Known provider cancellations and
+    # malformed callbacks are browser navigations and always return to Studio.
+    if provider not in PROVIDERS:
+        _require_provider(provider)
+
+    if error is not None:
+        category, message = _oauth_callback_failure(error, error_description)
+        logger.warning(
+            "oauth_callback_provider_error provider=%s category=%s",
+            provider,
+            category,
+        )
+        result = {"status": "error", "error": message}
+        return RedirectResponse(
+            f"{settings.FRONTEND_BASE_URL}/oauth-complete?{urlencode(result)}"
+        )
+
+    if not code or not state:
+        logger.warning("oauth_callback_missing_parameters provider=%s", provider)
+        result = {"status": "error", "error": _OAUTH_CALLBACK_MESSAGES["failed"]}
+        return RedirectResponse(
+            f"{settings.FRONTEND_BASE_URL}/oauth-complete?{urlencode(result)}"
+        )
+
     try:
         _require_provider(provider)
         code_verifier = _verify_state(provider, state)
@@ -194,7 +390,8 @@ def confirm_oauth_link(body: OAuthLinkConfirmRequest, db: Session = Depends(get_
         raise HTTPException(
             409,
             "This account has no password set — sign in with its original provider "
-            "to link additional providers.",
+            "to link additional providers. Privileged accounts with no linked "
+            "provider require the Platform Owner credential-recovery workflow.",
         )
     if not verify_password(body.password, user.hashed_password):
         raise HTTPException(401, "Incorrect password")

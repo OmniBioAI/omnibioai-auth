@@ -14,15 +14,29 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
+from jose import jwt as jose_jwt
+from sqlalchemy import func
 
 from app.core.jwt import create_oauth_state_token, create_link_token
-from app.core.oauth_providers import PROVIDERS, redirect_uri_for, parse_userinfo
+from app.core.oauth_providers import (
+    PROVIDERS,
+    UnverifiedEmailError,
+    parse_userinfo,
+    redirect_uri_for,
+)
 from app.db.models import OAuthAccount, User
 from app.services.role_service import assign_default_role
 
 
 class OAuthError(Exception):
     pass
+
+
+class OAuthUnverifiedEmail(OAuthError):
+    def __init__(self, provider: str, email: str | None):
+        super().__init__(f"{provider} has not verified this account's email address")
+        self.provider = provider
+        self.email = email
 
 
 def _generate_code_verifier() -> str:
@@ -103,13 +117,28 @@ async def exchange_code_for_userinfo(provider: str, code: str, code_verifier: st
             raise OAuthError(f"{provider} userinfo fetch failed: {userinfo_resp.text}")
         userinfo = userinfo_resp.json()
 
+        # This id_token came directly from the provider's TLS-protected token
+        # endpoint. Only Microsoft's tid/xms_edov claims are consumed here to
+        # decide whether its email is suitable for account matching.
+        id_token_claims = None
+        if provider == "microsoft" and token_data.get("id_token"):
+            try:
+                id_token_claims = jose_jwt.get_unverified_claims(token_data["id_token"])
+            except Exception:
+                id_token_claims = None
+
         emails = None
         if provider == "github" and not userinfo.get("email"):
             emails_resp = await client.get("https://api.github.com/user/emails", headers=auth_header)
             if emails_resp.status_code == 200:
                 emails = emails_resp.json()
 
-    provider_user_id, email = parse_userinfo(provider, userinfo, emails)
+    try:
+        provider_user_id, email = parse_userinfo(
+            provider, userinfo, emails, id_token_claims
+        )
+    except UnverifiedEmailError as exc:
+        raise OAuthUnverifiedEmail(provider, exc.email) from exc
     if not email:
         raise OAuthError(f"{provider} did not return an email address for this account")
 
@@ -152,7 +181,7 @@ def find_linked_user(
 
 
 def find_user_by_email(db, email: str):
-    return db.query(User).filter(User.email == email).first()
+    return db.query(User).filter(func.lower(User.email) == email.lower()).first()
 
 
 def _assert_single_idp_scope(organization_sso_config_id, organization_saml_config_id) -> None:
@@ -174,7 +203,10 @@ def create_user_with_oauth(
     email: str,
     organization_sso_config_id: int | None = None,
     organization_saml_config_id: int | None = None,
+    *,
+    commit: bool = True,
 ) -> User:
+    """Create an OAuth account, optionally leaving commit to the caller."""
     _assert_single_idp_scope(organization_sso_config_id, organization_saml_config_id)
     user = User(email=email, hashed_password=None, status="active")
     db.add(user)
@@ -190,6 +222,9 @@ def create_user_with_oauth(
             organization_saml_config_id=organization_saml_config_id,
         )
     )
+    if not commit:
+        db.flush()
+        return user
     db.commit()
     db.refresh(user)
     return user
@@ -203,6 +238,8 @@ def link_oauth_to_existing_user(
     email: str,
     organization_sso_config_id: int | None = None,
     organization_saml_config_id: int | None = None,
+    *,
+    commit: bool = True,
 ) -> None:
     _assert_single_idp_scope(organization_sso_config_id, organization_saml_config_id)
     db.add(
@@ -215,7 +252,10 @@ def link_oauth_to_existing_user(
             organization_saml_config_id=organization_saml_config_id,
         )
     )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
 
 def issue_link_confirmation(

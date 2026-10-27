@@ -141,7 +141,9 @@ def test_provider_configuration_and_userinfo_normalization_edges():
     assert oauth_providers.is_configured("does-not-exist") is False
     assert oauth_providers.redirect_uri_for("google").endswith("/auth/google/callback")
 
-    assert oauth_providers.parse_userinfo("google", {"sub": 12, "email": "g@example.test"}) == (
+    assert oauth_providers.parse_userinfo(
+        "google", {"sub": 12, "email": "g@example.test", "email_verified": True}
+    ) == (
         "12",
         "g@example.test",
     )
@@ -152,9 +154,17 @@ def test_provider_configuration_and_userinfo_normalization_edges():
          {"email": "verified@example.test", "verified": True, "primary": False}],
     ) == ("9", "verified@example.test")
     assert oauth_providers.parse_userinfo(
-        "microsoft", {"sub": "m1", "preferred_username": "m@example.test"}
+        "microsoft",
+        {"sub": "m1", "email": "m@example.test"},
+        id_token_claims={"xms_edov": True},
     ) == ("m1", "m@example.test")
-    with pytest.raises(KeyError):
+    with pytest.raises(oauth_providers.UnverifiedEmailError):
+        oauth_providers.parse_userinfo(
+            "microsoft",
+            {"sub": "m1", "preferred_username": "m@example.test"},
+            id_token_claims={"xms_edov": True},
+        )
+    with pytest.raises(oauth_providers.UnverifiedEmailError):
         oauth_providers.parse_userinfo("google", {})
     with pytest.raises(ValueError):
         oauth_providers.parse_userinfo("unknown", {})
@@ -372,7 +382,7 @@ def test_exchange_raises_when_no_email_in_normalized_userinfo(monkeypatch):
         _FakeResponse(200, {"sub": "g-1"}),  # no email key
     ]
     monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _ScriptedAsyncClient)
-    with pytest.raises(OAuthError, match="did not return an email"):
+    with pytest.raises(oauth_service.OAuthUnverifiedEmail, match="has not verified"):
         asyncio.run(exchange_code_for_userinfo("google", "code"))
 
 

@@ -7,6 +7,7 @@ login.
 Developer: Manish Kumar <manish@omnibioai.org>
 """
 import uuid
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from sqlalchemy import create_engine
@@ -15,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.jwt import create_oauth_state_token
 from app.core.oauth_providers import PROVIDERS
 from app.db.models import User
-from app.services import oauth_service
+from app.services import license_service, oauth_service
 
 _direct_engine = create_engine("sqlite:///./test.db")
 _DirectSession = sessionmaker(bind=_direct_engine)
@@ -28,6 +29,17 @@ def configured_google(monkeypatch):
     """
     monkeypatch.setitem(PROVIDERS["google"], "client_id", "test-google-client-id")
     monkeypatch.setitem(PROVIDERS["google"], "client_secret", "test-google-client-secret")
+
+
+def _approve(email):
+    """Authorize first-time OAuth provisioning with an unbound live license."""
+    db = _DirectSession()
+    try:
+        license_service.create_license(
+            db, email=email, user_id=None, organization_id=None
+        )
+    finally:
+        db.close()
 
 
 def _mock_exchange(monkeypatch, provider_user_id, email):
@@ -82,6 +94,7 @@ def test_callback_creates_new_user_and_issues_token(client, configured_google, m
     that validate for that email, recording authentication_method "oauth" and a last-login time.
     """
     email = f"oauth-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _approve(email)
     _mock_exchange(monkeypatch, "google-uid-1", email)
     state = create_oauth_state_token("google")
 
@@ -126,6 +139,7 @@ def test_callback_state_for_wrong_provider_rejected(client, configured_google, m
 def test_same_oauth_identity_logs_in_on_repeat(client, configured_google, monkeypatch):
     """The same provider identity logs in to the same user on repeated callbacks."""
     email = f"oauth-repeat-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _approve(email)
     _mock_exchange(monkeypatch, "google-uid-repeat", email)
     state1 = create_oauth_state_token("google")
     first = client.post("/auth/google/callback", json={"code": "c1", "state": state1})
@@ -145,6 +159,7 @@ def test_same_oauth_identity_logs_in_on_repeat(client, configured_google, monkey
 def test_get_callback_success_redirects_with_token(client, configured_google, monkeypatch):
     """A successful GET callback redirects to /oauth-complete with status=ok and an access_token."""
     email = f"oauth-redirect-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _approve(email)
     _mock_exchange(monkeypatch, "google-uid-redirect", email)
     state = create_oauth_state_token("google")
 
@@ -170,6 +185,69 @@ def test_get_callback_failure_redirects_with_error_not_raw_json(client, configur
     location = resp.headers["location"]
     assert "/oauth-complete?" in location
     assert "status=error" in location
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "description", "expected_message"),
+    [
+        ("access_denied", "The user denied the request", "Sign-in was cancelled. You can try again."),
+        (
+            "access_denied",
+            "The app is currently being tested and you are not a test user",
+            "This app is still being tested. Ask an administrator to add your account as a test user.",
+        ),
+        (
+            "invalid_request",
+            "redirect_uri_mismatch: check the client configuration",
+            "Sign-in is temporarily unavailable. Ask an administrator to check the OAuth app configuration.",
+        ),
+    ],
+)
+def test_get_callback_provider_error_redirects_to_friendly_studio_message(
+    client, configured_google, provider_error, description, expected_message
+):
+    """Provider errors without code/state redirect with sanitized messages."""
+    resp = client.get(
+        "/auth/google/callback",
+        params={"error": provider_error, "error_description": description},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 307)
+    location = urlparse(resp.headers["location"])
+    query = parse_qs(location.query)
+    assert location.path == "/oauth-complete"
+    assert query["status"] == ["error"]
+    assert query["error"] == [expected_message]
+    assert provider_error not in location.query
+    assert description not in location.query
+
+
+def test_get_callback_provider_error_log_excludes_provider_text_and_secrets(
+    client, configured_google, caplog
+):
+    sentinel = "private-provider-detail-secret-sentinel"
+    with caplog.at_level("WARNING", logger="omnibioai.auth.oauth"):
+        response = client.get(
+            "/auth/google/callback",
+            params={"error": "access_denied", "error_description": sentinel},
+            follow_redirects=False,
+        )
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["error"] == ["Sign-in was cancelled. You can try again."]
+    assert sentinel not in response.headers["location"]
+    assert sentinel not in caplog.text
+    assert "provider=google category=cancelled" in caplog.text
+
+
+def test_get_callback_missing_code_or_state_redirects(client, configured_google):
+    for params in ({}, {"code": "only-code"}, {"state": "only-state"}):
+        resp = client.get(
+            "/auth/google/callback", params=params, follow_redirects=False
+        )
+        assert resp.status_code in (302, 307)
+        query = parse_qs(urlparse(resp.headers["location"]).query)
+        assert query["status"] == ["error"]
 
 
 # ── Callback: existing email → link confirmation required ───────────────────────
@@ -233,6 +311,7 @@ def test_link_confirm_invalid_token_returns_400(client):
 def test_oauth_only_account_cannot_password_login(client, configured_google, monkeypatch):
     """An account created through OAuth has no password, so a password login attempt returns 401."""
     email = f"oauth-nopass-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _approve(email)
     _mock_exchange(monkeypatch, "google-uid-nopass", email)
     state = create_oauth_state_token("google")
     client.post("/auth/google/callback", json={"code": "fake-code", "state": state})
@@ -274,6 +353,7 @@ def test_callback_new_user_mfa_required_returns_challenge(client, configured_goo
     from app.api import routes_oauth
 
     email = f"oauth-mfa-new-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _approve(email)
     _mock_exchange(monkeypatch, "google-uid-mfa-new", email)
 
     def fake_mfa_challenge(db, user, auth_method="password", idp_org_id=None, **kwargs):
@@ -297,6 +377,7 @@ def test_callback_mfa_enrollment_required_returns_403(client, configured_google,
     from app.services.auth_service import MFAEnrollmentRequiredError
 
     email = f"oauth-mfa-enroll-{uuid.uuid4().hex[:8]}@omnibioai.test"
+    _approve(email)
     _mock_exchange(monkeypatch, "google-uid-mfa-enroll", email)
 
     def fake_mfa_challenge(db, user, auth_method="password", idp_org_id=None, **kwargs):

@@ -47,13 +47,39 @@ def is_configured(provider: str) -> bool:
     return bool(cfg and cfg["client_id"] and cfg["client_secret"])
 
 
-def parse_userinfo(provider: str, userinfo: dict, emails: list | None = None):
+MICROSOFT_CONSUMER_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
+
+
+class UnverifiedEmailError(ValueError):
+    """The provider did not vouch for this account's email address."""
+
+    def __init__(self, email: str | None):
+        super().__init__("unverified_email")
+        self.email = email
+
+
+def _claim_true(value) -> bool:
+    return value is True or value in ("true", "True", "1", 1)
+
+
+def parse_userinfo(
+    provider: str,
+    userinfo: dict,
+    emails: list | None = None,
+    id_token_claims: dict | None = None,
+):
     """Normalize each provider's userinfo shape to (provider_user_id, email).
 
     `emails` is GitHub's separate /user/emails response — GitHub's /user
     endpoint omits email entirely when the user has made it private.
+    `id_token_claims` is Microsoft's id_token payload (tid/xms_edov).
+
+    Raises UnverifiedEmailError before any account lookup when the provider
+    does not vouch for the email.
     """
     if provider == "google":
+        if not _claim_true(userinfo.get("email_verified")):
+            raise UnverifiedEmailError(userinfo.get("email"))
         return str(userinfo["sub"]), userinfo.get("email")
 
     if provider == "github":
@@ -67,9 +93,17 @@ def parse_userinfo(provider: str, userinfo: dict, emails: list | None = None):
         return provider_user_id, email
 
     if provider == "microsoft":
-        # Azure AD doesn't always populate `email` (depends on tenant/mailbox
-        # config) — preferred_username is typically the UPN, email-shaped.
-        email = userinfo.get("email") or userinfo.get("preferred_username")
+        # preferred_username is a mutable sign-in name, not a verified email,
+        # and must never be used for account discovery or linking. Microsoft
+        # vouches for consumer-tenant email; Entra tenants require xms_edov.
+        email = userinfo.get("email")
+        claims = id_token_claims or {}
+        verified = (
+            claims.get("tid") == MICROSOFT_CONSUMER_TENANT_ID
+            or _claim_true(claims.get("xms_edov"))
+        )
+        if not email or not verified:
+            raise UnverifiedEmailError(email)
         return str(userinfo["sub"]), email
 
     raise ValueError(f"Unknown provider: {provider}")

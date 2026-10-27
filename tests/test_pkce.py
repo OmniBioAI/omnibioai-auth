@@ -17,7 +17,7 @@ import pytest
 
 from app.core.jwt import create_oauth_state_token, decode_token
 from app.core.oauth_providers import PROVIDERS
-from app.services import oauth_service
+from app.services import license_service, oauth_service
 
 
 @pytest.fixture
@@ -112,6 +112,7 @@ class _FakeAsyncClient:
     exchange_code_for_userinfo end-to-end without a real network call."""
 
     captured_post_data = None
+    email = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -127,13 +128,33 @@ class _FakeAsyncClient:
         return _FakeResponse(200, {"access_token": "fake-provider-token"})
 
     async def get(self, url, headers=None):
-        return _FakeResponse(200, {"sub": f"pkce-uid-{uuid.uuid4().hex[:8]}", "email": f"pkce-{uuid.uuid4().hex[:8]}@omnibioai.test"})
+        return _FakeResponse(200, {
+            "sub": f"pkce-uid-{uuid.uuid4().hex[:8]}",
+            "email": _FakeAsyncClient.email,
+            "email_verified": True,
+        })
 
 
 @pytest.fixture(autouse=True)
 def _reset_fake_client_capture():
     _FakeAsyncClient.captured_post_data = None
+    _FakeAsyncClient.email = f"pkce-{uuid.uuid4().hex[:8]}@omnibioai.test"
     yield
+
+
+def _approve_fake_email():
+    from conftest import TestingSessionLocal
+
+    db = TestingSessionLocal()
+    try:
+        license_service.create_license(
+            db,
+            email=_FakeAsyncClient.email,
+            user_id=None,
+            organization_id=None,
+        )
+    finally:
+        db.close()
 
 
 def test_exchange_sends_code_verifier_when_present(monkeypatch, configured_google):
@@ -165,6 +186,7 @@ def test_full_login_flow_with_real_pkce_state_still_succeeds(client, configured_
     code_verifier through to the token exchange -- proves the whole chain
     works, not just the unit pieces above."""
     monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _FakeAsyncClient)
+    _approve_fake_email()
 
     login_resp = client.get("/auth/google/login", follow_redirects=False)
     state = parse_qs(urlparse(login_resp.headers["location"]).query)["state"][0]
@@ -182,6 +204,7 @@ def test_callback_with_state_missing_code_verifier_still_succeeds(client, config
     token minted without PKCE (simulated here directly) must still
     complete login, just without sending code_verifier."""
     monkeypatch.setattr(oauth_service.httpx, "AsyncClient", _FakeAsyncClient)
+    _approve_fake_email()
 
     state = create_oauth_state_token("google")  # no code_verifier
     resp = client.post("/auth/google/callback", json={"code": "fake-code", "state": state})

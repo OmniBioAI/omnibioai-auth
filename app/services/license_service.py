@@ -15,6 +15,7 @@ import string
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
+from sqlalchemy import func, or_
 
 from app.core.config import settings
 from app.db.models import LicenseKey, User
@@ -137,6 +138,26 @@ def get_or_create_user_for_email(db, email: str) -> User:
     db.flush()
     assign_default_role(db, user)
     return user
+
+
+def is_email_approved(db, email: str) -> bool:
+    """Whether a live license authorizes first-time OAuth provisioning.
+
+    Existing accounts and linked identities are handled before this check.
+    Activation state is deliberately irrelevant, matching the pre-regression
+    email-addressed approval policy.
+    """
+    now = utc_now()
+    return (
+        db.query(LicenseKey.id)
+        .filter(
+            func.lower(LicenseKey.email) == email.lower(),
+            LicenseKey.revoked_at.is_(None),
+            or_(LicenseKey.expires_at.is_(None), LicenseKey.expires_at > now),
+        )
+        .first()
+        is not None
+    )
 
 
 def validate_and_consume(

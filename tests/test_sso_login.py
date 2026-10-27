@@ -21,7 +21,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.jwt import decode_token
-from app.services import oauth_service, org_oidc_service, org_sso_service
+from app.services import license_service, oauth_service, org_oidc_service, org_sso_service
 
 _direct_engine = create_engine("sqlite:///./test.db")
 _DirectSession = sessionmaker(bind=_direct_engine)
@@ -480,6 +480,15 @@ def test_existing_oauth_only_user_cannot_be_linked_without_password(client, org_
     async def fake_exchange(provider, code, code_verifier=None):
         return "google-uid-for-linking-test", email
     monkeypatch.setattr(oauth_service, "exchange_code_for_userinfo", fake_exchange)
+
+    # Consumer OAuth may provision a new account only for an approved email.
+    db = _DirectSession()
+    try:
+        license_service.create_license(
+            db, email=email, user_id=None, organization_id=None
+        )
+    finally:
+        db.close()
 
     google_state = create_oauth_state_token("google")
     created = client.post("/auth/google/callback", json={"code": "fake", "state": google_state})
