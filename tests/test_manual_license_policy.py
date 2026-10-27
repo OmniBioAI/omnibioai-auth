@@ -81,3 +81,11 @@ def test_legacy_plaintext_lookup_remains_available(monkeypatch):
     finally:
         db.rollback()
         db.close()
+
+
+def test_masked_key_accepts_legacy_plaintext_and_digest_only_orm_rows():
+    legacy = LicenseKey(key="OMNI-ABCD-EFGH-JKMP-QRST", key_prefix=None)
+    digest_only = LicenseKey(key=None, key_prefix="OMNI-WXYZ")
+    assert license_service.masked_key("OMNI-ABCD-EFGH-JKMP-QRST") == "OMNI-ABCD-••••-••••-••••"
+    assert license_service.masked_key(legacy) == "OMNI-ABCD-••••-••••-••••"
+    assert license_service.masked_key(digest_only) == "OMNI-WXYZ-••••-••••-••••"

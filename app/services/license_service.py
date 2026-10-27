@@ -155,12 +155,6 @@ def create_manual_license(
     return license_key
 
 
-def masked_key(key: str) -> str:
-    """OMNI-ABCD-••••-••••-•••• -- enough to recognize a key in an audit
-    trail, never enough to use it."""
-    return key[:9] + "-••••-••••-••••"
-
-
 def is_email_approved(db, email: str) -> bool:
     """True when a live license (not revoked, not expired) is addressed to
     this email, whatever its plan or activation state. Gates only the
