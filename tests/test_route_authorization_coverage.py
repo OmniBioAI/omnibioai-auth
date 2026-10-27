@@ -34,6 +34,7 @@ ORG_MEMBERSHIP_QUALNAMES = {
     "require_org_permission.<locals>.wrapper",
     "get_org_membership_or_platform_admin",
     "require_org_permission_or_platform_admin.<locals>.wrapper",
+    "require_invitation_manage_org",
 }
 GLOBAL_PERMISSION_QUALNAMES = {
     "require_permission.<locals>.wrapper",
@@ -173,13 +174,13 @@ def test_org_scoped_route_inventory_matches_expected_count():
     already use.
 
     44 -> 47 as of M14 (BYOK provider-key storage, design audit gap #4):
-    GET/PUT/DELETE /orgs/{org_id}/provider-keys(/{provider}) were added,
-    using require_org_permission_or_platform_admin(MANAGE_ORG) -- an
-    org-wide infrastructure setting, the same administrative character
-    manage_org already gates elsewhere (e.g. GET/PUT /orgs/{org_id}
-    itself), not a new permission.
+    GET/PUT/DELETE /orgs/{org_id}/provider-keys(/{provider}) use
+    require_org_permission_or_platform_admin(MANAGE_ORG). 47 -> 50 for
+    POST/GET /orgs/{org_id}/invitations and POST .../{invitation_id}/revoke,
+    all using the audited require_invitation_manage_org guard. These reuse
+    manage_org, not a new permission.
     """
-    assert len(list(_org_scoped_routes())) == 47
+    assert len(list(_org_scoped_routes())) == 50
 
 
 def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
@@ -197,6 +198,7 @@ def test_every_org_scoped_route_uses_the_platform_admin_aware_dependency():
     platform_admin_aware = {
         "get_org_membership_or_platform_admin",
         "require_org_permission_or_platform_admin.<locals>.wrapper",
+        "require_invitation_manage_org",
     }
     not_migrated = []
     for route in _org_scoped_routes():

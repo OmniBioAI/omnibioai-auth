@@ -10,7 +10,7 @@ Author:
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Phase 3 PR2. A platform admin (manage_all_orgs) may suspend/reactivate
 # any organization; toggling back to "active" is always allowed -- the
@@ -51,6 +51,24 @@ class OrganizationUpdate(BaseModel):
 
 class InviteRequest(BaseModel):
     email: str
+
+
+class OrganizationInvitationCreate(BaseModel):
+    email: str
+    roles: list[str] = Field(default_factory=list)
+
+
+class InvitationTokenRequest(BaseModel):
+    token: str
+
+
+class InvitationAcceptRequest(InvitationTokenRequest):
+    password: str
+    totp_code: str | None = None
+
+
+class InvitationExistingAcceptRequest(InvitationTokenRequest):
+    totp_code: str | None = None
 
 
 class MemberOut(BaseModel):
