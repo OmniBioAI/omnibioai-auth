@@ -90,7 +90,7 @@ prepare_startup_schema(
 
 # bootstrap admin
 db = SessionLocal()
-create_admin(db)
+create_admin(db, bootstrap_email=settings.ADMIN_BOOTSTRAP_EMAIL)
 ensure_platform_admin_role(db)
 # Opt-in only -- a no-op unless the operator has set PLATFORM_OWNER_EMAIL.
 # Must run after ensure_platform_admin_role (needs the Role to exist) and

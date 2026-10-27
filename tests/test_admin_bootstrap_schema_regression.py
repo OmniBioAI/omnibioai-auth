@@ -59,7 +59,7 @@ def test_create_admin_bootstraps_admin_user_and_role_against_current_schema(fres
     Session = sessionmaker(bind=fresh_engine)
     db = Session()
     try:
-        create_admin(db)
+        create_admin(db, bootstrap_email="admin@omnibioai")
 
         admin = db.query(User).filter(User.email == "admin@omnibioai").first()
         assert admin is not None
@@ -86,10 +86,10 @@ def test_create_admin_is_idempotent_across_repeated_startups(fresh_engine, monke
     Session = sessionmaker(bind=fresh_engine)
     db = Session()
     try:
-        create_admin(db)
+        create_admin(db, bootstrap_email="admin@omnibioai")
         first_hash = db.query(User).filter(User.email == "admin@omnibioai").first().hashed_password
 
-        create_admin(db)  # simulate a second startup
+        create_admin(db, bootstrap_email="admin@omnibioai")  # simulate a second startup
         admins = db.query(User).filter(User.email == "admin@omnibioai").all()
 
         assert len(admins) == 1
@@ -128,7 +128,7 @@ def test_create_admin_crashes_with_raw_operationalerror_when_guard_is_bypassed(f
     db = Session()
     try:
         with pytest.raises(OperationalError, match="organization_id"):
-            create_admin(db)  # guard intentionally skipped here
+            create_admin(db, bootstrap_email="admin@omnibioai")  # guard intentionally skipped here
     finally:
         db.close()
 
@@ -157,7 +157,7 @@ def test_create_admin_succeeds_once_the_legacy_schema_is_migrated(fresh_engine, 
     Session = sessionmaker(bind=fresh_engine)
     db = Session()
     try:
-        create_admin(db)  # the exact call that crashed in production
+        create_admin(db, bootstrap_email="admin@omnibioai")  # the exact call that crashed in production
 
         admin = db.query(User).filter(User.email == "admin@omnibioai").first()
         assert admin is not None

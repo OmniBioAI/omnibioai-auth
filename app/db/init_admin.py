@@ -33,7 +33,17 @@ from app.services.role_service import (
 logger = logging.getLogger(__name__)
 
 
-def create_admin(db):
+def create_admin(db, *, bootstrap_email: str | None = None):
+    """Bootstrap only the explicitly configured admin identity.
+
+    `User.id == 1` is a legacy invariant used by privileged-role policy; it
+    is not an identity lookup. An unrelated first row must never receive the
+    admin role merely because it owns that primary key.
+    """
+    bootstrap_email = (bootstrap_email or "").strip().lower()
+    if not bootstrap_email:
+        return
+
     # Baseline role for regular signups (register/license/oauth) -- see
     # role_service.assign_default_role, called from each of those sites.
     get_or_create_role(db, "user")
@@ -130,23 +140,22 @@ def create_admin(db):
         if manage_content_perm not in admin_role.permissions:
             admin_role.permissions.append(manage_content_perm)
 
-    admin = db.query(User).filter(User.id == DESIGNATED_ADMIN_USER_ID).first()
+    admin = db.query(User).filter(User.email == bootstrap_email).first()
     if admin is None:
-        legacy_admin = db.query(User).filter(User.email == "admin@omnibioai").first()
-        if legacy_admin is not None:
-            logger.error(
-                "Legacy Admin email belongs to user ID %s, expected designated ID %s; bootstrap assignment skipped.",
-                legacy_admin.id, DESIGNATED_ADMIN_USER_ID,
-            )
-            db.rollback()
-            return
         if db.query(User.id).first() is not None:
             logger.error(
-                "Designated Admin user ID %s is absent from a non-empty identity database; bootstrap creation skipped.",
-                DESIGNATED_ADMIN_USER_ID,
+                "ADMIN_BOOTSTRAP_EMAIL does not match an existing user in a non-empty identity database; "
+                "bootstrap creation skipped."
             )
             db.rollback()
             return
+    elif admin.id != DESIGNATED_ADMIN_USER_ID:
+        logger.error(
+            "ADMIN_BOOTSTRAP_EMAIL identity has user ID %s; expected designated ID %s. Bootstrap assignment skipped.",
+            admin.id, DESIGNATED_ADMIN_USER_ID,
+        )
+        db.rollback()
+        return
     if not admin:
         # No hardcoded default password: an operator-supplied
         # ADMIN_BOOTSTRAP_PASSWORD is used if set (e.g. scripted deployments
@@ -161,7 +170,7 @@ def create_admin(db):
             password = secrets.token_urlsafe(24)
 
         admin = User(
-            email="admin@omnibioai",
+            email=bootstrap_email,
             hashed_password=hash_password(password),
             status="active"
         )

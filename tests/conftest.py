@@ -25,6 +25,7 @@ os.environ.setdefault("AUTH_STARTUP_SCHEMA_MODE", "test-create")
 # via the same env-var override a real deployment would use, rather than
 # letting it fall back to a per-run random password tests can't predict.
 os.environ.setdefault("ADMIN_BOOTSTRAP_PASSWORD", "test-admin-password-not-for-prod")
+os.environ.setdefault("ADMIN_BOOTSTRAP_EMAIL", "admin@omnibioai")
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

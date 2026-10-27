@@ -18,7 +18,7 @@ def policy_db(tmp_path, monkeypatch):
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     db = Session()
-    create_admin(db)
+    create_admin(db, bootstrap_email="admin@omnibioai")
     ensure_platform_admin_role(db)
     owner = User(email="owner@policy.test", hashed_password="x", status="active")
     db.add(owner)

@@ -446,11 +446,12 @@ docker compose up omnibioai-auth
 ```
 
 The service depends on `mysql` and `redis` compose services being healthy
-before it starts. The `admin@omnibioai` account and baseline roles are
-bootstrapped automatically on first startup. Set `ADMIN_BOOTSTRAP_PASSWORD`
-before the first start to control its initial password; otherwise a random
-password is printed once to the startup log. A cross-tenant `platform_admin`
-grant is opt-in via `PLATFORM_OWNER_EMAIL`.
+before it starts. Admin bootstrap is opt-in by exact identity: set
+`ADMIN_BOOTSTRAP_EMAIL` to the intended account and
+`ADMIN_BOOTSTRAP_PASSWORD` before first startup. The bootstrap never infers
+the admin identity from user ID 1 or the first row; an unrelated existing
+user prevents bootstrap account creation. A cross-tenant `platform_admin`
+grant is separately opt-in via `PLATFORM_OWNER_EMAIL`.
 
 Apply database migrations before starting a deployed instance. For a fresh
 database, run `alembic upgrade head`; for an existing pre-Alembic database,
@@ -467,6 +468,8 @@ follow `docs/MIGRATIONS.md` and stamp the baseline before upgrading.
 | `DB_HOST` | `localhost` | MySQL host (use `mysql` inside compose) |
 | `DB_PORT` | `3306` | MySQL port |
 | `DB_NAME` | `omnibioai` | Database name |
+| `ADMIN_BOOTSTRAP_EMAIL` | — | Exact identity allowed to receive the initial `admin` role; required for bootstrap |
+| `ADMIN_BOOTSTRAP_PASSWORD` | *(generated)* | Initial password for the configured bootstrap identity; if unset, a random password is printed once at creation |
 | `SECRET_KEY` | — | HS256 JWT signing secret (required) |
 | `JWT_ALGORITHM` | `HS256` | Signing algorithm for *newly issued* tokens. Verification always accepts both regardless of this setting — see [JWT](#jwt) |
 | `JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` | *(generated)* | PEM-encoded RSA keypair for RS256 signing + JWKS. Unset in dev/test generates an ephemeral, process-local keypair — never safe for production |

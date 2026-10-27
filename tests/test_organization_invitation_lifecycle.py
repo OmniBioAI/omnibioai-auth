@@ -228,6 +228,7 @@ def test_organization_member_cannot_create_invitations(client, monkeypatch):
         db.commit()
     denied = client.post(f"/orgs/{org_id}/invitations", json={"email": "denied@omnibioai.test"}, headers=member_headers)
     assert denied.status_code == 403
+    assert client.get(f"/orgs/{org_id}/invitations", headers=member_headers).status_code == 403
     with SessionLocal() as db:
         denial = db.query(AuditEvent).filter_by(
             event_type="organization_invitation_denied", organization_id=org_id,
@@ -235,6 +236,60 @@ def test_organization_member_cannot_create_invitations(client, monkeypatch):
         assert denial is not None
         assert denial.event_metadata.get("reason") == "authorization_denied"
         assert "token" not in str(denial.event_metadata).lower()
+
+
+def test_invitation_management_authorization_matrix(client, monkeypatch):
+    """Invitation admin routes distinguish non-members, members, managers,
+    and platform admins, and keep invitation IDs tenant-bound.
+    """
+    delivered = _enable_delivery(monkeypatch)
+    _owner_a_email, _password_a, owner_a_headers = _register_login(client)
+    org_a = _org(client, owner_a_headers)
+    owner_b_email, _password_b, owner_b_headers = _register_login(client)
+    org_b = _org(client, owner_b_headers)
+
+    # An authenticated user with no membership is forbidden on an existing
+    # org's invitation management surface.
+    assert client.get(f"/orgs/{org_a}/invitations", headers=owner_b_headers).status_code == 403
+
+    member_email, _member_password, member_headers = _register_login(client)
+    manager_email, _manager_password, manager_headers = _register_login(client)
+    with SessionLocal() as db:
+        org_member_role = role_service.get_or_create_role(db, ORG_MEMBER_ROLE, [])
+        manager_role = role_service.get_or_create_role(db, "invitation_manager_test", ["manage_org"])
+        for email, role in ((member_email, org_member_role), (manager_email, manager_role)):
+            user = db.query(User).filter_by(email=email).one()
+            db.add(OrganizationMembership(
+                organization_id=org_a, user_id=user.id, status="active", roles=[role],
+            ))
+        db.commit()
+
+    assert client.get(f"/orgs/{org_a}/invitations", headers=member_headers).status_code == 403
+    assert client.get(f"/orgs/{org_a}/invitations", headers=manager_headers).status_code == 200
+
+    platform_email, _platform_password, _platform_headers = _register_login(client)
+    with SessionLocal() as db:
+        platform_user = db.query(User).filter_by(email=platform_email).one()
+        platform_role = role_service.get_or_create_role(db, "platform_admin", ["manage_all_orgs"])
+        platform_user.roles.append(platform_role)
+        db.commit()
+    platform_login = client.post("/auth/login", json={
+        "email": platform_email, "password": "TestPassword123!",
+    })
+    platform_headers = {"Authorization": f"Bearer {platform_login.json()['access_token']}"}
+    assert client.get(f"/orgs/{org_a}/invitations", headers=platform_headers).status_code == 200
+
+    # A manager of org A cannot use an invitation ID owned by org B.
+    invitee = f"foreign-{uuid.uuid4().hex[:10]}@omnibioai.test"
+    created = client.post(
+        f"/orgs/{org_b}/invitations", json={"email": invitee}, headers=owner_b_headers,
+    )
+    assert created.status_code == 201, created.text
+    foreign_revoke = client.post(
+        f"/orgs/{org_a}/invitations/{created.json()['id']}/revoke", headers=manager_headers,
+    )
+    assert foreign_revoke.status_code in (404, 403)
+    assert delivered["recipient"] == invitee
 
 
 def test_delivery_failure_leaves_no_pending_invitation(client, monkeypatch):

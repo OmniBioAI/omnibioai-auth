@@ -60,7 +60,7 @@ def require_invitation_manage_org(
         if MANAGE_ORG not in org_service.permissions_for_membership(membership):
             raise HTTPException(403, "Forbidden")
         return membership
-    except HTTPException:
+    except HTTPException as exc:
         organization_exists = db.query(Organization.id).filter(Organization.id == org_id).first() is not None
         audit_service.log_event(
             db, AuditEventType.ORG_INVITATION_DENIED,
@@ -69,6 +69,13 @@ def require_invitation_manage_org(
             resource_type="organization_invitation",
             metadata={"reason": "authorization_denied"},
         )
+        # The membership resolver hides org existence with 404 for general
+        # tenant routes. Invitation-management behavior is an explicit
+        # administrative surface: for a real org, distinguish an
+        # authenticated non-member/underprivileged member as 403; retain 404
+        # for unknown organizations and audit both denials.
+        if organization_exists and exc.status_code == 404:
+            raise HTTPException(403, "Forbidden") from None
         raise
 
 

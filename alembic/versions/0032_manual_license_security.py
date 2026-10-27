@@ -74,7 +74,17 @@ def _precreated_issuance_table_matches():
 
 def upgrade():
     if not _precreated_license_columns_match():
-        op.alter_column("license_keys", "key", existing_type=sa.String(29), nullable=True)
+        if op.get_bind().dialect.name == "sqlite":
+            # SQLite has no ALTER COLUMN DROP NOT NULL (SQLAlchemy 2.1
+            # correctly emits that unsupported syntax). Batch mode rebuilds
+            # the table with the same nullable column while preserving its
+            # existing indexes, constraints, and rows.
+            with op.batch_alter_table("license_keys") as batch_op:
+                batch_op.alter_column("key", existing_type=sa.String(29), nullable=True)
+        else:
+            # Keep the production MySQL DDL identical to the established
+            # direct ALTER TABLE operation.
+            op.alter_column("license_keys", "key", existing_type=sa.String(29), nullable=True)
         op.add_column("license_keys", sa.Column("key_digest", sa.String(64), nullable=True))
         op.add_column("license_keys", sa.Column("key_prefix", sa.String(9), nullable=True))
         op.add_column("license_keys", sa.Column("recipient_name", sa.String(255), nullable=True))
@@ -115,4 +125,8 @@ def downgrade():
     op.drop_column("license_keys", "key_prefix")
     op.drop_column("license_keys", "key_digest")
     # A downgrade is safe only when no digest-only row exists.
-    op.alter_column("license_keys", "key", existing_type=sa.String(29), nullable=False)
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("license_keys") as batch_op:
+            batch_op.alter_column("key", existing_type=sa.String(29), nullable=False)
+    else:
+        op.alter_column("license_keys", "key", existing_type=sa.String(29), nullable=False)
