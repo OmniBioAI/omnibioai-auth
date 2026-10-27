@@ -203,7 +203,9 @@ def update_role_permissions(
 # ---------------------------------------------------------------------------
 
 
-def add_user_role(db: Session, user: User, role: Role, actor_user_id: int | None = None) -> User:
+def add_user_role(
+    db: Session, user: User, role: Role, actor_user_id: int | None = None, *, commit: bool = True,
+) -> User:
     if role not in user.roles:
         user.roles.append(role)
         db.flush()
@@ -213,11 +215,14 @@ def add_user_role(db: Session, user: User, role: Role, actor_user_id: int | None
             resource_type="role", resource_id=role.id, after_state={"role": role.name},
             commit=False,
         )
-        db.commit()
+        if commit:
+            db.commit()
     return user
 
 
-def remove_user_role(db: Session, user: User, role: Role, actor_user_id: int | None = None) -> User:
+def remove_user_role(
+    db: Session, user: User, role: Role, actor_user_id: int | None = None, *, commit: bool = True,
+) -> User:
     if role in user.roles:
         user.roles.remove(role)
         db.flush()
@@ -227,7 +232,8 @@ def remove_user_role(db: Session, user: User, role: Role, actor_user_id: int | N
             resource_type="role", resource_id=role.id, before_state={"role": role.name},
             commit=False,
         )
-        db.commit()
+        if commit:
+            db.commit()
     return user
 
 

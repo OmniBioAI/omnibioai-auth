@@ -272,9 +272,14 @@ class LicenseKey(Base):
     __tablename__ = "license_keys"
 
     id = Column(Integer, primary_key=True)
-    key = Column(String(29), unique=True, index=True)  # OMNI-XXXX-XXXX-XXXX-XXXX
+    # Existing plaintext rows remain readable during the compatibility window.
+    # New issuance stores only the keyed digest and non-secret prefix.
+    key = Column(String(29), unique=True, index=True, nullable=True)
+    key_digest = Column(String(64), unique=True, index=True, nullable=True)
+    key_prefix = Column(String(9), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # bound on first successful validate
     email = Column(String(255), index=True)
+    recipient_name = Column(String(255), nullable=True)
     plan = Column(String(50), default="beta")  # beta | pro | enterprise
     platform = Column(String(20), default="both")  # web | desktop | both
     max_uses = Column(Integer, default=1)
@@ -284,6 +289,7 @@ class LicenseKey(Base):
     last_used_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
     revoked_reason = Column(String(255), nullable=True)
+    renewed_at = Column(DateTime, nullable=True)
 
     # Added by the 0002_multi_tenant_schema migration -- nullable, and not
     # yet read or written by license_service.py/routes_license.py (that
@@ -294,6 +300,21 @@ class LicenseKey(Base):
     max_devices = Column(Integer, nullable=True)
 
     user = relationship("User")
+
+
+class LicenseIssuanceRequest(Base):
+    """Durable idempotency record for privileged manual-license issuance."""
+    __tablename__ = "license_issuance_requests"
+    __table_args__ = (
+        UniqueConstraint("actor_user_id", "idempotency_key_hash", name="uq_license_issue_actor_key"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    idempotency_key_hash = Column(String(64), nullable=False)
+    request_fingerprint = Column(String(64), nullable=False)
+    license_id = Column(Integer, ForeignKey("license_keys.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------

@@ -48,6 +48,8 @@ class AuditEventType:
     API_KEY_CREATED = "api_key_created"
     # Never the key itself in metadata -- only masked_key()'s first group.
     LICENSE_GENERATED = "license_generated"
+    LICENSE_ISSUED = "license_issued"
+    LICENSE_RENEWED = "license_renewed"
     API_KEY_REVOKED = "api_key_revoked"
     # M9 (API-key lifecycle): renaming a key's display name only -- scopes,
     # status, and the key material itself are unaffected and keep their own

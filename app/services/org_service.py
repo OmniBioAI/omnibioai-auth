@@ -369,7 +369,7 @@ def permissions_for_membership(membership: OrganizationMembership) -> set[str]:
 
 
 def add_member_role(
-    db: Session, membership: OrganizationMembership, role, actor_user_id: int | None = None,
+    db: Session, membership: OrganizationMembership, role, actor_user_id: int | None = None, *, commit: bool = True,
 ) -> OrganizationMembership:
     if role not in membership.roles:
         membership.roles.append(role)
@@ -381,12 +381,13 @@ def add_member_role(
             resource_id=membership.id, after_state={"role": role.name},
             commit=False,
         )
-        db.commit()
+        if commit:
+            db.commit()
     return membership
 
 
 def remove_member_role(
-    db: Session, membership: OrganizationMembership, role, actor_user_id: int | None = None,
+    db: Session, membership: OrganizationMembership, role, actor_user_id: int | None = None, *, commit: bool = True,
 ) -> OrganizationMembership:
     if role in membership.roles:
         membership.roles.remove(role)
@@ -398,7 +399,8 @@ def remove_member_role(
             resource_id=membership.id, before_state={"role": role.name},
             commit=False,
         )
-        db.commit()
+        if commit:
+            db.commit()
     return membership
 
 

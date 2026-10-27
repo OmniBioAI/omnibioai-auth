@@ -20,6 +20,7 @@ from app.api.routes_auth import router as auth_router
 from app.api.routes_roles import router as roles_router
 from app.api.routes_oauth import router as oauth_router
 from app.api.routes_license import router as license_router
+from app.api.routes_platform_licenses import router as platform_licenses_router
 from app.api.routes_config import router as config_router
 from app.api.routes_orgs import router as orgs_router
 from app.api.routes_teams import router as teams_router
@@ -113,6 +114,7 @@ app.include_router(auth_router)
 app.include_router(roles_router)
 app.include_router(oauth_router)
 app.include_router(license_router)
+app.include_router(platform_licenses_router)
 app.include_router(config_router)
 app.include_router(orgs_router)
 app.include_router(teams_router)
