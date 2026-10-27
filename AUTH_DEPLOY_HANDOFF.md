@@ -312,3 +312,42 @@ docker exec omnibioai-studio-mysql-1 sh -lc \
 find /tmp -maxdepth 1 -type f \
   \( -name 'obai-auth-*.env' -o -name 'obai-auth-*-env-path*' \) -delete
 ```
+
+## License issuance configuration details
+
+`LICENSE_ALLOWED_VALIDITY_DAYS` accepts a comma-separated list of positive
+base-10 whole day counts, for example `30,90,365`. Whitespace around entries
+is ignored; duplicates are removed and values are sorted. Empty or unset means
+manual license issuance is disabled. Empty entries, signs, zero, non-decimal
+values, and semicolon-separated values fail startup configuration parsing.
+The current parser is `app/core/config.py::parse_license_allowed_validity_days`.
+
+`LICENSE_KEY_PEPPER` and `LICENSE_KEY_PEPPER_FILE` are mutually exclusive.
+The file setting names a UTF-8 text file; surrounding whitespace/newlines are
+stripped. A configured value must contain at least 32 UTF-8 bytes. The loader
+permits both sources to be empty, but new license issuance then fails closed
+when it needs to compute a key digest. Supply a high-entropy secret of at least
+32 bytes through a protected file. Keep it stable across restarts and backups:
+new keys are stored as a digest derived with this pepper, so changing the
+pepper makes existing digest-only keys unusable.
+
+Add this diff to the Studio Compose deployment only after review; it is not
+applied by this handoff. Create the secret file on the host with mode `0600`,
+owned by the deployment operator, and configure its absolute path in the
+protected Compose environment file. The container mount is read-only.
+
+```diff
+ services:
+   auth-service:
+     environment:
+       APP_ENV: production
+       AUTH_STARTUP_SCHEMA_MODE: validate
++      LICENSE_KEY_PEPPER_FILE: /run/secrets/license_key_pepper
++      LICENSE_ALLOWED_VALIDITY_DAYS: ${LICENSE_ALLOWED_VALIDITY_DAYS:?set approved positive day counts, e.g. 30,90}
++    volumes:
++      - ${AUTH_LICENSE_KEY_PEPPER_FILE:?set path to a mode-0600 secret file}:/run/secrets/license_key_pepper:ro
+```
+
+Before enabling manual issuance, verify that the host secret exists, is a
+regular file with permissions exactly `0600`, and is readable by the container
+user. Do not put the pepper inline in Compose or print it in deployment logs.
