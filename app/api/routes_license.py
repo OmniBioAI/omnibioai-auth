@@ -178,6 +178,7 @@ def license_status(db: Session = Depends(get_db), user=Depends(get_current_user)
         raise HTTPException(404, "No license found for this account")
     return LicenseStatusResponse(
         key=license_key.key,
+        key_prefix=license_key.key_prefix,
         plan=license_key.plan,
         platform=license_key.platform,
         expires_at=license_key.expires_at,

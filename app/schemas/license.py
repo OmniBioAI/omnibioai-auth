@@ -9,8 +9,9 @@ Author:
 """
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LicenseValidateRequest(BaseModel):
@@ -78,7 +79,8 @@ class LicenseGenerateResponse(BaseModel):
 
 
 class LicenseStatusResponse(BaseModel):
-    key: str
+    key: str | None = None
+    key_prefix: str | None = None
     plan: str
     platform: str
     expires_at: datetime | None
@@ -104,3 +106,78 @@ class LicensePullTokenRequest(BaseModel):
 
 class LicensePullTokenResponse(BaseModel):
     ghcr_token: str
+
+
+LicensePersona = Literal["developer", "application_user"]
+
+
+class ManualLicenseIssueRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=255)
+    email: str = Field(min_length=3, max_length=255)
+    persona: LicensePersona
+    validity_days: int = Field(gt=0)
+    organization_id: int = Field(gt=0)
+    confirm_role_change: bool = False
+    confirm_replace_existing: bool = False
+
+
+class ManualLicenseMetadata(BaseModel):
+    id: int
+    key_prefix: str
+    masked_key: str
+    recipient_name: str | None
+    email: str
+    user_id: int | None
+    organization_id: int | None
+    persona: LicensePersona | None
+    iam_role: str | None
+    plan: str
+    platform: str
+    created_at: datetime
+    expires_at: datetime | None
+    renewed_at: datetime | None
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+    revoked_reason: str | None
+    status: Literal["active", "expired", "revoked"]
+
+
+class ManualLicenseIssueResponse(BaseModel):
+    license: ManualLicenseMetadata
+    key: str | None = None
+    one_time_display: bool = True
+    idempotent_replay: bool = False
+
+
+class ManualLicenseListResponse(BaseModel):
+    items: list[ManualLicenseMetadata]
+    total: int
+
+
+class ManualLicensePolicyResponse(BaseModel):
+    validity_days: list[int]
+    personas: list[LicensePersona]
+    issuance_enabled: bool
+    unknown_identity_action: Literal["provisioning_required"] = "provisioning_required"
+
+
+class ManualLicenseRevokeRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class ManualLicenseRenewRequest(BaseModel):
+    validity_days: int = Field(gt=0)
+
+
+class LicenseHistoryItem(BaseModel):
+    id: int
+    event_type: str
+    actor_user_id: int | None
+    created_at: datetime | None
+    before_state: dict | None
+    after_state: dict | None
+    metadata: dict | None
+
+
+class LicenseHistoryResponse(BaseModel):
+    items: list[LicenseHistoryItem]

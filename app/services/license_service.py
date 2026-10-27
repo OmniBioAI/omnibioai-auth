@@ -8,12 +8,15 @@ Author:
     Manish Kumar <manish@omnibioai.org>
 """
 
+import hashlib
+import hmac
 import secrets
 import string
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, or_
 
+from app.core.config import settings
 from app.db.models import LicenseKey, User
 from app.services.role_service import assign_default_role
 
@@ -30,6 +33,46 @@ def generate_key() -> str:
         for _ in range(_GROUP_COUNT)
     ]
     return "OMNI-" + "-".join(groups)
+
+
+def utc_now() -> datetime:
+    """Return UTC as a naive datetime compatible with existing DB columns."""
+    return datetime.utcnow()
+
+
+def normalize_key(key: str) -> str:
+    return key.strip().upper()
+
+
+def digest_key(key: str) -> str:
+    if not settings.LICENSE_KEY_PEPPER:
+        raise RuntimeError("LICENSE_KEY_PEPPER is required for new license issuance")
+    return hmac.new(
+        settings.LICENSE_KEY_PEPPER.encode("utf-8"),
+        normalize_key(key).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def lookup_license(db, key: str, *, lock: bool = False) -> LicenseKey | None:
+    """Resolve digest-only new keys and still-valid plaintext legacy rows."""
+    normalized = normalize_key(key)
+    query = db.query(LicenseKey)
+    if lock:
+        query = query.with_for_update()
+    if settings.LICENSE_KEY_PEPPER:
+        found = query.filter(LicenseKey.key_digest == digest_key(normalized)).first()
+        if found:
+            return found
+    return query.filter(LicenseKey.key == normalized, LicenseKey.key_digest.is_(None)).first()
+
+
+def masked_key(license_key: LicenseKey | str) -> str:
+    if isinstance(license_key, str):
+        prefix = license_key[:9]
+    else:
+        prefix = license_key.key_prefix or ((license_key.key or "")[:9]) or "OMNI"
+    return f"{prefix}-••••-••••-••••"
 
 
 def create_license(
@@ -71,10 +114,45 @@ def create_license(
     return license_key
 
 
-def masked_key(key: str) -> str:
-    """OMNI-ABCD-••••-••••-•••• -- enough to recognize a key in an audit
-    trail, never enough to use it."""
-    return key[:9] + "-••••-••••-••••"
+def create_manual_license(
+    db,
+    *,
+    email: str,
+    user_id: int,
+    organization_id: int,
+    plan: str = "beta",
+    platform: str = "both",
+    expires_days: int,
+    max_uses: int = 1,
+    recipient_name: str | None = None,
+    commit: bool = True,
+) -> LicenseKey:
+    """Create a new digest-only key; the plaintext is returned only once."""
+    key = generate_key()
+    key_digest = digest_key(key)
+    while db.query(LicenseKey).filter(LicenseKey.key_digest == key_digest).first():
+        key = generate_key()
+        key_digest = digest_key(key)
+    license_key = LicenseKey(
+        key=None,
+        key_digest=key_digest,
+        key_prefix=key[:9],
+        email=email,
+        recipient_name=recipient_name,
+        user_id=user_id,
+        organization_id=organization_id,
+        plan=plan,
+        platform=platform,
+        max_uses=max_uses,
+        expires_at=utc_now() + timedelta(days=expires_days),
+    )
+    db.add(license_key)
+    db.flush()
+    license_key._one_time_key = key
+    if commit:
+        db.commit()
+        db.refresh(license_key)
+    return license_key
 
 
 def is_email_approved(db, email: str) -> bool:
@@ -117,14 +195,14 @@ def validate_and_consume(
     key-only activation path (Phase 1 PR4). The web redemption flow always
     passes its collected email and keeps the exact-match check.
     """
-    license_key = db.query(LicenseKey).filter(LicenseKey.key == key).first()
+    license_key = lookup_license(db, key)
     if not license_key:
         return None, "invalid_key"
 
     if license_key.revoked_at is not None:
         return None, "revoked"
 
-    if license_key.expires_at is not None and license_key.expires_at < datetime.utcnow():
+    if license_key.expires_at is not None and license_key.expires_at <= utc_now():
         return None, "expired"
 
     # Only a license that has never been successfully activated is subject

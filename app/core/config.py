@@ -14,6 +14,40 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def parse_license_allowed_validity_days(raw: str | None) -> tuple[int, ...]:
+    """Parse positive comma-separated validity periods; empty disables issuance."""
+    if raw is None or not raw.strip():
+        return ()
+    values: list[int] = []
+    for item in raw.split(","):
+        token = item.strip()
+        if not token or not token.isdecimal() or int(token) <= 0:
+            raise ValueError(
+                "LICENSE_ALLOWED_VALIDITY_DAYS must be positive comma-separated day counts"
+            )
+        values.append(int(token))
+    return tuple(sorted(set(values)))
+
+
+def load_license_key_pepper() -> str:
+    """Read the dedicated license-verifier secret from env or mounted file."""
+    inline = os.getenv("LICENSE_KEY_PEPPER", "")
+    secret_file = os.getenv("LICENSE_KEY_PEPPER_FILE", "")
+    if inline and secret_file:
+        raise ValueError("Configure only one of LICENSE_KEY_PEPPER or LICENSE_KEY_PEPPER_FILE")
+    if secret_file:
+        try:
+            with open(secret_file, "rb") as handle:
+                value = handle.read().strip().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            raise ValueError("Configured LICENSE_KEY_PEPPER_FILE cannot be read as UTF-8") from None
+    else:
+        value = inline
+    if value and len(value.encode("utf-8")) < 32:
+        raise ValueError("LICENSE_KEY_PEPPER must contain at least 32 bytes")
+    return value
+
+
 def load_email_otp_pepper() -> str:
     inline = os.getenv("EMAIL_MFA_OTP_PEPPER", "")
     secret_file = os.getenv("EMAIL_MFA_OTP_PEPPER_FILE", "")
@@ -199,6 +233,13 @@ class Settings:
     # client right before it `docker pull`s a private image -- same secret
     # the now-decommissioned license_server.py exposed (Phase 1 PR4 cutover).
     GHCR_PULL_TOKEN = os.getenv("GHCR_PULL_TOKEN", "")
+
+    # Manual issuance fails closed until an independent verifier secret and
+    # explicit allowed durations are configured. Never reuse JWT/audit keys.
+    LICENSE_KEY_PEPPER = load_license_key_pepper()
+    LICENSE_ALLOWED_VALIDITY_DAYS = parse_license_allowed_validity_days(
+        os.getenv("LICENSE_ALLOWED_VALIDITY_DAYS", "")
+    )
 
     # HIPAA Phase 1 PR1: local-password login brute-force protection
     # (app/core/rate_limit.py, app/services/login_throttle_service.py).
