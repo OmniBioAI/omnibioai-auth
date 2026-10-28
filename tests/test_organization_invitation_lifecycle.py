@@ -24,11 +24,14 @@ from app.services.org_service import ORG_MEMBER_ROLE
 @pytest.fixture(autouse=True)
 def _configure_invitation_test_delivery(monkeypatch):
     """Keep lifecycle tests deterministic despite the production-safe
-    default-off feature flag and absent outbound email credentials.
-    Individual tests may override either setting or the delivery stub.
+    default-off feature flag, absent outbound email credentials, and
+    fail-closed manual-license configuration. Individual tests may override
+    these settings or the delivery stub.
     """
     monkeypatch.setattr(settings, "ORG_INVITATIONS_ENABLED", True)
     monkeypatch.setattr(settings, "ORG_INVITATION_ACCEPT_URL", "https://admin.example.com/invitations/accept")
+    monkeypatch.setattr(settings, "LICENSE_ALLOWED_VALIDITY_DAYS", (30, 90))
+    monkeypatch.setattr(settings, "LICENSE_KEY_PEPPER", "invitation-test-license-pepper-32-bytes")
     monkeypatch.setattr(email_delivery_service, "send_organization_invitation", lambda *_args, **_kwargs: None)
 
 
