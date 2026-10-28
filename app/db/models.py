@@ -23,6 +23,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import relationship
 
@@ -441,6 +442,42 @@ class OrganizationMembership(Base):
     user = relationship("User", foreign_keys=[user_id])
     organization = relationship("Organization")
     roles = relationship("Role", secondary=membership_roles)
+
+
+class OrganizationInvitation(Base):
+    """Single-use, email-bound invitation; persist only the token digest."""
+
+    __tablename__ = "organization_invitations"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_org_invitations_token_hash"),
+        UniqueConstraint("active_key", name="uq_org_invitations_active_key"),
+        Index("ix_org_invitations_org_status", "organization_id", "status"),
+        Index("ix_org_invitations_expires_at", "expires_at"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    invited_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    inviter_is_platform_admin = Column(Boolean, nullable=False, default=False, server_default=false())
+    invited_email = Column(String(255), nullable=False)
+    role_names = Column(JSON, nullable=False)
+    token_hash = Column(String(64), nullable=False)
+    active_key = Column(String(64), nullable=True)
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    accepted_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    mfa_secret_encrypted = Column(String(1000), nullable=True)
+    mfa_setup_at = Column(DateTime, nullable=True)
+    mfa_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+
+    organization = relationship("Organization")
+    invited_by = relationship("User", foreign_keys=[invited_by_user_id])
+    accepted_user = relationship("User", foreign_keys=[accepted_user_id])
+    revoked_by = relationship("User", foreign_keys=[revoked_by_user_id])
 
 
 class ApiKey(Base):

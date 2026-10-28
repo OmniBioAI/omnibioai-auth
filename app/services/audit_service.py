@@ -40,6 +40,11 @@ class AuditEventType:
     PERMISSION_GRANTED = "permission_granted"
     PERMISSION_REVOKED = "permission_revoked"
     ORG_MEMBERSHIP_CHANGED = "organization_membership_changed"
+    ORG_INVITATION_CREATED = "organization_invitation_created"
+    ORG_INVITATION_ACCEPTED = "organization_invitation_accepted"
+    ORG_INVITATION_REVOKED = "organization_invitation_revoked"
+    ORG_INVITATION_EXPIRED = "organization_invitation_expired"
+    ORG_INVITATION_DENIED = "organization_invitation_denied"
     # PR11.4b (Identity Audit Trail Foundation). See
     # docs/pr11-identity-audit-discovery.md (omnibioai-control-center)
     # for the full discovery this set was built from.

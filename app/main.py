@@ -23,6 +23,7 @@ from app.api.routes_license import router as license_router
 from app.api.routes_platform_licenses import router as platform_licenses_router
 from app.api.routes_config import router as config_router
 from app.api.routes_orgs import router as orgs_router
+from app.api.routes_org_invitations import router as org_invitations_router
 from app.api.routes_teams import router as teams_router
 from app.api.routes_apikeys import router as apikeys_router
 from app.api.routes_apikeys import exchange_router as apikeys_exchange_router
@@ -117,6 +118,7 @@ app.include_router(license_router)
 app.include_router(platform_licenses_router)
 app.include_router(config_router)
 app.include_router(orgs_router)
+app.include_router(org_invitations_router)
 app.include_router(teams_router)
 app.include_router(apikeys_router)
 app.include_router(apikeys_exchange_router)

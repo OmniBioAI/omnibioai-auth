@@ -114,6 +114,10 @@ class Settings:
     # Email MFA remains opt-in and applies consistently to active local
     # password accounts (including Studio users) when enabled.
     EMAIL_MFA_ENABLED = os.getenv("EMAIL_MFA_ENABLED", "false").lower() == "true"
+    ORG_INVITATIONS_ENABLED = os.getenv("ORG_INVITATIONS_ENABLED", "false").lower() == "true"
+    ORG_INVITATION_ACCEPT_URL = os.getenv("ORG_INVITATION_ACCEPT_URL", "").strip()
+    ORG_INVITATION_TTL_SECONDS = int(os.getenv("ORG_INVITATION_TTL_SECONDS", "604800"))
+    ORG_INVITATION_MAX_ACCEPT_ATTEMPTS = int(os.getenv("ORG_INVITATION_MAX_ACCEPT_ATTEMPTS", "5"))
     EMAIL_MFA_OTP_PEPPER = load_email_otp_pepper()
     EMAIL_SERVICE_SEND_URL = os.getenv("EMAIL_SERVICE_SEND_URL", "")
     EMAIL_SERVICE_TOKEN = os.getenv("EMAIL_SERVICE_TOKEN", "")
