@@ -51,7 +51,8 @@ def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"
     """The exact three-call sequence app/main.py runs at every real
     startup, in the exact order."""
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", password)
-    create_admin(db)
+    monkeypatch.setenv("ADMIN_BOOTSTRAP_EMAIL", "admin@omnibioai")
+    create_admin(db, bootstrap_email="admin@omnibioai")
     ensure_platform_admin_role(db)
     ensure_platform_owner(db)
 
@@ -156,8 +157,12 @@ def test_platform_owner_email_can_designate_a_non_bootstrap_user(db_session, mon
     """PLATFORM_OWNER_EMAIL can name another existing user, who gains platform_admin, while the
     bootstrap admin does not.
     """
+    # The bootstrap identity must exist at id 1 before the unrelated owner
+    # account is inserted; create_admin intentionally will not create a
+    # configured identity in an already-populated database.
+    bootstrap_admin = User(id=1, email="admin@omnibioai", hashed_password="x", status="active")
     other = User(email="owner@example.test", hashed_password="x", status="active")
-    db_session.add(other)
+    db_session.add_all([bootstrap_admin, other])
     db_session.commit()
 
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "owner@example.test")
@@ -189,7 +194,7 @@ def test_platform_owner_email_before_role_exists_is_a_safe_no_op(db_session, mon
     invoked before ensure_platform_admin_role, it must not raise."""
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", "regression-test-password-not-for-prod")
     monkeypatch.setenv("PLATFORM_OWNER_EMAIL", "admin@omnibioai")
-    create_admin(db_session)
+    create_admin(db_session, bootstrap_email="admin@omnibioai")
 
     ensure_platform_owner(db_session)  # platform_admin role does not exist yet
 

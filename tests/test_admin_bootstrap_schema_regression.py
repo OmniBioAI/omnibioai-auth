@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import app.db.models  # noqa: F401 -- registers every ORM class on Base.metadata
 from app.db.base import Base
 from app.db.init_admin import create_admin
-from app.db.models import User
+from app.db.models import Permission, Role, User
 from app.db.schema_guard import SchemaDriftError, assert_schema_matches_models
 from app.services.role_service import get_or_create_role
 
@@ -59,7 +59,7 @@ def test_create_admin_bootstraps_admin_user_and_role_against_current_schema(fres
     Session = sessionmaker(bind=fresh_engine)
     db = Session()
     try:
-        create_admin(db)
+        create_admin(db, bootstrap_email="admin@omnibioai")
 
         admin = db.query(User).filter(User.email == "admin@omnibioai").first()
         assert admin is not None
@@ -86,14 +86,73 @@ def test_create_admin_is_idempotent_across_repeated_startups(fresh_engine, monke
     Session = sessionmaker(bind=fresh_engine)
     db = Session()
     try:
-        create_admin(db)
+        create_admin(db, bootstrap_email="admin@omnibioai")
         first_hash = db.query(User).filter(User.email == "admin@omnibioai").first().hashed_password
 
-        create_admin(db)  # simulate a second startup
+        create_admin(db, bootstrap_email="admin@omnibioai")  # simulate a second startup
         admins = db.query(User).filter(User.email == "admin@omnibioai").all()
 
         assert len(admins) == 1
         assert admins[0].hashed_password == first_hash  # password untouched on re-run
+    finally:
+        db.close()
+
+
+def test_unset_bootstrap_email_seeds_roles_without_granting_admin(fresh_engine):
+    Base.metadata.create_all(bind=fresh_engine)
+    db = sessionmaker(bind=fresh_engine)()
+    try:
+        create_admin(db, bootstrap_email="  ")
+        assert db.query(User).count() == 0
+        assert db.query(Role).filter_by(name="user").one()
+        admin_role = db.query(Role).filter_by(name="admin").one()
+        assert {permission.name for permission in admin_role.permissions} >= {
+            "manage_roles", "manage_licenses", "manage_config", "override_sso_enforcement",
+        }
+        assert db.query(Permission).filter_by(name="manage_licenses").one()
+    finally:
+        db.close()
+
+
+def test_configured_email_matching_user_one_gets_admin(fresh_engine):
+    Base.metadata.create_all(bind=fresh_engine)
+    db = sessionmaker(bind=fresh_engine)()
+    try:
+        db.add(User(id=1, email="designated@example.test", hashed_password="existing", status="active"))
+        db.commit()
+        create_admin(db, bootstrap_email=" DESIGNATED@EXAMPLE.TEST ")
+        user = db.query(User).filter_by(id=1).one()
+        assert "admin" in {role.name for role in user.roles}
+    finally:
+        db.close()
+
+
+def test_configured_email_for_non_one_user_keeps_seeding_and_skips_grant(fresh_engine, caplog):
+    Base.metadata.create_all(bind=fresh_engine)
+    db = sessionmaker(bind=fresh_engine)()
+    try:
+        db.add(User(id=7, email="not-designated@example.test", hashed_password="existing", status="active"))
+        db.commit()
+        create_admin(db, bootstrap_email="not-designated@example.test")
+        user = db.query(User).filter_by(id=7).one()
+        assert "admin" not in {role.name for role in user.roles}
+        assert db.query(Role).filter_by(name="user").one()
+        assert "expected designated ID 1" in caplog.text
+    finally:
+        db.close()
+
+
+def test_configured_email_missing_from_nonempty_db_is_not_created(fresh_engine, caplog):
+    Base.metadata.create_all(bind=fresh_engine)
+    db = sessionmaker(bind=fresh_engine)()
+    try:
+        db.add(User(id=7, email="unrelated@example.test", hashed_password="existing", status="active"))
+        db.commit()
+        create_admin(db, bootstrap_email="missing@example.test")
+        assert db.query(User).count() == 1
+        assert db.query(User).filter_by(email="missing@example.test").first() is None
+        assert db.query(Role).filter_by(name="user").one()
+        assert "non-empty identity database" in caplog.text
     finally:
         db.close()
 
@@ -128,7 +187,7 @@ def test_create_admin_crashes_with_raw_operationalerror_when_guard_is_bypassed(f
     db = Session()
     try:
         with pytest.raises(OperationalError, match="organization_id"):
-            create_admin(db)  # guard intentionally skipped here
+            create_admin(db, bootstrap_email="admin@omnibioai")  # guard intentionally skipped here
     finally:
         db.close()
 
@@ -157,7 +216,7 @@ def test_create_admin_succeeds_once_the_legacy_schema_is_migrated(fresh_engine, 
     Session = sessionmaker(bind=fresh_engine)
     db = Session()
     try:
-        create_admin(db)  # the exact call that crashed in production
+        create_admin(db, bootstrap_email="admin@omnibioai")  # the exact call that crashed in production
 
         admin = db.query(User).filter(User.email == "admin@omnibioai").first()
         assert admin is not None

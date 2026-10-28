@@ -39,7 +39,7 @@ def _bootstrap(db, monkeypatch, password="regression-test-password-not-for-prod"
     bootstrap password.
     """
     monkeypatch.setenv("ADMIN_BOOTSTRAP_PASSWORD", password)
-    create_admin(db)
+    create_admin(db, bootstrap_email="admin@omnibioai")
     ensure_bio_agent_service_role(db)
 
 

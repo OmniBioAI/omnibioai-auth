@@ -84,11 +84,11 @@ async def lifespan(_app: FastAPI):
 
     db = SessionLocal()
     try:
-        create_admin(db)
+        create_admin(db, bootstrap_email=settings.ADMIN_BOOTSTRAP_EMAIL)
         ensure_platform_admin_role(db)
         ensure_platform_owner(db)
         ensure_bio_agent_service_role(db)
-        ensure_default_organization(db)
+        ensure_default_organization(db, bootstrap_email=settings.ADMIN_BOOTSTRAP_EMAIL)
         ensure_org_admin_permissions(db)
         ensure_default_org_roles(db)
         ensure_dev_test_personas(db)

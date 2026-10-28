@@ -25,9 +25,10 @@ from app.services.audit_service import AuditEventType
 from app.services.role_service import assign_default_role, get_or_create_role
 
 logger = logging.getLogger(__name__)
+DESIGNATED_ADMIN_USER_ID = 1
 
 
-def create_admin(db):
+def create_admin(db, bootstrap_email: str | None = None):
     # Baseline role for regular signups (register/license/oauth) -- see
     # role_service.assign_default_role, called from each of those sites.
     get_or_create_role(db, "user")
@@ -124,8 +125,25 @@ def create_admin(db):
         if manage_content_perm not in admin_role.permissions:
             admin_role.permissions.append(manage_content_perm)
 
-    admin = db.query(User).filter(User.email == "admin@omnibioai").first()
+    # Persist the role/permission catalog independently of identity policy.
+    # In particular, an unconfigured or invalid bootstrap identity must not
+    # roll back this unconditional seeding.
+    db.commit()
+
+    bootstrap_email = (bootstrap_email or "").strip().lower()
+    if not bootstrap_email:
+        logger.info("Admin bootstrap identity not configured; role and permission seeding completed")
+        return
+
+    admin = db.query(User).filter(User.email == bootstrap_email).first()
     if not admin:
+        if db.query(User.id).first():
+            logger.error(
+                "Configured admin bootstrap email %s was not found in a non-empty identity database; "
+                "skipping admin grant",
+                bootstrap_email,
+            )
+            return
         # No hardcoded default password: an operator-supplied
         # ADMIN_BOOTSTRAP_PASSWORD is used if set (e.g. scripted deployments
         # pulling from a secret store); otherwise a random password is
@@ -139,7 +157,7 @@ def create_admin(db):
             password = secrets.token_urlsafe(24)
 
         admin = User(
-            email="admin@omnibioai",
+            email=bootstrap_email,
             hashed_password=hash_password(password),
             status="active"
         )
@@ -149,7 +167,7 @@ def create_admin(db):
         if generated:
             print(
                 "=" * 72 + "\n"
-                "First-run admin bootstrap: created admin@omnibioai with a\n"
+                f"First-run admin bootstrap: created {bootstrap_email} with a\n"
                 f"randomly generated password:\n\n    {password}\n\n"
                 "Log in and rotate this immediately -- it is not stored anywhere\n"
                 "except this one-time startup log line. Set ADMIN_BOOTSTRAP_PASSWORD\n"
@@ -157,6 +175,16 @@ def create_admin(db):
                 + "=" * 72,
                 flush=True,
             )
+
+    if admin.id != DESIGNATED_ADMIN_USER_ID:
+        logger.error(
+            "Configured admin bootstrap identity %s has user id %s; expected designated ID %s. "
+            "Skipping privileged grant",
+            bootstrap_email,
+            admin.id,
+            DESIGNATED_ADMIN_USER_ID,
+        )
+        return
 
     if admin_role not in admin.roles:
         admin.roles.append(admin_role)
@@ -289,7 +317,7 @@ def ensure_platform_owner(db):
         db.commit()
 
 
-def ensure_default_organization(db):
+def ensure_default_organization(db, bootstrap_email: str | None = None):
     """Idempotent, mirrors the `if not admin:` guard above. Creates an
     inert org shell only -- no existing user (not even admin@omnibioai) is
     added as a member here. Organization membership is a brand-new concept
@@ -300,7 +328,12 @@ def ensure_default_organization(db):
     """
     org = db.query(Organization).filter(Organization.slug == "default").first()
     if not org:
-        admin = db.query(User).filter(User.email == "admin@omnibioai").first()
+        normalized_email = (bootstrap_email or "").strip().lower()
+        admin = (
+            db.query(User).filter(User.email == normalized_email).first()
+            if normalized_email
+            else None
+        )
         org = Organization(
             slug="default",
             name="Default Organization",

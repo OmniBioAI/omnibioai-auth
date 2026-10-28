@@ -67,6 +67,7 @@ def load_email_otp_pepper() -> str:
 
 class Settings:
     APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
+    ADMIN_BOOTSTRAP_EMAIL = os.getenv("ADMIN_BOOTSTRAP_EMAIL", "").strip().lower()
     AUTH_STARTUP_SCHEMA_MODE = os.getenv("AUTH_STARTUP_SCHEMA_MODE", "validate").strip().lower()
     DB_USER = os.getenv("DB_USER")
     DB_PASSWORD = os.getenv("DB_PASSWORD")
