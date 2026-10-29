@@ -20,8 +20,8 @@ ALLOWED_ORG_STATUSES = {"active", "suspended"}
 
 
 class OrganizationCreate(BaseModel):
-    name: str
-    slug: str
+    name: str = Field(min_length=1, max_length=255)
+    slug: str = Field(min_length=1, max_length=100)
 
 
 class OrganizationOut(BaseModel):

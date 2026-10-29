@@ -91,6 +91,65 @@ def test_platform_admin_can_list_organizations(client):
     assert "members" not in listed and "teams" not in listed
 
 
+def test_platform_admin_can_create_tenant_and_it_is_persisted_and_listed(client):
+    admin = _platform_admin(client)
+    slug = f"tenant-{uuid.uuid4().hex[:10]}"
+
+    created = client.post(
+        "/platform/orgs", json={"name": "End-to-end Tenant", "slug": slug}, headers=admin["headers"],
+    )
+    assert created.status_code == 201
+    tenant = created.json()
+    assert tenant["name"] == "End-to-end Tenant"
+    assert tenant["slug"] == slug
+    assert tenant["status"] == "active"
+
+    # A separate request must read the persisted row, not a UI-side phantom.
+    listing = client.get("/platform/orgs", params={"search": slug}, headers=admin["headers"])
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 1
+    assert listing.json()["items"][0]["id"] == tenant["id"]
+
+    # Preserve the existing account semantics: the creating platform user
+    # receives an org_admin membership in the new organization.
+    members = client.get(f"/orgs/{tenant['id']}/members", headers=admin["headers"])
+    assert members.status_code == 200
+    assert len(members.json()) == 1
+    assert members.json()[0]["user_id"] == _user_id(client, admin["access_token"])
+    assert members.json()[0]["roles"] == ["org_admin"]
+
+
+def test_platform_tenant_creation_rejects_unauthenticated_and_non_platform_users(client):
+    payload = {"name": "Must Not Exist", "slug": f"denied-{uuid.uuid4().hex[:10]}"}
+    assert client.post("/platform/orgs", json=payload).status_code in (401, 403)
+
+    ordinary_user = _register_and_login(client)
+    denied = client.post("/platform/orgs", json=payload, headers=_auth_header(ordinary_user["access_token"]))
+    assert denied.status_code == 403
+
+    admin = _platform_admin(client)
+    lookup = client.get("/platform/orgs", params={"search": payload["slug"]}, headers=admin["headers"])
+    assert lookup.status_code == 200
+    assert lookup.json()["total"] == 0
+
+
+def test_platform_tenant_creation_handles_duplicate_and_invalid_input(client):
+    admin = _platform_admin(client)
+    headers = admin["headers"]
+    slug = f"duplicate-{uuid.uuid4().hex[:10]}"
+    first = client.post("/platform/orgs", json={"name": "First", "slug": slug}, headers=headers)
+    assert first.status_code == 201
+
+    duplicate = client.post("/platform/orgs", json={"name": "Second", "slug": slug}, headers=headers)
+    assert duplicate.status_code == 409
+
+    blank = client.post("/platform/orgs", json={"name": "   ", "slug": "   "}, headers=headers)
+    assert blank.status_code == 422
+
+    lookup = client.get("/platform/orgs", params={"search": slug}, headers=headers)
+    assert lookup.json()["total"] == 1
+
+
 def test_platform_orgs_list_never_includes_nested_members_or_teams(client):
     """Organization list items contain only the fixed summary fields, with no nested members or
     teams.

@@ -11,12 +11,15 @@ Author:
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.db.models import User
 from app.db.session import get_db
 from app.rbac import MANAGE_ALL_ORGS, require_permission
+from app.schemas.orgs import OrganizationCreate, OrganizationOut
 from app.schemas.platform_admin import PlatformOrgDetailOut, PlatformOrgListOut
-from app.services import platform_admin_service
+from app.services import org_service, platform_admin_service
 
 # Phase 3 PR1. Deliberately a new, separate prefix -- /platform/orgs is a
 # platform-admin-only, cross-tenant discovery view, not a variant of the
@@ -50,6 +53,43 @@ def list_platform_organizations(
     )
     total_pages = (total + page_size - 1) // page_size if total else 0
     return PlatformOrgListOut(items=items, total=total, page=page, page_size=page_size, total_pages=total_pages)
+
+
+@router.post("/orgs", response_model=OrganizationOut, status_code=201)
+def create_platform_organization(
+    body: OrganizationCreate,
+    db: Session = Depends(get_db),
+    user=Depends(_require_platform_admin),
+):
+    """Create a tenant from the platform Tenants/Organizations console.
+
+    The org-scoped POST /orgs remains the separate self-service organization
+    workflow. This platform endpoint is explicitly manage_all_orgs-gated,
+    so hiding the console action is not the authorization boundary.
+    """
+    name, slug = body.name.strip(), body.slug.strip()
+    if not name or not slug:
+        raise HTTPException(422, "Organization name and slug must not be blank")
+    if org_service.get_organization_by_slug(db, slug):
+        raise HTTPException(409, "Organization slug already exists")
+
+    creator = db.query(User).filter(User.id == int(user["sub"])).first()
+    if creator is None:
+        raise HTTPException(401, "Invalid user")
+    try:
+        organization = org_service.create_organization(db, name, slug, creator)
+    except IntegrityError:
+        # The unique database constraint is authoritative under concurrent
+        # requests; map that race to the same stable duplicate response.
+        db.rollback()
+        raise HTTPException(409, "Organization slug already exists") from None
+    return OrganizationOut(
+        id=organization.id,
+        slug=organization.slug,
+        name=organization.name,
+        plan=organization.plan,
+        status=organization.status,
+    )
 
 
 @router.get("/orgs/{org_id}", response_model=PlatformOrgDetailOut)
