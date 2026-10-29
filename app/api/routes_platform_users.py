@@ -17,7 +17,7 @@ from app.db.models import User
 from app.db.session import get_db
 from app.rbac import MANAGE_ALL_ORGS, get_current_user, require_permission
 from app.schemas.mfa import MFAResetOut
-from app.schemas.user_admin import PlatformUserDetailOut, PlatformUserListOut, UserStatusUpdate
+from app.schemas.user_admin import PlatformUserBatchIn, PlatformUserBatchOut, PlatformUserDetailOut, PlatformUserListOut, UserStatusUpdate
 from app.services import mfa_service, user_admin_service
 
 # Phase 3 PR3A. New prefix, mirroring routes_platform_admin.py's own
@@ -34,6 +34,26 @@ router = APIRouter(prefix="/platform/users", tags=["platform-admin"])
 # describes it, not split into a new permission per resource type. See
 # this PR's implementation report for the tradeoff this accepts.
 _require_platform_admin = require_permission(MANAGE_ALL_ORGS)
+
+
+@router.post("/batch", response_model=PlatformUserBatchOut)
+def batch_platform_user_identities(
+    body: PlatformUserBatchIn,
+    db: Session = Depends(get_db),
+    _admin=Depends(_require_platform_admin),
+):
+    """Resolve tenant identity in one query; never returns password/MFA data."""
+    ids = list(dict.fromkeys(body.user_ids))
+    if len(ids) > 1000:
+        raise HTTPException(422, "At most 1000 user ids are allowed")
+    users = db.query(User).filter(User.id.in_(ids)).all() if ids else []
+    by_id = {user.id: user for user in users}
+    return PlatformUserBatchOut(items=[{
+        "user_id": str(by_id[user_id].id),
+        "username": by_id[user_id].email.split("@", 1)[0],
+        "email": by_id[user_id].email,
+        "last_activity_at": by_id[user_id].last_login_at,
+    } for user_id in ids if user_id in by_id])
 
 
 @router.get("", response_model=PlatformUserListOut)

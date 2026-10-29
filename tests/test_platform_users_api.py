@@ -542,3 +542,23 @@ def test_filters_are_backward_compatible_when_omitted(client):
     admin = _platform_admin(client)
     resp = client.get("/platform/users", headers=admin["headers"])
     assert resp.status_code == 200
+
+
+def test_platform_admin_batch_identity_lookup_preserves_requested_order(client):
+    admin = _platform_admin(client)
+    first = _register_and_login(client, f"batch-one-{uuid.uuid4().hex[:6]}@omnibioai.test")
+    second = _register_and_login(client, f"batch-two-{uuid.uuid4().hex[:6]}@omnibioai.test")
+    db = _DirectSession()
+    try:
+        ids = [db.query(User).filter_by(email=second["email"]).one().id, db.query(User).filter_by(email=first["email"]).one().id]
+    finally:
+        db.close()
+    response = client.post("/platform/users/batch", json={"user_ids": ids}, headers=admin["headers"])
+    assert response.status_code == 200
+    assert [item["email"] for item in response.json()["items"]] == [second["email"], first["email"]]
+    assert response.json()["items"][0]["username"] == second["email"].split("@", 1)[0]
+
+
+def test_non_platform_admin_cannot_batch_identity_lookup(client):
+    user = _register_and_login(client)
+    assert client.post("/platform/users/batch", json={"user_ids": [1]}, headers=_auth_header(user["access_token"])).status_code == 403

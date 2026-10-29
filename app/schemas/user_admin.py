@@ -49,6 +49,21 @@ class PlatformUserListOut(BaseModel):
     total_pages: int
 
 
+class PlatformUserBatchIn(BaseModel):
+    user_ids: list[int]
+
+
+class PlatformUserIdentity(BaseModel):
+    user_id: str
+    username: str
+    email: str
+    last_activity_at: datetime | None = None
+
+
+class PlatformUserBatchOut(BaseModel):
+    items: list[PlatformUserIdentity]
+
+
 class OrgMembershipSummary(BaseModel):
     """One row per organization the user belongs to -- the "org
     membership display" the detail endpoint exists to provide."""
