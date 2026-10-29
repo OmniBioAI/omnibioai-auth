@@ -145,6 +145,24 @@ class Settings:
     # it is requested immediately before the one POST /register_tools call.
     TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES = int(os.getenv("TOOLSERVER_REGISTRATION_TOKEN_EXPIRE_MINUTES", "5"))
 
+    # Track B Skills identity/delegation bridge. It is intentionally inert
+    # unless all three controls are configured: an explicit flag, immutable
+    # owner-approval reference, and a non-empty tenant allowlist. Credentials
+    # are supplied through the process-local provider interface, never env.
+    SKILLS_IAM_LIVE = os.getenv("SKILLS_IAM_LIVE", "false").lower() == "true"
+    SKILLS_IAM_APPROVAL_REF = os.getenv("SKILLS_IAM_APPROVAL_REF", "").strip()
+    SKILLS_IAM_TENANT_ALLOWLIST = frozenset(
+        item.strip()
+        for item in os.getenv("SKILLS_IAM_TENANT_ALLOWLIST", "").split(",")
+        if item.strip()
+    )
+    SKILLS_IDENTITY_TOKEN_EXPIRE_SECONDS = min(
+        max(int(os.getenv("SKILLS_IDENTITY_TOKEN_EXPIRE_SECONDS", "300")), 30), 300
+    )
+    SKILLS_REVOCATION_FRESHNESS_SECONDS = min(
+        max(int(os.getenv("SKILLS_REVOCATION_FRESHNESS_SECONDS", "30")), 1), 60
+    )
+
     # API-key exchange (POST /auth/api-keys/exchange): the gateway trades an
     # omni_sk_ key for a short-lived access token it forwards downstream.
     # The endpoint is only callable with this shared secret (gateway <->

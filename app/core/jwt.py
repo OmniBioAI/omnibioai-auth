@@ -120,6 +120,26 @@ def create_delegated_execution_token(*, client_id: str, user_id: int, organizati
     })
 
 
+def create_skills_identity_token(
+    *, client_id: str, user_id: int, organization_id: int,
+    permissions: list[str], delegation_id: str,
+) -> str:
+    """Issue a short-lived, Skills-audience-only delegated identity."""
+    now = datetime.utcnow()
+    return _sign({
+        "sub": str(user_id),
+        "client_id": client_id,
+        "org_id": organization_id,
+        "permissions": sorted(set(permissions)),
+        "delegation_id": delegation_id,
+        "type": "skills_identity",
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.SKILLS_IDENTITY_TOKEN_EXPIRE_SECONDS),
+        "jti": delegation_id,
+        "aud": "omnibioai-skills",
+    })
+
+
 def create_toolserver_registration_token(*, client_id: str, organization_id: int, registration_id: str) -> str:
     """Issue a ToolServer-only, service-only registration credential.
 

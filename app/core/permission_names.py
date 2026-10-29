@@ -175,6 +175,22 @@ for _skill_action, _skill_description in (
         )
     )
 
+for _identity_name, _identity_resource, _identity_action, _identity_description in (
+    ("identity.verify", "identity", "verify", "Verify a tenant-bound identity for an injected host integration."),
+    ("delegation.verify", "delegation", "verify", "Issue and verify a tenant-bound delegated identity."),
+):
+    _register(
+        PermissionDef(
+            name=_identity_name,
+            resource=_identity_resource,
+            action=_identity_action,
+            scope=PermissionScope.BOTH,
+            category=PermissionCategory.ORGANIZATION,
+            description=_identity_description,
+            legacy=False,
+        )
+    )
+
 
 # --- Platform (global) permissions -- legacy -------------------------------
 

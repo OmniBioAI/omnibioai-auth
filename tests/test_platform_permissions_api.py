@@ -54,6 +54,8 @@ FUTURE_NAMES = {
     "skill.plan",
     "skill.validate",
     "skill.execute",
+    "identity.verify",
+    "delegation.verify",
 }
 
 # #443: kept separate from FUTURE_NAMES above -- that set's own
@@ -155,7 +157,7 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 tenant storage entry (storage_ledger.write -- TES ledger writer).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 40
+    assert len(REGISTRY) == 42
 
 
 def test_response_fields_match_permission_def_as_dict(client):
