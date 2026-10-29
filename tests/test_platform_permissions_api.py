@@ -48,6 +48,12 @@ FUTURE_NAMES = {
     # unenforced placeholder -- counted here the same way
     # workflow.execute/toolserver.delegate etc. above already are.
     "workspace.launch",
+    # Track B Skills permissions are registry-only and receive no implicit
+    # role or service-client grant.
+    "skill.discover",
+    "skill.plan",
+    "skill.validate",
+    "skill.execute",
 }
 
 # #443: kept separate from FUTURE_NAMES above -- that set's own
@@ -149,7 +155,7 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 tenant storage entry (storage_ledger.write -- TES ledger writer).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 36
+    assert len(REGISTRY) == 40
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -299,7 +305,8 @@ def test_filter_combines_category_and_scope(client):
     assert resp.status_code == 200
     assert {p["name"] for p in resp.json()} == {
         "workflow.execute", "workflow.read", "workflow.publish", "workflow.manage", "runs.read",
-        "toolserver.delegate", "toolserver.register",
+        "toolserver.delegate", "toolserver.register", "skill.discover", "skill.plan",
+        "skill.validate", "skill.execute",
     }
 
 

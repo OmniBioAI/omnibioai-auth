@@ -153,6 +153,28 @@ _register(
     )
 )
 
+# Track B Skills integration permissions. Registry-only: these entries are
+# deliberately not seeded into any role or OAuth client, so introducing the
+# vocabulary cannot grant a capability. The default-off Skills IAM endpoint
+# verifies the exact effective set when explicitly enabled.
+for _skill_action, _skill_description in (
+    ("discover", "Discover tenant-visible Skills definitions."),
+    ("plan", "Create a non-submitting Skills execution plan."),
+    ("validate", "Validate a Skills plan without submitting work."),
+    ("execute", "Authorize an explicitly gated Skills execution request."),
+):
+    _register(
+        PermissionDef(
+            name=f"skill.{_skill_action}",
+            resource="skill",
+            action=_skill_action,
+            scope=PermissionScope.BOTH,
+            category=PermissionCategory.WORKFLOW,
+            description=_skill_description,
+            legacy=False,
+        )
+    )
+
 
 # --- Platform (global) permissions -- legacy -------------------------------
 

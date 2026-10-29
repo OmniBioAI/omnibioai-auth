@@ -147,6 +147,15 @@ LICENSE_ISSUE_NAMES = {
     "license.issue": PermissionCategory.PLATFORM,
 }
 
+# Track B Skills integration: registered without being seeded or implicitly
+# granted to any role/service identity.
+SKILLS_NAMES = {
+    "skill.discover": PermissionCategory.WORKFLOW,
+    "skill.plan": PermissionCategory.WORKFLOW,
+    "skill.validate": PermissionCategory.WORKFLOW,
+    "skill.execute": PermissionCategory.WORKFLOW,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -440,6 +449,7 @@ def test_registry_contains_exactly_the_expected_names():
         | set(MODEL_REGISTRY_READ_NAMES.keys()) | set(SERVICE_MINT_NAMES.keys())
         | set(DELEGATED_EXECUTION_NAMES.keys()) | set(RAG_NAMES.keys())
         | set(WORKSPACE_LAUNCH_NAMES.keys()) | set(LICENSE_ISSUE_NAMES.keys())
+        | set(SKILLS_NAMES.keys())
     )
 
 
@@ -623,6 +633,7 @@ def test_registry_stats_totals_match_registry_size():
         + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
         + len(SERVICE_MINT_NAMES) + len(DELEGATED_EXECUTION_NAMES) + len(RAG_NAMES)
         + len(WORKSPACE_LAUNCH_NAMES) + len(LICENSE_ISSUE_NAMES)
+        + len(SKILLS_NAMES)
     )
 
 
@@ -654,7 +665,7 @@ def test_registry_stats_by_scope_sums_to_total():
     # RAG_NAMES above) + 1 (toolserver.register -- see
     # DELEGATED_EXECUTION_NAMES above) + 1 (provider_keys.manage -- M15,
     # BYOK provider-key storage).
-    assert stats["by_scope"]["both"] == 19
+    assert stats["by_scope"]["both"] == 23
 
 
 def test_registry_stats_by_category_sums_to_total():
