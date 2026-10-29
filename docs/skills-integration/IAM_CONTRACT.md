@@ -11,12 +11,14 @@ records contain credential material.
 The integration is unavailable unless all conditions hold:
 
 - `SKILLS_IAM_LIVE=true` (default `false`);
+- `SKILLS_EXECUTION_KILL=false` (dominant switch, default `true`);
 - `SKILLS_IAM_APPROVAL_REF` is non-empty;
 - the expected tenant is in `SKILLS_IAM_TENANT_ALLOWLIST` (default empty);
 - the injected workload identity is active, tenant-bound, and currently holds
   `identity.verify` or `delegation.verify` as appropriate.
 
 There is no service-account fallback and no role-derived administrator bypass.
+The kill switch is evaluated before any credential provider is called.
 The four `skill.*` permissions are registered but are not seeded or implicitly
 granted to any role or OAuth client.
 

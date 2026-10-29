@@ -48,6 +48,8 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _enabled(tenant_id: str) -> None:
+    if settings.SKILLS_EXECUTION_KILL:
+        raise SkillsIdentityError("KILL_SWITCH_ACTIVE")
     if not settings.SKILLS_IAM_LIVE:
         raise SkillsIdentityError("FEATURE_DISABLED")
     if not settings.SKILLS_IAM_APPROVAL_REF:

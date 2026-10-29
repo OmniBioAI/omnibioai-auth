@@ -100,6 +100,7 @@ def _fixture():
 
 def _enable(monkeypatch, *tenant_ids):
     monkeypatch.setattr(settings, "SKILLS_IAM_LIVE", True)
+    monkeypatch.setattr(settings, "SKILLS_EXECUTION_KILL", False)
     monkeypatch.setattr(settings, "SKILLS_IAM_APPROVAL_REF", "approval:test-only")
     monkeypatch.setattr(settings, "SKILLS_IAM_TENANT_ALLOWLIST", frozenset(str(x) for x in tenant_ids))
 
@@ -135,15 +136,30 @@ def test_default_off_does_not_resolve_credentials_or_change_behavior(setup_db, m
     db, _user, org, _membership, _service, _user_token, service_token = _fixture()
     provider = HandleProvider({"skills-handle": "must-not-be-read"})
     workload = WorkloadProvider(service_token)
-    monkeypatch.setattr(settings, "SKILLS_IAM_LIVE", False)
+    monkeypatch.setattr(settings, "SKILLS_EXECUTION_KILL", True)
     try:
-        with pytest.raises(skills_identity_service.SkillsIdentityError, match="FEATURE_DISABLED"):
+        with pytest.raises(skills_identity_service.SkillsIdentityError, match="KILL_SWITCH_ACTIVE"):
             skills_identity_service.verify_identity(
                 db,
                 SkillsIdentityRequest(
                     credential_handle="skills-handle",
                     expected_tenant_id=str(org.id),
                     correlation_id="corr-default-off",
+                ),
+                credential_provider=provider,
+                workload_provider=workload,
+            )
+        assert provider.calls == 0
+        assert workload.calls == 0
+        monkeypatch.setattr(settings, "SKILLS_EXECUTION_KILL", False)
+        monkeypatch.setattr(settings, "SKILLS_IAM_LIVE", False)
+        with pytest.raises(skills_identity_service.SkillsIdentityError, match="FEATURE_DISABLED"):
+            skills_identity_service.verify_identity(
+                db,
+                SkillsIdentityRequest(
+                    credential_handle="skills-handle",
+                    expected_tenant_id=str(org.id),
+                    correlation_id="corr-feature-off",
                 ),
                 credential_provider=provider,
                 workload_provider=workload,

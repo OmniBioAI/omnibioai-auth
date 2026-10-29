@@ -150,6 +150,7 @@ class Settings:
     # owner-approval reference, and a non-empty tenant allowlist. Credentials
     # are supplied through the process-local provider interface, never env.
     SKILLS_IAM_LIVE = os.getenv("SKILLS_IAM_LIVE", "false").lower() == "true"
+    SKILLS_EXECUTION_KILL = os.getenv("SKILLS_EXECUTION_KILL", "true").lower() == "true"
     SKILLS_IAM_APPROVAL_REF = os.getenv("SKILLS_IAM_APPROVAL_REF", "").strip()
     SKILLS_IAM_TENANT_ALLOWLIST = frozenset(
         item.strip()
