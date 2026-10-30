@@ -17,6 +17,11 @@ The integration is unavailable unless all conditions hold:
 - the injected workload identity is active, tenant-bound, and currently holds
   `identity.verify` or `delegation.verify` as appropriate.
 
+Tenant IDs are opaque strings on the wire. This Auth implementation accepts
+only the canonical positive decimal-string form of the numeric organization
+primary key, such as `"42"`. It rejects JSON integers and non-canonical or
+non-numeric strings with no database migration or alternate lookup.
+
 There is no service-account fallback and no role-derived administrator bypass.
 The kill switch is evaluated before any credential provider is called.
 The four `skill.*` permissions are registered but are not seeded or implicitly

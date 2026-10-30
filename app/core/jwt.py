@@ -121,7 +121,7 @@ def create_delegated_execution_token(*, client_id: str, user_id: int, organizati
 
 
 def create_skills_identity_token(
-    *, client_id: str, user_id: int, organization_id: int,
+    *, client_id: str, user_id: int, organization_id: str,
     permissions: list[str], delegation_id: str,
 ) -> str:
     """Issue a short-lived, Skills-audience-only delegated identity."""

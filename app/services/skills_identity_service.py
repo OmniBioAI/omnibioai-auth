@@ -47,15 +47,17 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def _enabled(tenant_id: str) -> None:
+def _enabled(tenant_id: str) -> int:
     if settings.SKILLS_EXECUTION_KILL:
         raise SkillsIdentityError("KILL_SWITCH_ACTIVE")
     if not settings.SKILLS_IAM_LIVE:
         raise SkillsIdentityError("FEATURE_DISABLED")
     if not settings.SKILLS_IAM_APPROVAL_REF:
         raise SkillsIdentityError("APPROVAL_MISSING")
+    tenant_pk = _tenant_pk(tenant_id)
     if tenant_id not in settings.SKILLS_IAM_TENANT_ALLOWLIST:
         raise SkillsIdentityError("TENANT_NOT_ENABLED")
+    return tenant_pk
 
 
 def _tenant_pk(tenant_id: str) -> int:
@@ -105,8 +107,7 @@ def issue_delegation(
 ) -> tuple[str, str]:
     """Create a Skills-only delegation from two injected credential handles."""
     tenant_id = request.expected_tenant_id
-    _enabled(tenant_id)
-    tenant_pk = _tenant_pk(tenant_id)
+    tenant_pk = _enabled(tenant_id)
     try:
         service_token = service_provider.get_token()
     except Exception as exc:
@@ -152,7 +153,7 @@ def issue_delegation(
     token = create_skills_identity_token(
         client_id=service.client_id,
         user_id=user.id,
-        organization_id=int(tenant_id),
+        organization_id=tenant_id,
         permissions=sorted(requested),
         delegation_id=delegation_id,
     )

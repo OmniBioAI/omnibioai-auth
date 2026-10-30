@@ -11,6 +11,7 @@ Status: design complete; implementation and owner approval are gated. This docum
 Injected port `verify_identity(request) -> VerifiedIdentityResponse`.
 
 - Request: `credential_handle`, expected `tenant_id`, `correlation_id`, audience `omnibioai-skills`, optional delegation chain. A handle is opaque and process-local; never serialize the bearer.
+- Owner decision (2026-10-29): the tenant ID wire type is an opaque string. Auth currently accepts only the canonical positive decimal-string representation of its numeric organization primary key (for example, `"42"`) on identity verification, delegation, and revocation checks. JSON numbers, non-numeric strings, zero, negative values, signs, whitespace, and leading-zero forms are rejected; there is no database migration or alternate tenant-ID lookup.
 - Response: `principal_id`, `tenant_id`, exact permission set, `identity_id`, `issued_at`, `expires_at`, `revocation_checked_at`, optional `delegation_id`/actor, `schema_version`, authority, and immutable verification reference.
 - Errors: `INVALID`, `EXPIRED`, `REVOKED`, `TENANT_MISMATCH`, `DELEGATION_INVALID` (non-retryable); `UNAVAILABLE`, `TIMEOUT`, `RATE_LIMITED` (retryable). Unknown errors become unavailable, never anonymous.
 - Idempotency: verification is read-only; `(credential handle, audience, expected tenant)` may be coalesced only until the earlier of expiry or revocation-freshness SLO. Do not cache a successful authorization.

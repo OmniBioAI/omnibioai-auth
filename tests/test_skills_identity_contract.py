@@ -6,12 +6,13 @@ import uuid
 
 import fakeredis
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.core import token_revocation
-from app.core.jwt import create_access_token, create_service_access_token
+from app.core.jwt import create_access_token, create_service_access_token, decode_token_for_audience
 from app.db.base import Base
 from app.db.models import AuditEvent, DelegatedExecutionGrant, OAuthClient, Organization, OrganizationMembership, User
 from app.schemas.skills_identity import SkillsDelegationRequest, SkillsIdentityRequest
@@ -132,6 +133,76 @@ def _issue_and_verify(db, org, user_token, service_token):
     return token, delegation_id, identity
 
 
+def test_tenant_wire_format_accepts_canonical_decimal_string():
+    identity = SkillsIdentityRequest(
+        credential_handle="identity-handle",
+        expected_tenant_id="42",
+        correlation_id="corr-tenant-42",
+    )
+    delegation = SkillsDelegationRequest(
+        subject_credential_handle="subject-handle",
+        expected_tenant_id="42",
+        permissions=["skill.discover"],
+    )
+    assert identity.expected_tenant_id == "42"
+    assert delegation.expected_tenant_id == "42"
+    assert skills_identity_service._tenant_pk("42") == 42
+
+
+@pytest.mark.parametrize("request_type", [SkillsIdentityRequest, SkillsDelegationRequest])
+def test_tenant_wire_format_rejects_json_integer(request_type):
+    fields = {
+        "expected_tenant_id": 42,
+        "credential_handle": "identity-handle",
+        "correlation_id": "corr-int-tenant",
+        "subject_credential_handle": "subject-handle",
+        "permissions": ["skill.discover"],
+    }
+    allowed = request_type.model_fields
+    with pytest.raises(ValidationError):
+        request_type(**{key: value for key, value in fields.items() if key in allowed})
+
+
+@pytest.mark.parametrize("tenant_id", ["tenant-a", "0", "-1", "+42", " 42", "042"])
+def test_non_numeric_or_noncanonical_tenant_rejected_before_provider_access(
+    setup_db, monkeypatch, tenant_id,
+):
+    monkeypatch.setattr(settings, "SKILLS_IAM_LIVE", True)
+    monkeypatch.setattr(settings, "SKILLS_EXECUTION_KILL", False)
+    monkeypatch.setattr(settings, "SKILLS_IAM_APPROVAL_REF", "approval:test-only")
+    monkeypatch.setattr(settings, "SKILLS_IAM_TENANT_ALLOWLIST", frozenset({tenant_id}))
+    credential_provider = HandleProvider({})
+    workload_provider = WorkloadProvider("must-not-be-read")
+    db = Session()
+    try:
+        with pytest.raises(skills_identity_service.SkillsIdentityError, match="TENANT_MISMATCH"):
+            skills_identity_service.verify_identity(
+                db,
+                SkillsIdentityRequest(
+                    credential_handle="identity-handle",
+                    expected_tenant_id=tenant_id,
+                    correlation_id="corr-invalid-tenant",
+                ),
+                credential_provider=credential_provider,
+                workload_provider=workload_provider,
+            )
+        with pytest.raises(skills_identity_service.SkillsIdentityError, match="TENANT_MISMATCH"):
+            skills_identity_service.issue_delegation(
+                db,
+                SkillsDelegationRequest(
+                    subject_credential_handle="subject-handle",
+                    expected_tenant_id=tenant_id,
+                    permissions=["skill.discover"],
+                ),
+                service_provider=workload_provider,
+                subject_provider=credential_provider,
+            )
+    finally:
+        db.close()
+    assert credential_provider.calls == 0
+    assert workload_provider.calls == 0
+
+
 def test_default_off_does_not_resolve_credentials_or_change_behavior(setup_db, monkeypatch):
     db, _user, org, _membership, _service, _user_token, service_token = _fixture()
     provider = HandleProvider({"skills-handle": "must-not-be-read"})
@@ -184,6 +255,7 @@ def test_verified_identity_has_complete_versioned_claims_and_no_bearer_leak(setu
         assert identity.authority == "omnibioai-auth"
         assert identity.issued_at < identity.expires_at
         assert identity.verification_reference
+        assert decode_token_for_audience(token, "omnibioai-skills")["org_id"] == str(org.id)
         event = db.query(AuditEvent).filter(AuditEvent.event_type == "skill_identity_verified").order_by(AuditEvent.id.desc()).first()
         assert event is not None
         assert token not in str(event.event_metadata)

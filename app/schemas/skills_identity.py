@@ -3,12 +3,12 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
 
 
 class SkillsIdentityRequest(BaseModel):
     credential_handle: str = Field(min_length=1, max_length=255)
-    expected_tenant_id: str = Field(min_length=1, max_length=255)
+    expected_tenant_id: StrictStr = Field(min_length=1, max_length=255)
     correlation_id: str = Field(min_length=1, max_length=255)
     audience: Literal["omnibioai-skills"] = "omnibioai-skills"
     delegation_id: str | None = Field(default=None, min_length=1, max_length=64)
@@ -16,7 +16,7 @@ class SkillsIdentityRequest(BaseModel):
 
 class SkillsVerifiedIdentity(BaseModel):
     principal_id: str
-    tenant_id: str
+    tenant_id: StrictStr
     permissions: list[str]
     identity_id: str
     issued_at: datetime
@@ -31,6 +31,6 @@ class SkillsVerifiedIdentity(BaseModel):
 
 class SkillsDelegationRequest(BaseModel):
     subject_credential_handle: str = Field(min_length=1, max_length=255)
-    expected_tenant_id: str = Field(min_length=1, max_length=255)
+    expected_tenant_id: StrictStr = Field(min_length=1, max_length=255)
     permissions: list[str] = Field(min_length=1)
     audience: Literal["omnibioai-skills"] = "omnibioai-skills"
