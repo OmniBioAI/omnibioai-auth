@@ -9,6 +9,11 @@ Author:
 """
 
 import os
+import base64
+import json
+import re
+import ipaddress
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -30,7 +35,7 @@ def parse_license_allowed_validity_days(raw: str | None) -> tuple[int, ...]:
 
 
 def load_license_key_pepper() -> str:
-    """Read the dedicated license-verifier secret from env or mounted file."""
+    """Read the legacy, unversioned verifier pepper for NULL-version rows."""
     inline = os.getenv("LICENSE_KEY_PEPPER", "")
     secret_file = os.getenv("LICENSE_KEY_PEPPER_FILE", "")
     if inline and secret_file:
@@ -46,6 +51,45 @@ def load_license_key_pepper() -> str:
     if value and len(value.encode("utf-8")) < 32:
         raise ValueError("LICENSE_KEY_PEPPER must contain at least 32 bytes")
     return value
+
+
+def load_versioned_license_key_peppers() -> tuple[dict[str, bytes], str]:
+    """Load explicit pepper IDs and the active ID for newly issued licenses.
+
+    The JSON/file value is a mapping of validated key IDs to base64-encoded
+    pepper bytes. The legacy single pepper is deliberately not promoted to an
+    active version implicitly; operators must explicitly configure its bytes
+    in this ring and select its ID before new issuance can use it.
+    """
+    inline = os.getenv("LICENSE_KEY_PEPPERS_JSON", "")
+    filename = os.getenv("LICENSE_KEY_PEPPERS_FILE", "")
+    active = os.getenv("LICENSE_KEY_ACTIVE_PEPPER_ID", "")
+    if bool(inline) == bool(filename):
+        if active:
+            raise ValueError("Active license pepper ID requires a versioned pepper ring")
+        return {}, ""
+    try:
+        raw = inline if inline else Path(filename).read_text(encoding="utf-8")
+        configured = json.loads(raw)
+        if not isinstance(configured, dict) or not configured:
+            raise ValueError()
+        peppers: dict[str, bytes] = {}
+        for pepper_id, encoded in configured.items():
+            if (
+                not isinstance(pepper_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", pepper_id)
+                or not isinstance(encoded, str)
+            ):
+                raise ValueError()
+            value = base64.b64decode(encoded, validate=True)
+            if len(value) < 32:
+                raise ValueError()
+            peppers[pepper_id] = value
+        if not active or active not in peppers:
+            raise ValueError()
+        return peppers, active
+    except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        raise ValueError("Versioned license pepper configuration is unavailable or invalid") from None
 
 
 def load_email_otp_pepper() -> str:
@@ -122,6 +166,26 @@ class Settings:
     EMAIL_SERVICE_SEND_URL = os.getenv("EMAIL_SERVICE_SEND_URL", "")
     EMAIL_SERVICE_TOKEN = os.getenv("EMAIL_SERVICE_TOKEN", "")
     EMAIL_FROM_ADDRESS = os.getenv("EMAIL_FROM_ADDRESS", "security@omnibioai.org")
+    RESEARCH_INQUIRY_ENABLED = os.getenv("RESEARCH_INQUIRY_ENABLED", "false").lower() == "true"
+    RESEARCH_INQUIRY_NOTIFICATION_TO = os.getenv("RESEARCH_INQUIRY_NOTIFICATION_TO", "").strip().lower()
+    RESEARCH_INQUIRY_HMAC_KEY = os.getenv("RESEARCH_INQUIRY_HMAC_KEY", "")
+    # Confirm only after the provider's retry deduplication contract is verified.
+    RESEARCH_INQUIRY_NOTIFICATION_IDEMPOTENCY_CONFIRMED = os.getenv("RESEARCH_INQUIRY_NOTIFICATION_IDEMPOTENCY_CONFIRMED", "false").lower() == "true"
+    RESEARCH_INQUIRY_NOTIFICATION_MAX_ATTEMPTS = max(1, int(os.getenv("RESEARCH_INQUIRY_NOTIFICATION_MAX_ATTEMPTS", "5")))
+    # Planning value only. No deletion scheduler is enabled by this setting.
+    RESEARCH_INQUIRY_RETENTION_DAYS = max(1, int(os.getenv("RESEARCH_INQUIRY_RETENTION_DAYS", "730")))
+    RESEARCH_INQUIRY_RATE_LIMIT = max(1, int(os.getenv("RESEARCH_INQUIRY_RATE_LIMIT", "5")))
+    RESEARCH_INQUIRY_RATE_WINDOW_SECONDS = max(60, int(os.getenv("RESEARCH_INQUIRY_RATE_WINDOW_SECONDS", "600")))
+    RESEARCH_INQUIRY_TRUSTED_PROXIES = tuple(
+        ipaddress.ip_network(value.strip(), strict=False)
+        for value in os.getenv("RESEARCH_INQUIRY_TRUSTED_PROXIES", "").split(",") if value.strip()
+    )
+    if RESEARCH_INQUIRY_ENABLED and len(RESEARCH_INQUIRY_HMAC_KEY.encode("utf-8")) < 32:
+        raise RuntimeError("Enabled research inquiries require RESEARCH_INQUIRY_HMAC_KEY of at least 32 bytes")
+    if RESEARCH_INQUIRY_NOTIFICATION_TO and not re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", RESEARCH_INQUIRY_NOTIFICATION_TO):
+        raise RuntimeError("Research inquiry notification recipient must be a single email address")
+    if any(network.prefixlen == 0 for network in RESEARCH_INQUIRY_TRUSTED_PROXIES):
+        raise RuntimeError("Research inquiry trusted proxies must not trust every address")
     EMAIL_MFA_TTL_SECONDS = 300
     EMAIL_MFA_MAX_ATTEMPTS = 5
     EMAIL_MFA_RESEND_COOLDOWN_SECONDS = 60
@@ -203,10 +267,13 @@ class Settings:
         for origin in os.getenv(
             "CORS_ALLOWED_ORIGINS",
             "http://localhost:5174,http://127.0.0.1:5174,"
-            "https://webstudio.omnibioai.org,https://app.omnibioai.org,https://lims.omnibioai.org,https://omnibioai.org",
+            "https://webstudio.omnibioai.org,https://app.omnibioai.org,https://lims.omnibioai.org,https://omnibioai.org,https://www.omnibioai.org",
         ).split(",")
         if origin.strip()
     ]
+
+    if RESEARCH_INQUIRY_ENABLED and "*" in CORS_ALLOWED_ORIGINS:
+        raise RuntimeError("Research inquiries require explicit CORS origins")
 
     # OAuth2 SSO — optional. Empty defaults mean the stack starts fine with
     # SSO unconfigured; /auth/{provider}/login returns 503 until a client
@@ -239,9 +306,11 @@ class Settings:
     # the now-decommissioned license_server.py exposed (Phase 1 PR4 cutover).
     GHCR_PULL_TOKEN = os.getenv("GHCR_PULL_TOKEN", "")
 
-    # Manual issuance fails closed until an independent verifier secret and
-    # explicit allowed durations are configured. Never reuse JWT/audit keys.
+    # License issuance fails closed until an independent verifier key ring,
+    # explicit active pepper ID, and allowed durations are configured. The
+    # legacy single pepper is retained only to verify NULL-version rows.
     LICENSE_KEY_PEPPER = load_license_key_pepper()
+    LICENSE_KEY_PEPPERS, LICENSE_KEY_ACTIVE_PEPPER_ID = load_versioned_license_key_peppers()
     LICENSE_ALLOWED_VALIDITY_DAYS = parse_license_allowed_validity_days(
         os.getenv("LICENSE_ALLOWED_VALIDITY_DAYS", "")
     )

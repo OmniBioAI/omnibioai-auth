@@ -992,11 +992,12 @@ def _mysql_reachable() -> bool:
 
 @pytest.fixture
 def mysql_db_url():
+    if os.environ.get("AUTH_ALLOW_ISOLATED_MYSQL_TESTS") != "1":
+        pytest.skip("MySQL qualification requires explicit AUTH_ALLOW_ISOLATED_MYSQL_TESTS=1 and an isolated server")
+    if not all(name in os.environ for name in ("TEST_MYSQL_HOST", "TEST_MYSQL_PORT", "TEST_MYSQL_USER", "TEST_MYSQL_PASSWORD")):
+        pytest.fail("Explicit isolated MySQL connection settings are required; implicit localhost is forbidden")
     if not _mysql_reachable():
-        pytest.skip(
-            f"No MySQL server reachable at {_MYSQL_HOST}:{_MYSQL_PORT} -- "
-            "skipping MySQL migration validation (SQLite coverage above still applies)."
-        )
+        pytest.fail("Explicitly requested isolated MySQL server is unavailable")
 
     admin_engine = create_engine(_MYSQL_SERVER_URL, isolation_level="AUTOCOMMIT")
     with admin_engine.connect() as conn:

@@ -17,6 +17,18 @@ os.environ.setdefault("AUTH_STARTUP_SCHEMA_MODE", "test-create")
 # Explicit test-only 256-bit audit key. Production must provision an
 # independent value through its protected secret mechanism.
 os.environ.setdefault("AUTH_AUDIT_INTEGRITY_KEY", "a1" * 32)
+os.environ.setdefault("LICENSE_KEY_PEPPER", "test-only-license-pepper-not-for-production")
+os.environ.setdefault(
+    "LICENSE_KEY_PEPPERS_JSON",
+    '{"test-v1":"dGVzdC1vbmx5LXBlcHBlci12ZXJzaW9uLW9uZS1ub3QtZm9yLXByb2R1Y3Rpb24=",'
+    '"test-v2":"dGVzdC1vbmx5LXBlcHBlci12ZXJzaW9uLXR3by1ub3QtZm9yLXByb2R1Y3Rpb24="}',
+)
+os.environ.setdefault("LICENSE_KEY_ACTIVE_PEPPER_ID", "test-v1")
+os.environ.setdefault(
+    "LICENSE_REPLAY_KEYS_JSON",
+    '{"test-v1":"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="}',
+)
+os.environ.setdefault("LICENSE_REPLAY_ACTIVE_KEY_ID", "test-v1")
 
 # create_admin() (called at app import time, below) no longer bakes in a
 # hardcoded default password -- give it a fixed, known-to-tests-only value

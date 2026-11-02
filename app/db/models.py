@@ -277,6 +277,9 @@ class LicenseKey(Base):
     # New issuance stores only the keyed digest and non-secret prefix.
     key = Column(String(29), unique=True, index=True, nullable=True)
     key_digest = Column(String(64), unique=True, index=True, nullable=True)
+    # NULL identifies a verifier made with the historical unversioned
+    # LICENSE_KEY_PEPPER. New digests always persist their explicit ring ID.
+    key_pepper_id = Column(String(64), nullable=True)
     key_prefix = Column(String(9), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # bound on first successful validate
     email = Column(String(255), index=True)
@@ -315,6 +318,30 @@ class LicenseIssuanceRequest(Base):
     idempotency_key_hash = Column(String(64), nullable=False)
     request_fingerprint = Column(String(64), nullable=False)
     license_id = Column(Integer, ForeignKey("license_keys.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class LicenseGenerationIdempotency(Base):
+    """Replay-safe result for the client-credentials license API.
+
+    ``replay_envelope`` is authenticated ciphertext bound to this caller,
+    reference, license, and organization.  The plaintext is never persisted.
+    """
+    __tablename__ = "license_generation_idempotency"
+    __table_args__ = (
+        UniqueConstraint("actor_key", "idempotency_key_hash", name="uq_license_generation_actor_key"),
+        UniqueConstraint("license_id", name="uq_license_generation_license"),
+        Index("ix_license_generation_encryption_key_id", "encryption_key_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    actor_key = Column(String(128), nullable=False)
+    idempotency_key_hash = Column(String(64), nullable=False)
+    request_fingerprint = Column(String(64), nullable=False)
+    license_id = Column(Integer, ForeignKey("license_keys.id"), nullable=False)
+    replay_envelope = Column(Text, nullable=True)
+    encryption_key_id = Column(String(64), nullable=True)
+    converted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 

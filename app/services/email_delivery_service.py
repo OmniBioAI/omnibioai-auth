@@ -66,3 +66,40 @@ def send_organization_invitation(
         response.raise_for_status()
     except (httpx.HTTPError, ValueError):
         raise EmailDeliveryError("Email delivery is unavailable") from None
+
+
+def send_research_inquiry_notification(recipient: str, *, inquiry_id: str, full_name: str,
+                                       institutional_email: str, institution: str, department: str,
+                                       country: str, research_interest: str) -> str:
+    """Notify the explicitly configured recipient with a retry-safe provider key."""
+    if not settings.EMAIL_SERVICE_SEND_URL or not settings.EMAIL_SERVICE_TOKEN:
+        raise EmailDeliveryError("Email delivery is unavailable")
+    try:
+        response = httpx.post(
+            settings.EMAIL_SERVICE_SEND_URL,
+            headers={
+                "Authorization": f"Bearer {settings.EMAIL_SERVICE_TOKEN}",
+                "Content-Type": "application/json",
+                "Idempotency-Key": f"research-inquiry:{inquiry_id}:admin",
+            },
+            json={
+                "from": settings.EMAIL_FROM_ADDRESS,
+                "to": [recipient],
+                "subject": f"New OmniBioAI research inquiry {inquiry_id}",
+                "text": (
+                    "A research collaboration inquiry was durably recorded.\n\n"
+                    f"Reference: {inquiry_id}\nInterest: {research_interest}\n\n"
+                    "Review the full record only through the authorized administration API."
+                ),
+                "tags": [{"name": "message_type", "value": "research_inquiry"}],
+            },
+            timeout=5,
+        )
+        response.raise_for_status()
+        body = response.json()
+        receipt = body.get("id") if isinstance(body, dict) else None
+        if not isinstance(receipt, str) or not receipt.strip() or len(receipt) > 255:
+            raise ValueError
+        return receipt
+    except (httpx.HTTPError, ValueError):
+        raise EmailDeliveryError("Email delivery is unavailable") from None

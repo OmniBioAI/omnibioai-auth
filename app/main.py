@@ -54,6 +54,7 @@ from app.api.routes_sessions import router as sessions_router
 from app.api.routes_platform_interactions import router as platform_interactions_router
 from app.api.routes_integration_credentials import router as integration_credentials_router
 from app.api.routes_integration_credentials import internal_router as integration_credentials_internal_router
+from app.api.routes_research_inquiries import router as research_inquiries_router
 from app.db.base import Base
 from app.db.session import engine
 from app.db.session import SessionLocal
@@ -71,6 +72,7 @@ from app.services.role_service import assert_no_unregistered_permissions
 from app.core.config import settings
 
 import app.db.models
+import app.db.research_inquiry
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -149,6 +151,7 @@ app.include_router(sessions_router)
 app.include_router(platform_interactions_router)
 app.include_router(integration_credentials_router)
 app.include_router(integration_credentials_internal_router)
+app.include_router(research_inquiries_router)
 
 
 @app.get("/metrics")
