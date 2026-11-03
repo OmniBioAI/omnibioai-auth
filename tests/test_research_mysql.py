@@ -31,14 +31,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def database(monkeypatch):
+    host = os.environ.get("RESEARCH_TEST_MYSQL_HOST", "127.0.0.1")
     port = os.environ.get("RESEARCH_TEST_MYSQL_PORT", "")
-    assert port.isdigit(), "Set RESEARCH_TEST_MYSQL_PORT to a disposable loopback MySQL container"
+    assert port.isdigit(), "Set RESEARCH_TEST_MYSQL_PORT to a disposable MySQL container"
     name = "ri_qual_" + uuid.uuid4().hex[:12]
-    admin = create_engine(f"mysql+pymysql://root@127.0.0.1:{port}/mysql")
+    admin = create_engine(f"mysql+pymysql://root@{host}:{port}/mysql")
     with admin.begin() as connection:
         connection.execute(text(f"CREATE DATABASE {name} CHARACTER SET utf8mb4"))
     admin.dispose()
-    engine = create_engine(f"mysql+pymysql://root@127.0.0.1:{port}/{name}")
+    engine = create_engine(f"mysql+pymysql://root@{host}:{port}/{name}")
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "alembic"))
     cfg.set_main_option("sqlalchemy.url", engine.url.render_as_string(hide_password=False))
@@ -229,9 +230,10 @@ def test_application_startup_and_http_commit_against_migrated_mysql(database, mo
 
 
 def test_real_redis_atomic_limit_expiry_and_multiple_ips(monkeypatch):
+    host = os.environ.get("RESEARCH_TEST_REDIS_HOST", "127.0.0.1")
     port = os.environ.get("RESEARCH_TEST_REDIS_PORT", "")
-    assert port.isdigit(), "Set RESEARCH_TEST_REDIS_PORT to a disposable loopback Redis container"
-    backend = redis.Redis(host="127.0.0.1", port=int(port), decode_responses=True)
+    assert port.isdigit(), "Set RESEARCH_TEST_REDIS_PORT to a disposable Redis container"
+    backend = redis.Redis(host=host, port=int(port), decode_responses=True)
     assert backend.ping()
     monkeypatch.setattr(rate_limit, "_redis", backend)
     monkeypatch.setattr(settings, "RESEARCH_INQUIRY_RATE_LIMIT", 2)

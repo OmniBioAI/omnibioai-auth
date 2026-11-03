@@ -42,7 +42,7 @@ _require_platform_admin = require_permission(MANAGE_ALL_ORGS)
 def list_platform_organizations(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    search: str | None = Query(None, description="Matches organization name or owner email"),
+    search: str | None = Query(None, description="Matches organization name, slug, or owner email"),
     sort_by: Literal["name", "created_at", "status", "owner_email"] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
     db: Session = Depends(get_db),
