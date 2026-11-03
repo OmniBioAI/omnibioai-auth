@@ -48,6 +48,9 @@ def validate_license(req: LicenseValidateRequest, db: Session = Depends(get_db))
 
     user = license_service.get_or_create_user_for_email(db, req.email or license_key.email)
     license_service.mark_used(db, license_key, user)
+    from app.services.tenant_provisioning_service import membership_plan_for_license, schedule_ensure_tenant
+    membership_plan_for_license(license_key.plan)
+    schedule_ensure_tenant(user.id)
     if req.machine_id:
         license_service.bind_machine_id(db, license_key, req.machine_id)
 

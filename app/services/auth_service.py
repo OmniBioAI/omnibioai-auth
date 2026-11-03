@@ -409,6 +409,9 @@ def generate_tokens(
 
     db.commit()
 
+    from app.services.tenant_provisioning_service import schedule_ensure_tenant
+    schedule_ensure_tenant(user.id)
+
     return access, refresh
 
 
