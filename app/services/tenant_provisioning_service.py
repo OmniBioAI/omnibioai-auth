@@ -16,6 +16,8 @@ def membership_plan_for_license(license_plan: str) -> str:
 
 
 def ensure_tenant(user_id: int) -> dict | None:
+    if not settings.TENANT_PROVISIONING_SERVICE_TOKEN:
+        return None
     try:
         response = httpx.post(
             settings.WORKBENCH_SERVICE_URL.rstrip('/') + f'/api/storage/internal/tenants/{user_id}/ensure',
@@ -36,7 +38,10 @@ def schedule_ensure_tenant(user_id: int) -> None:
     # Keep the step pending for the next login after configuration instead of
     # creating an unbounded number of doomed network threads (especially in
     # test/CLI processes that perform many logins in one interpreter).
-    if not settings.WORKBENCH_SERVICE_URL or not settings.TENANT_PROVISIONING_SERVICE_TOKEN:
+    if not settings.TENANT_PROVISIONING_SERVICE_TOKEN:
+        log.debug('Tenant provisioning disabled')
+        return
+    if not settings.WORKBENCH_SERVICE_URL:
         log.warning('tenant provisioning pending for user %s: service configuration missing', user_id)
         return
     try:

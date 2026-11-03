@@ -19,6 +19,9 @@ def main() -> int:
     mode.add_argument('--dry-run', action='store_true', help='print planned changes (the default)')
     mode.add_argument('--execute', action='store_true', help='perform changes')
     args = parser.parse_args()
+    if not settings.TENANT_PROVISIONING_SERVICE_TOKEN:
+        print(json.dumps({'status': 'disabled', 'reason': 'provisioning token is empty'}))
+        return 0
     dry_run = not args.execute
     headers = {'X-Tenant-Provisioning-Token': settings.TENANT_PROVISIONING_SERVICE_TOKEN}
     with SessionLocal() as db:
