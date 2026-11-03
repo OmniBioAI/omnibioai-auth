@@ -537,6 +537,9 @@ class Settings:
     # shared secret, just the URL to call. See
     # app/services/billing_client.py.
     BILLING_SERVICE_URL = os.getenv("BILLING_SERVICE_URL", "http://billing-service:8005")
+    WORKBENCH_SERVICE_URL = os.getenv("WORKBENCH_SERVICE_URL", "http://workbench:8000")
+    TENANT_PROVISIONING_SERVICE_TOKEN = os.getenv("TENANT_PROVISIONING_SERVICE_TOKEN", "")
+    TENANT_PROVISIONING_TIMEOUT_SECONDS = float(os.getenv("TENANT_PROVISIONING_TIMEOUT_SECONDS", "2"))
 
     @property
     def DATABASE_URL(self):

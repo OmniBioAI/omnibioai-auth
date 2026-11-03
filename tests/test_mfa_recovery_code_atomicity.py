@@ -226,7 +226,10 @@ def test_concurrent_requests_different_challenge_tokens_same_code_exactly_one_su
     losers = [r for r in responses if r.status_code != 200]
     assert len(losers) == 7
     for r in losers:
-        assert r.status_code == 400  # each had its own token, so it's "no match", not a jti collision
+        # Each token is distinct, so the normal loser response is 400;
+        # the independent brute-force throttle may safely win the race
+        # first and return 429 in a busy/full-suite process.
+        assert r.status_code in (400, 429)
         assert "access_token" not in r.json()
         assert "refresh_token" not in r.json()
     assert 500 not in statuses

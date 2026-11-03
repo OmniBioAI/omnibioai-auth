@@ -19,6 +19,29 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
 
+    services:
+      research-mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot --silent"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+
+      research-redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+
     steps:
       - uses: actions/checkout@v4
 
@@ -36,4 +59,6 @@ jobs:
       - name: Run tests
         env:
           PYTHONPATH: .
+          RESEARCH_TEST_MYSQL_PORT: "3306"
+          RESEARCH_TEST_REDIS_PORT: "6379"
         run: pytest --tb=short -q

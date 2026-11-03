@@ -127,7 +127,11 @@ def list_organizations(
 
     if search:
         like = f"%{search}%"
-        base = base.filter(or_(Organization.name.ilike(like), User.email.ilike(like)))
+        base = base.filter(or_(
+            Organization.name.ilike(like),
+            Organization.slug.ilike(like),
+            User.email.ilike(like),
+        ))
 
     total = base.count()
 

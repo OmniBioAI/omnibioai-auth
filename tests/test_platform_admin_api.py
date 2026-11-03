@@ -21,6 +21,11 @@ def _auth_header(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def _user_id(client, access_token):
+    response = client.post("/auth/validate", json={"token": access_token})
+    return response.json()["user_id"]
+
+
 def _register_and_login(client, email=None):
     email = email or f"pa-api-{uuid.uuid4().hex[:8]}@omnibioai.test"
     password = "TestPassword123!"
