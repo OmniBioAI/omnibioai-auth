@@ -32,6 +32,13 @@ def ensure_tenant(user_id: int) -> dict | None:
 
 def schedule_ensure_tenant(user_id: int) -> None:
     """Daemon work cannot delay or fail activation/login; next login retries."""
+    # An unconfigured environment cannot authenticate the internal call.
+    # Keep the step pending for the next login after configuration instead of
+    # creating an unbounded number of doomed network threads (especially in
+    # test/CLI processes that perform many logins in one interpreter).
+    if not settings.WORKBENCH_SERVICE_URL or not settings.TENANT_PROVISIONING_SERVICE_TOKEN:
+        log.warning('tenant provisioning pending for user %s: service configuration missing', user_id)
+        return
     try:
         Thread(target=ensure_tenant, args=(user_id,), name=f'tenant-provision-{user_id}', daemon=True).start()
     except Exception:
