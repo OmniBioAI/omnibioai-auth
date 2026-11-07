@@ -56,7 +56,7 @@ FUTURE_NAMES = {
 # test_permission_registry.py's SERVICE_MINT_NAMES for the GLOBAL-scope
 # assertion). Still a non-legacy entry, so it still counts toward
 # `future_permissions` in registry_stats() -- see the stats test below.
-SERVICE_MINT_NAMES = {"service_token.mint"}
+SERVICE_MINT_NAMES = {"service_token.mint", "service_token.mint_privileged"}
 
 # Auth v61: service-client license issuance.
 LICENSE_ISSUE_NAMES = {"license.issue"}
@@ -147,9 +147,10 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 omnibioai-launcher entry (workspace.launch).
     # + 1 auth v61 entry (license.issue -- service-client license issuance).
     # + 1 tenant storage entry (storage_ledger.write -- TES ledger writer).
+    # + 1 #96 entry (service_token.mint_privileged).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 36
+    assert len(REGISTRY) == 37
 
 
 def test_response_fields_match_permission_def_as_dict(client):

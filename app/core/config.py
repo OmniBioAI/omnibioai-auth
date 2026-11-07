@@ -240,6 +240,13 @@ class Settings:
     )
 
     ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 15))
+
+    # #96: POST /service/mint-user-token. Minted tokens live shorter than a
+    # login's access token (capped at ACCESS_TOKEN_EXPIRE_MINUTES), and each
+    # caller gets a fixed-window request budget.
+    SERVICE_MINT_TOKEN_TTL_SECONDS = max(30, int(os.getenv("SERVICE_MINT_TOKEN_TTL_SECONDS", "300")))
+    SERVICE_MINT_RATE_LIMIT = max(1, int(os.getenv("SERVICE_MINT_RATE_LIMIT", "300")))
+    SERVICE_MINT_RATE_WINDOW_SECONDS = max(1, int(os.getenv("SERVICE_MINT_RATE_WINDOW_SECONDS", "60")))
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 
     # Phase 2 PR1: client_credentials-grant tokens are a service identity,

@@ -102,6 +102,8 @@ MODEL_REGISTRY_READ_NAMES = {
 # Not a FUTURE_NAMES-style unenforced placeholder.
 SERVICE_MINT_NAMES = {
     "service_token.mint": PermissionCategory.PLATFORM,
+    # #96: lets a mint caller also mint for privileged targets.
+    "service_token.mint_privileged": PermissionCategory.PLATFORM,
 }
 
 # HIPAA-V2-019 delegated execution (TES -> ToolServer): same "real,
@@ -599,7 +601,7 @@ def test_filter_registry_combines_filters_with_and_semantics():
     # #443: service_token.mint is the first non-legacy PLATFORM entry --
     # every other PLATFORM-category permission predates the registry.
     results2 = filter_registry(category=PermissionCategory.PLATFORM, legacy=False)
-    assert {p.name for p in results2} == {"service_token.mint", "license.issue"}
+    assert {p.name for p in results2} == {"service_token.mint", "service_token.mint_privileged", "license.issue"}
 
 
 def test_filter_registry_results_stay_sorted():
@@ -642,8 +644,9 @@ def test_registry_stats_by_scope_sums_to_total():
     # above, the first non-legacy permission in this registry that isn't
     # BOTH-scoped).
     # +1 for license.issue (LICENSE_ISSUE_NAMES above), +1 for
-    # storage_ledger.write (DELEGATED_EXECUTION_NAMES above).
-    assert stats["by_scope"]["global"] == 11
+    # storage_ledger.write (DELEGATED_EXECUTION_NAMES above), +1 for
+    # service_token.mint_privileged (#96, SERVICE_MINT_NAMES above).
+    assert stats["by_scope"]["global"] == 12
     # 11 pre-runs.read + 1 (runs.read, added by the omnibioai-tes IAM
     # integration -- see TES_NAMES above) + 1 (model.resolve_ownership,
     # added by the omnibioai-model-registry Phase 2E integration -- see
