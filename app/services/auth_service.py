@@ -137,7 +137,7 @@ def authenticate_user(db, email, password, client_ip: str | None = None):
 
 def build_user_claims(
     db, user, auth_method: str = "password", idp_org_id: int | None = None,
-    requested_team_id: int | None = None,
+    requested_team_id: int | None = None, membership=None,
 ) -> dict:
     """The single source of truth for what goes into a token's payload --
     shared by `generate_tokens` (login/OAuth/SSO/license) and PR0.2's
@@ -210,10 +210,15 @@ def build_user_claims(
     longer resolves (team deleted, membership revoked since the token was
     issued) silently degrades to (None, None) rather than failing the
     token operation, matching org_id's own "None is a valid state" design.
+
+    #96: `membership`, when given, is the OrganizationMembership the token
+    is scoped to instead of the primary one. The caller must already have
+    checked that it belongs to `user` and is active (see
+    service_mint_service). When omitted, the primary membership is used.
     """
     global_permissions = {p.name for r in user.roles for p in r.permissions}
 
-    org_membership = org_service.resolve_primary_membership(db, user.id)
+    org_membership = membership if membership is not None else org_service.resolve_primary_membership(db, user.id)
     org_id = org_membership.organization_id if org_membership else None
     org_role = sorted(r.name for r in org_membership.roles) if org_membership else []
     org_permissions = org_service.permissions_for_membership(org_membership) if org_membership else set()

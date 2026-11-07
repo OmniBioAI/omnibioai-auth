@@ -114,6 +114,9 @@ class AuditEventType:
     # identities, same as SSO_OVERRIDE_CREATED's actor-vs-org distinction,
     # so the audit trail can always tell who did this and to whom.
     SERVICE_TOKEN_MINTED = "service_token_minted"
+    # #96: a mint request that was refused (reason in metadata). No token
+    # was issued.
+    SERVICE_TOKEN_MINT_DENIED = "service_token_mint_denied"
     DELEGATED_EXECUTION_TOKEN_ISSUED = "delegated_execution_token_issued"
     DELEGATED_EXECUTION_TOKEN_DENIED = "delegated_execution_token_denied"
     TOOLSERVER_REGISTRATION_TOKEN_ISSUED = "toolserver_registration_token_issued"

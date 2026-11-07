@@ -261,6 +261,24 @@ _register(
         legacy=False,
     )
 )
+# #96: mint-user-token refuses targets whose token would carry a
+# privileged permission (any GLOBAL- or ORG-scoped one, or a service-
+# identity one) unless the caller also holds this. Granted to no role by
+# default.
+_register(
+    PermissionDef(
+        name="service_token.mint_privileged",
+        resource="service_token",
+        action="mint_privileged",
+        scope=PermissionScope.GLOBAL,
+        category=PermissionCategory.PLATFORM,
+        description=(
+            "Additionally allow service_token.mint to mint for users whose "
+            "token would carry administrative or service permissions."
+        ),
+        legacy=False,
+    )
+)
 _register(
     PermissionDef(
         name=PLATFORM_MANAGE_INFRA,

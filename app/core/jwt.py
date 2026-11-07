@@ -37,7 +37,7 @@ def _sign(payload: dict) -> str:
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def create_access_token(data: dict):
+def create_access_token(data: dict, expires_seconds: int | None = None):
     # Was hardcoded to a literal 15 minutes regardless of this setting --
     # settings.ACCESS_TOKEN_EXPIRE_MINUTES (app/core/config.py) existed but
     # was never actually read here, so an operator changing it had no
@@ -51,7 +51,10 @@ def create_access_token(data: dict):
     to_encode = data.copy()
 
     to_encode.update({
-        "exp": datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        "exp": datetime.utcnow() + (
+            timedelta(seconds=expires_seconds) if expires_seconds is not None
+            else timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        ),
         "type": "access",
         "jti": str(uuid.uuid4())   # 👈 IMPORTANT
     })
