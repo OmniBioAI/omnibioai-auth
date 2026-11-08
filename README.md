@@ -2,35 +2,39 @@
 
 **JWT authentication and authorization service for the OmniBioAI platform.**
 
-Central identity layer for the OmniBioAI zero-trust security plane.
-Handles user registration, login, token issuance, refresh, logout,
-and the shared identity contract used by all platform services.
+Central identity layer for the OmniBioAI zero-trust security plane. Handles user registration, login, token issuance, refresh, logout, and the shared identity contract used by all platform services.
 
 ---
 
+## Architecture
+
+The OmniBioAI Authentication Service provides centralized identity, authentication, and authorization for the OmniBioAI ecosystem.
+
+### Authentication Service Architecture
+
+The following diagram illustrates how `omnibioai-auth` integrates with OmniBioAI clients, platform components, and downstream services.
+
+![OmniBioAI Authentication Service Architecture](docs/architecture/omnibioai-authentication-service-architecture.png)
+
+[View Authentication Service Architecture](docs/architecture/omnibioai-authentication-service-architecture.png)
+
+### Internal Architecture
+
+The authentication service is organized into authentication handlers, authorization and RBAC, JWT management, and session and policy management. MySQL and Redis support persistent storage, token revocation, and event propagation.
+
+![OmniBioAI Auth Internal Architecture](docs/architecture/omnibioai-auth-internal-architecture-diagram.png)
+
+[View Internal Architecture Diagram](docs/architecture/omnibioai-auth-internal-architecture-diagram.png)
+
 ## Architecture Role
 
-`omnibioai-auth` runs as a containerized service inside the OmniBioAI Docker
-Compose stack. This service is the central issuer and revocation authority.
-Downstream services may call `POST /auth/validate`, while services that need
-low-latency request authorization verify JWTs locally using the shared token
-contract and Redis revocation state rather than making a network call for
-every request.
+`omnibioai-auth` runs as a containerized service inside the OmniBioAI Docker Compose stack. It acts as the central authentication, token issuance, and revocation authority.
 
-```
-Studio / TES / LIMS / Control Center / SDK
-              |
-        POST /auth/validate
-              |
-       omnibioai-auth (:8001)
-         /         \
-      MySQL        Redis
-  (users, tokens)  (blacklist, pub/sub)
-```
+Downstream services may call `POST /auth/validate` to validate tokens. Services requiring low-latency request authorization can verify JWTs locally using the shared token contract and Redis revocation state, avoiding a network call for every request.
 
-Redis also carries a `policy:invalidate` pub/sub channel. On logout,
-`omnibioai-auth` publishes an invalidation event so downstream services can
-flush any cached token state immediately.
+### Token Revocation and Invalidation
+
+Redis also carries a `policy:invalidate` pub/sub channel. On logout, `omnibioai-auth` publishes an invalidation event so downstream services can flush any cached token state immediately.
 
 ---
 
