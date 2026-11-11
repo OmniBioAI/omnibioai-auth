@@ -103,6 +103,43 @@ routes are unchanged.
 - `expires_at` and `expiry_source` go into the `API_KEY_CREATED` audit
   `after_state`.
 
+### G2a. Key kind: personal or integration
+
+There is no column today that says what a key is for, so a backfill rule
+can't tell a member's personal key from one an unattended integration
+depends on. Every new key will say which it is.
+
+**New columns on `api_keys`:**
+
+| Column | Type | Rule |
+|---|---|---|
+| `key_kind` | `String(16)`, NOT NULL, `'personal'` or `'integration'` | `/me/api-keys` always writes `personal`, and the client cannot choose. Only the org-admin `/orgs/{id}/api-keys` route can create `integration`, and it must say so explicitly (`key_kind` in the body, no default). |
+| `integration_owner_user_id` | FK `users.id`, nullable | Required for `integration`, NULL for `personal`. Names the accountable person. Must be an active member of the key's organisation with `manage_api_keys`. |
+| `integration_note` | `String(500)`, nullable | Required for `integration`, NULL for `personal`. Says what uses the key, for example "nightly LIMS sync on dgx cron". Shown to org admins, never put in tokens. |
+
+**Rules by kind:**
+
+| | `personal` | `integration` |
+|---|---|---|
+| Created by | the member, on `/me/api-keys` | an org admin, on `/orgs/{id}/api-keys` |
+| Expiry | default 90 days, maximum 365, never "no expiry" (G2) | optional; may have no expiry |
+| Scopes | capped by the creator's permissions (unchanged) | same cap |
+| Stops working when | the creator leaves or is downgraded (unchanged) | same. Reassigning the owner does not change this; a departing creator's integration keys must be re-issued. |
+| Expiry emails (G6) | to the creator | to the `integration_owner_user_id`, only if the key has an expiry |
+| Listed on | the member's Developer page | the org-admin key list, with kind, owner and note |
+
+- `key_kind`, owner and note are written in the `API_KEY_CREATED` audit
+  `after_state`.
+- Changing the owner or note is an audited `API_KEY_OWNER_CHANGED` event.
+  Changing the kind is not allowed; re-issue the key instead.
+- The org-admin route keeps creating keys exactly as today, except that it
+  now requires `key_kind`, plus the owner and note for `integration`.
+  Callers that omit `key_kind` get a 400 naming the field, not a silent
+  default.
+- **Integrations should prefer OAuth clients** (client credentials; 13
+  rows in `oauth_clients` on live). An `integration` API key is for tools
+  that can only send a static bearer. The note field should say why.
+
 ### G3. Backfill existing keys (decision 3)
 
 **Migration, run as part of the rollout deploy:**
@@ -115,9 +152,59 @@ routes are unchanged.
 - The rollout time is recorded as the migration's run time. The
   `<rollout time>` used is written to the deploy record.
 
-**Which keys:** see [the open question](#open-question). There is no column
-today saying whether a key was created through `/me/api-keys` or the
-org-admin route.
+**Which keys.** The migration adds `key_kind` (G2a) and classifies every
+existing row from an explicit, reviewed list, never by guessing:
+
+- A key on the list as `integration` gets its owner and note and keeps no
+  expiry. It is not backfilled.
+- **Every other key becomes `personal`** and gets the 90-day backfill.
+- The list ships with the migration as data (key ids only, no key
+  material). The migration refuses to run if the list names a key id that
+  doesn't exist or isn't active.
+
+#### Inventory of keys with no expiry (live, 2026-11-11)
+
+- **Query:** read-only, run against the live auth database (`omnibioai` on
+  `omnibioai-studio-mysql-1`) from the auth container's own connection, in
+  a `READ ONLY` transaction that was rolled back. No hashes or key
+  material were selected.
+- **Result:** the `api_keys` table has **0 rows** in any state. The audit
+  log has no `api_key_*` events, so no key has ever been created on live.
+  For scale: 8 users, 2 organisations, 13 OAuth clients.
+
+| id | name | prefix | creator user | org | created | last used | scopes | proposal |
+|---|---|---|---|---|---|---|---|---|
+| — | *(no keys)* | | | | | | | |
+
+**Proposal:** nothing needs an integration exception today, so the
+reviewed list starts empty. Because keys can be created on live at any
+time before rollout, the inventory is re-run as the first rollout step
+(below). For each key it finds, the proposal is:
+
+- **`personal`, 90-day backfill** if it was created by a member for their
+  own use. This is the default.
+- **`integration`, no expiry** only if the owner names an accountable
+  person and what uses the key. The org admin confirms it, and the key id
+  is added to the list before the migration runs.
+- **Revoke instead** if no one claims it and `last_used_at` is NULL or
+  more than 90 days old. That needs the owner's approval; the migration
+  never revokes.
+
+Re-check query (read-only, run through the auth container's own
+connection, prints no secrets):
+
+```sql
+SET SESSION TRANSACTION READ ONLY;
+SELECT k.id, k.name, k.key_prefix, k.created_by_user_id, k.organization_id,
+       o.name AS org, k.created_at, k.last_used_at, k.scopes, k.status
+FROM api_keys k LEFT JOIN organizations o ON o.id = k.organization_id
+WHERE k.expires_at IS NULL AND k.status = 'active'
+ORDER BY k.id;
+```
+
+`key_prefix` holds only the type prefix plus the first 4 random
+characters, which the Developer page already shows. `key_hash` is never
+selected.
 
 ### G4. Developer page (Studio)
 
@@ -254,8 +341,9 @@ These are not part of this rollout. They are required for 1.0:
   - Mitigations: hash-only storage; scopes capped by the holder's
     permissions and re-checked on every exchange; immediate revocation;
     90-day default and 365-day maximum; at most 10 active keys.
-  - After rollout, no active key is left without an expiry, except where
-    the open question leaves admin-route keys alone.
+  - After rollout, the only active keys without an expiry are
+    `integration` keys. Each has an accountable owner and a note, and is
+    visible to org admins.
 - Expiry emails carry only the key name and prefix, and are sent only to
   the creator's own address. The job logs counts, not addresses.
 - Removing a member or downgrading their role takes effect on the next
@@ -271,13 +359,19 @@ Each step is its own PR. Deploys go through the deploy owner.
 1. **Auth:**
    - G1 scopes, the test-key rule and `GET /me/api-keys/scopes`.
    - G2 default and maximum expiry, and the `expiry_source` column.
+   - G2a `key_kind`, integration owner and note, and the admin-route
+     validation.
    - G6 notice columns, sender and job, with emails disabled.
    - The G3 backfill migration.
    - Unit tests:
      - the subset check per role;
      - the default, the maximum, and test plus workflow rejected;
      - admin routes unchanged;
-     - backfill and downgrade;
+     - backfill and downgrade, including that keys on the integration list
+       keep no expiry;
+     - the migration refuses an unknown or inactive id on the list;
+     - `key_kind` is forced on `/me`, required on the admin route, and
+       owner and note are required for `integration`;
      - the email job's windows, once-only behaviour, failed-send retry,
        batch limit and no-op when unconfigured.
 2. **G5 checks** with a test-tenant key against Workbench storage, TES run
@@ -285,26 +379,32 @@ Each step is its own PR. Deploys go through the deploy owner.
 3. **Studio** Developer page (G4), deployed **with or before** step 1's
    deploy, so the backfill banner is visible from rollout day.
 4. **Auth deploy:**
+   - Re-run the G3 inventory query.
+   - The owner classifies any keys it finds, and the reviewed integration
+     list is finalised.
    - Run the migration (rollout day = backfill time).
    - Add the cron line.
    - Set `API_KEY_EXPIRY_EMAILS_ENABLED=true` after one dry run of the job
      against live data shows the expected counts.
 5. **CLI** `--api-key` and the `auth status` warning (G7).
 
-## Open question
+## Resolved: which keys the backfill covers
 
-The backfill (G3) cannot tell self-service keys from keys an org admin
-created through `/orgs/{id}/api-keys`; both rows look the same. The note
-proposes giving **every** active key without an expiry the 90-day date.
-That includes org-admin keys, which may be used by unattended
-integrations. The alternative is to leave admin-route keys without an
-expiry; the decision covers personal keys only. Owner to confirm.
+The earlier open question was whether org-admin keys would be backfilled.
+`key_kind` (G2a) answers it, along with the reviewed integration list
+(G3):
+
+- Only keys explicitly listed as `integration`, each with a named owner
+  and note, keep no expiry.
+- Everything else is `personal` and gets the 90-day date.
+- The live inventory on 2026-11-11 found no keys, so the list is currently
+  empty. It is re-checked on rollout day.
 
 ## Effort (rough)
 
 | Step | Estimate |
 |---|---|
-| Auth G1 + G2 + G3 + tests | 1–1.5 days |
+| Auth G1 + G2 + G2a + G3 + tests | 1.5–2 days |
 | Auth G6 (sender, job, columns, tests) + ops cron line | 1 day |
 | G5 verification and small fixes | 0.5–1 day (depends on what fails) |
 | Studio G4 (form, list, two banners) | 1–1.5 days |
