@@ -149,6 +149,14 @@ LICENSE_ISSUE_NAMES = {
     "license.issue": PermissionCategory.PLATFORM,
 }
 
+# OmniBioAI BioRepository (Workbench `biorepo` app): enforced by Workbench
+# against the JWT permissions claim. Granted to no default role.
+BIOREPO_NAMES = {
+    "biorepo.read": PermissionCategory.DATASET,
+    "biorepo.write": PermissionCategory.DATASET,
+    "biorepo.admin": PermissionCategory.DATASET,
+}
+
 GLOBAL_LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -442,6 +450,7 @@ def test_registry_contains_exactly_the_expected_names():
         | set(MODEL_REGISTRY_READ_NAMES.keys()) | set(SERVICE_MINT_NAMES.keys())
         | set(DELEGATED_EXECUTION_NAMES.keys()) | set(RAG_NAMES.keys())
         | set(WORKSPACE_LAUNCH_NAMES.keys()) | set(LICENSE_ISSUE_NAMES.keys())
+        | set(BIOREPO_NAMES.keys())
     )
 
 
@@ -625,6 +634,7 @@ def test_registry_stats_totals_match_registry_size():
         + len(MODEL_REGISTRY_OWNERSHIP_NAMES) + len(MODEL_REGISTRY_READ_NAMES)
         + len(SERVICE_MINT_NAMES) + len(DELEGATED_EXECUTION_NAMES) + len(RAG_NAMES)
         + len(WORKSPACE_LAUNCH_NAMES) + len(LICENSE_ISSUE_NAMES)
+        + len(BIOREPO_NAMES)
     )
 
 
@@ -656,8 +666,9 @@ def test_registry_stats_by_scope_sums_to_total():
     # DELEGATED_EXECUTION_NAMES above) + 1 (dataset.write -- see
     # RAG_NAMES above) + 1 (toolserver.register -- see
     # DELEGATED_EXECUTION_NAMES above) + 1 (provider_keys.manage -- M15,
-    # BYOK provider-key storage).
-    assert stats["by_scope"]["both"] == 19
+    # BYOK provider-key storage) + 3 (biorepo.read/write/admin -- see
+    # BIOREPO_NAMES above).
+    assert stats["by_scope"]["both"] == 22
 
 
 def test_registry_stats_by_category_sums_to_total():
