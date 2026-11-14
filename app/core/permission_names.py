@@ -153,6 +153,39 @@ _register(
     )
 )
 
+# OmniBioAI BioRepository (Workbench app `biorepo`, docs/biorepo/DESIGN.md).
+# Additive vocabulary only: no DB rows, and no default role (org_admin,
+# scientist, viewer, platform seeds) receives them. Separate from
+# dataset.read/dataset.write, which RAG already enforces for its own data, so
+# a RAG grant never widens repository access. Workbench checks them against
+# the JWT `permissions` claim; BOTH scope like dataset.read.
+_register(
+    PermissionDef(
+        name="biorepo.read", resource="biorepo", action="read",
+        scope=PermissionScope.BOTH, category=PermissionCategory.DATASET,
+        description="Read BioRepository datasets visible to the caller in their organization, and resolve their DRS objects.",
+        legacy=False,
+    )
+)
+
+_register(
+    PermissionDef(
+        name="biorepo.write", resource="biorepo", action="write",
+        scope=PermissionScope.BOTH, category=PermissionCategory.DATASET,
+        description="Create and version BioRepository datasets, samples and files in the caller's organization.",
+        legacy=False,
+    )
+)
+
+_register(
+    PermissionDef(
+        name="biorepo.admin", resource="biorepo", action="admin",
+        scope=PermissionScope.BOTH, category=PermissionCategory.DATASET,
+        description="Administer BioRepository in the caller's organization: all datasets, backup class, storage moves, capacity view.",
+        legacy=False,
+    )
+)
+
 
 # --- Platform (global) permissions -- legacy -------------------------------
 
