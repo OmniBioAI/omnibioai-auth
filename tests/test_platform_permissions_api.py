@@ -64,6 +64,9 @@ LICENSE_ISSUE_NAMES = {"license.issue"}
 # Tenant storage: TES service identity provisioning Storage Ledger allocations.
 STORAGE_LEDGER_WRITE_NAMES = {"storage_ledger.write"}
 
+# OmniBioAI BioRepository (Workbench `biorepo` app).
+BIOREPO_NAMES = {"biorepo.read", "biorepo.write", "biorepo.admin"}
+
 LEGACY_NAMES = {
     "manage_roles",
     "manage_licenses",
@@ -150,7 +153,8 @@ def test_response_contains_all_registered_permissions(client):
     # + 1 #96 entry (service_token.mint_privileged).
     # PR4's own docs undercounted this as "20" -- corrected here to the
     # actual registry size rather than perpetuating that error.
-    assert len(REGISTRY) == 37
+    # + 3 BioRepository entries (biorepo.read/write/admin).
+    assert len(REGISTRY) == 40
 
 
 def test_response_fields_match_permission_def_as_dict(client):
@@ -333,6 +337,7 @@ def test_platform_admin_can_get_registry_stats(client):
     assert body["legacy_permissions"] == len(LEGACY_NAMES)
     assert body["future_permissions"] == (
         len(FUTURE_NAMES) + len(SERVICE_MINT_NAMES) + len(LICENSE_ISSUE_NAMES) + len(STORAGE_LEDGER_WRITE_NAMES)
+        + len(BIOREPO_NAMES)
     )
     assert body["deprecated_permissions"] == 0
     assert sum(body["by_scope"].values()) == len(REGISTRY)
