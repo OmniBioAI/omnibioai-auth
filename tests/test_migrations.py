@@ -1055,6 +1055,17 @@ def test_mysql_auth_audit_integrity_triggers_block_mutation(mysql_db_url):
             conn.execute(text("DELETE FROM audit_events WHERE event_type='legacy-event'"))
         conn.rollback()
         assert conn.execute(text("SELECT COUNT(*) FROM audit_events")).scalar_one() == 2
+        # The migration names no DEFINER, so each trigger belongs to the
+        # account that ran it, never a fixed one.
+        migrating_user = conn.execute(text("SELECT CURRENT_USER()")).scalar_one()
+        definers = dict(conn.execute(text("""
+            SELECT TRIGGER_NAME, DEFINER FROM information_schema.TRIGGERS
+            WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_OBJECT_TABLE = 'audit_events'
+        """)).all())
+        assert definers == {
+            "auth_audit_events_no_update": migrating_user,
+            "auth_audit_events_no_delete": migrating_user,
+        }
     from app.services.audit_service import log_event
     with Session(engine) as db:
         log_event(db, "signed-insert-through-trigger", commit=True)

@@ -37,6 +37,12 @@ def upgrade() -> None:
             BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END
         """)
     elif dialect == "mysql":
+        # No DEFINER clause: MySQL records the account running the migration
+        # (CURRENT_USER) as the definer, so these triggers never name a fixed
+        # account. Run migrations as the account that should own them. The
+        # trigger bodies only SIGNAL, so the definer needs no table
+        # privileges, but the account must keep existing for the triggers to
+        # fire. See docs/security/auth-audit-integrity.md.
         op.execute("""
             CREATE TRIGGER auth_audit_events_no_update
             BEFORE UPDATE ON audit_events FOR EACH ROW
