@@ -15,6 +15,7 @@ import redis as _redis_sync
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 JWT_AUTH_TOTAL = Counter(
@@ -367,10 +368,11 @@ def validate_token(req: dict, db: Session = Depends(get_db)):
 
         # PR0.1: blacklist/revoked_tokens/status checks now live in
         # assert_token_usable (app/core/token_revocation.py), shared with
-        # get_current_user, instead of being duplicated here. HTTPException
-        # is caught by this function's own broad `except Exception` below
-        # and translated into this endpoint's existing {"valid": False}
-        # contract -- unlike get_current_user, this route never raises.
+        # get_current_user, instead of being duplicated here. Its 401s
+        # (revoked, inactive) become this endpoint's {"valid": False}
+        # contract below; its 503 (revocation state unavailable) and
+        # database errors become a 503, so callers can tell "this token is
+        # not valid" from "the answer is unknown right now".
         assert_token_usable(payload, db)
 
         user = db.query(User).filter(User.id == payload["sub"]).first()
@@ -401,5 +403,26 @@ def validate_token(req: dict, db: Session = Depends(get_db)):
             "idp_org_id": payload.get("idp_org_id"),
             "schema_version": payload.get("token_version", 1),
         }
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            return _validate_unavailable()
+        return {"valid": False}
+    except SQLAlchemyError:
+        return _validate_unavailable()
     except Exception:
         return {"valid": False}
+
+
+def _validate_unavailable() -> JSONResponse:
+    """503 when the answer depends on Redis or the database and they failed.
+
+    The body keeps "valid": false, so a caller that reads only the body (the
+    iam-client, api-gateway and TES fallbacks) still refuses the token exactly
+    as before; a caller that reads the status (Workbench, launcher) can fail
+    closed with 503 instead of treating the token as revoked.
+    """
+    return JSONResponse(
+        status_code=503,
+        content={"valid": False, "error": "authentication_state_unavailable"},
+        headers={"Retry-After": "2", "Cache-Control": "no-store"},
+    )
